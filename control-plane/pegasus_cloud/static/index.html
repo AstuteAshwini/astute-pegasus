@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pegasus Cloud</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#EEF1F6;--surface:#fff;--sunk:#F6F8FB;--ink:#151B2E;--muted:#5D6678;--line:#DCE1EA;--line-strong:#C3CAD7;
+  --night:#1B2046;--night-2:#262C5C;--night-ink:#E9EBFA;--night-muted:#A6ACD6;--accent:#3D46B8;--accent-ink:#fff;--soft:#E9EBF9;
+  --run:#0E8A5E;--run-bg:#E2F4EC;--stop:#C2393B;--stop-bg:#FBE8E8;--warn:#A8620A;--warn-bg:#FCEFD9;--unk:#8A93A6;--unk-bg:#EEF0F4;
+  --console:#12152B;--console-ink:#D9DCF0;--sans:"Archivo","Segoe UI",system-ui,sans-serif;--mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  --r-sm:5px;--r:8px;--r-lg:12px;--side:248px}
+@media (prefers-color-scheme:dark){:root{--bg:#0E1222;--surface:#161B30;--sunk:#12172A;--ink:#E6E9F3;--muted:#9AA2B8;--line:#272E48;--line-strong:#353D5C;
+  --night:#0A0D1C;--night-2:#161B36;--accent:#8C95F2;--accent-ink:#0E1222;--soft:#20264A;--run:#4CCB95;--run-bg:#11302A;--stop:#F07A7A;--stop-bg:#3A1A20;
+  --warn:#E9B158;--warn-bg:#382A12;--unk:#7E88A3;--unk-bg:#1E2338;--console:#080A16}}
+*{box-sizing:border-box}[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans)}
+h1,h2,h3{font-weight:650;letter-spacing:-.012em;line-height:1.2}
+.mono{font-family:var(--mono);font-size:12.5px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button{font:inherit;font-size:13.5px;font-weight:550;border-radius:var(--r-sm);padding:7px 13px;cursor:pointer;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink)}
+button:hover{background:var(--sunk)}button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button.go{color:var(--run)}button.halt{color:var(--stop)}
+button.link{border:none;background:none;color:var(--accent);padding:4px 2px}button.sm{padding:4px 10px;font-size:12.5px}
+input,textarea{font:inherit;font-size:14px;padding:8px 11px;border:1px solid var(--line-strong);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);width:100%}
+textarea{font-family:var(--mono);font-size:12.5px;min-height:150px}
+label{display:block;font-size:13px;color:var(--muted);margin-bottom:12px;font-weight:500}label input{margin-top:5px}
+.side{position:fixed;inset:0 auto 0 0;width:var(--side);background:var(--night);color:var(--night-ink);display:flex;flex-direction:column}
+.brand{padding:20px 18px;font-size:20px;font-weight:700;color:#fff}.brand small{display:block;font-size:12px;font-weight:450;color:var(--night-muted)}
+.side h3{font-size:12px;color:var(--night-muted);font-weight:600;margin:10px 18px 6px}
+#clientList{flex:1;overflow:auto;padding:0 10px}
+#clientList button{display:block;width:100%;text-align:left;border:none;background:none;color:var(--night-ink);padding:9px 12px;border-radius:var(--r)}
+#clientList button small{display:block;color:var(--night-muted);font-size:12px;font-weight:400}
+#clientList button:hover{background:#ffffff10}#clientList button[aria-current=true]{background:var(--night-2);box-shadow:inset 3px 0 0 #C9CEFF}
+.side-foot .mono{word-break:break-all}
+.side-foot{border-top:1px solid #ffffff1c;padding:14px 18px;display:grid;gap:8px;font-size:12.5px;color:var(--night-muted)}
+.side-foot button{background:transparent;color:var(--night-ink);border-color:#ffffff33}
+main{margin-left:var(--side);padding:28px 28px 340px;max-width:1240px}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:18px 20px;margin-bottom:18px}
+.panel h2{font-size:17px;margin:0 0 6px}.help{color:var(--muted);font-size:13.5px;margin:0 0 12px;max-width:85ch}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.msg{font-size:13.5px;padding:10px 13px;border-radius:var(--r);margin:10px 0;background:var(--stop-bg);color:var(--stop)}.msg.ok{background:var(--run-bg);color:var(--run)}
+.tag{display:inline-block;font-size:11.5px;font-weight:650;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--accent)}.tag.prd{background:var(--warn-bg);color:var(--warn)}
+.st{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px}
+.st::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.st.up,.st.succeeded,.st.running{background:var(--run-bg);color:var(--run)}.st.down,.st.failed,.st.stopped,.st.rejected{background:var(--stop-bg);color:var(--stop)}
+.st.queued,.st.unknown,.st.expired{background:var(--unk-bg);color:var(--unk)}.st.busy{background:var(--warn-bg);color:var(--warn)}
+table{border-collapse:collapse;width:100%;font-size:13.5px}th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line)}
+th{font-weight:550;color:var(--muted);font-size:12.5px;background:var(--sunk)}tr:last-child td{border-bottom:none}
+.scroll{overflow-x:auto}.det{color:var(--muted);font-size:12.5px}
+.env{border:1px solid var(--line);border-radius:var(--r);margin-bottom:12px;overflow:hidden}
+.env-head{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;padding:12px 14px;background:var(--sunk)}
+.env-head h3{margin:0;font-family:var(--mono);font-size:16px}.env-head .acts{margin-left:auto;display:flex;flex-wrap:wrap;gap:6px}
+.cmd{background:var(--sunk);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;font-family:var(--mono);font-size:12.5px;word-break:break-all;margin:8px 0}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}@media (max-width:1000px){.grid2{grid-template-columns:minmax(0,1fr)}}
+#console{position:fixed;left:var(--side);right:0;bottom:0;background:var(--console);color:var(--console-ink);height:300px;display:flex;flex-direction:column;z-index:5}
+#console.min{height:44px}#console.min pre{display:none}
+.con-head{display:flex;gap:10px;align-items:center;padding:10px 20px;border-bottom:1px solid #2A2F55;font-size:13px}.con-head .sp{margin-left:auto}
+.con-head button{background:transparent;color:var(--console-ink);border-color:#3A4070}
+#console pre{flex:1;overflow:auto;margin:0;padding:12px 20px;font:12.5px/1.55 var(--mono);white-space:pre-wrap}
+#login{min-height:100vh;display:grid;place-items:center;background:var(--night)}#login .panel{width:min(380px,92vw)}
+dialog{border:1px solid var(--line);border-radius:var(--r-lg);padding:22px 24px;background:var(--surface);color:var(--ink);width:min(520px,92vw)}
+dialog::backdrop{background:#0b0f2680}.row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+.empty{padding:36px 20px;text-align:center;color:var(--muted)}
+@media (max-width:860px){.side{position:static;width:auto}main{margin-left:0;padding:18px 14px 320px}#console{left:0}}
+</style>
+</head>
+<body>
+<section id="login" hidden>
+  <form class="panel" id="loginForm">
+    <h2>Pegasus Cloud</h2><p class="help">Sign in to manage clients and their connectors.</p>
+    <label>Your name<input id="loginName" autocomplete="name"></label>
+    <label>Password<input id="loginPw" type="password" required autocomplete="current-password"></label>
+    <div id="loginMsg"></div><button class="primary" type="submit">Sign in</button>
+  </form>
+</section>
+
+<div id="shell" hidden>
+  <aside class="side">
+    <div class="brand">Pegasus Cloud<small>PeopleSoft operations, governed by Astute</small></div>
+    <h3>Clients</h3>
+    <nav id="clientList" aria-label="Clients"></nav>
+    <div class="side-foot">
+      <button type="button" id="addClient">Add client</button>
+      <span id="who"></span><span>Signing key <span class="mono" id="keyFp"></span></span>
+      <button type="button" id="logout">Sign out</button>
+    </div>
+  </aside>
+  <main id="main"><div class="empty">Choose a client, or add one.</div></main>
+  <section id="console" class="min" aria-label="Job output">
+    <div class="con-head"><span class="st queued" id="conSt">idle</span><b id="conTitle">Console</b><span class="sp"><button class="sm" id="conToggle" type="button">Expand</button></span></div>
+    <pre id="conOut"></pre>
+  </section>
+</div>
+
+<dialog id="tokDlg"><h2>Add a connector</h2>
+  <p class="help">Run this on the client's jump host (or a small VM that can reach their PeopleSoft servers over SSH). The token works once and expires in 24 hours. Replace the SSH user and key path with the ones the connector should use.</p>
+  <div class="cmd" id="tokCmd"></div>
+  <p class="help">The connector prints the control plane's signing key when it registers. Check it matches: <b class="mono" id="tokFp"></b>. Then start it with <code>python -m pegasus_connector run</code>.</p>
+  <div class="row"><button type="button" id="tokCopy">Copy command</button><button type="button" class="primary" id="tokClose">Done</button></div>
+</dialog>
+
+<dialog id="confDlg"><form id="confForm"><h2 id="confTitle"></h2><p class="help" id="confText"></p>
+  <label id="confLabel">Type the environment name to confirm<input id="confInput" class="mono" autocomplete="off"></label>
+  <div class="row"><button type="button" id="confCancel">Cancel</button><button class="primary" type="submit" id="confGo">Continue</button></div></form></dialog>
+
+<script>
+(function(){
+"use strict";
+var $=function(id){return document.getElementById(id)};
+var S={clients:[],cid:null,detail:null,job:null};
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
+function api(path,opt){opt=opt||{};var o={method:opt.method||"GET",headers:{"X-Requested-With":"pegasus"},credentials:"same-origin"};
+  if(opt.body!==undefined){o.headers["Content-Type"]="application/json";o.body=JSON.stringify(opt.body)}
+  return fetch(path,o).then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(r.status===401&&path!=="/api/login"){showLogin();throw j}if(!r.ok)throw j;return j})})}
+function isPrd(t){return /^(prd|prod|production)$/i.test(String(t||""))}
+function ago(t){if(!t)return"never";var s=Math.round((Date.now()-new Date(t))/1000);return s<60?s+"s ago":s<3600?Math.round(s/60)+" min ago":new Date(t).toLocaleString()}
+
+function showLogin(){$("shell").hidden=true;$("login").hidden=false}
+$("loginForm").addEventListener("submit",function(e){e.preventDefault();
+  api("/api/login",{method:"POST",body:{password:$("loginPw").value,name:$("loginName").value}}).then(function(){$("loginPw").value="";boot()})
+  .catch(function(j){$("loginMsg").innerHTML='<div class="msg">'+esc(j.error||"Sign-in failed.")+'</div>'})});
+$("logout").addEventListener("click",function(){api("/api/logout",{method:"POST",body:{}}).then(showLogin)});
+function boot(){api("/api/session").then(function(s){if(!s.auth)return showLogin();$("login").hidden=true;$("shell").hidden=false;
+  $("who").textContent="Signed in as "+s.who;$("keyFp").textContent=s.signing_key;loadClients()}).catch(showLogin)}
+
+function loadClients(){return api("/api/clients").then(function(j){S.clients=j.clients;
+  $("clientList").innerHTML=j.clients.map(function(c){return '<button type="button" data-cid="'+esc(c.id)+'"'+(c.id===S.cid?' aria-current="true"':'')+'>'+esc(c.name)+
+    '<small>'+c.environments+' environment'+(c.environments===1?'':'s')+' &middot; '+(c.connectors?c.online+' of '+c.connectors+' connector'+(c.connectors===1?'':'s')+' online':'no connector')+'</small></button>'}).join("");
+  if(!S.cid&&j.clients.length) openClient(j.clients[0].id)})}
+$("clientList").addEventListener("click",function(e){var b=e.target.closest("[data-cid]");if(b)openClient(b.dataset.cid)});
+$("addClient").addEventListener("click",function(){var n=prompt("Client name");if(!n)return;
+  api("/api/clients",{method:"POST",body:{name:n}}).then(function(c){S.cid=c.id;loadClients().then(function(){openClient(c.id)})}).catch(function(j){alert(j.error)})});
+
+function openClient(cid){S.cid=cid;[].forEach.call($("clientList").children,function(b){b.setAttribute("aria-current",b.dataset.cid===cid)});
+  return api("/api/clients/"+cid).then(function(d){S.detail=d;render()})}
+function refresh(){if(S.cid) openClient(S.cid); loadClients()}
+
+function render(){var d=S.detail,h="";
+  h+='<h1 style="font-size:26px;margin:0 0 18px">'+esc(d.name)+'</h1><div class="grid2"><div class="panel"><h2>Connectors</h2>';
+  h+='<p class="help">Each connector runs inside the client\'s network and only connects out to Pegasus.</p>';
+  if(!d.connectors.length) h+='<div class="empty">No connector yet.</div>';
+  else{h+='<table><thead><tr><th>Name</th><th>Status</th><th>Version</th><th></th></tr></thead><tbody>';
+    d.connectors.forEach(function(c){h+='<tr><td><b>'+esc(c.name)+'</b><br><span class="det">'+esc(c.hostname)+'</span></td><td><span class="st '+(c.online?'up':'down')+'">'+(c.online?'Online':'Offline')+'</span><br><span class="det">'+esc(ago(c.last_seen))+'</span></td><td class="mono">'+esc(c.version)+'</td><td><button class="link sm" style="color:var(--stop)" data-revoke="'+esc(c.id)+'">Remove</button></td></tr>'});
+    h+='</tbody></table>'}
+  h+='<div class="toolbar" style="margin-top:12px"><button type="button" class="primary" id="newTok">Add connector</button></div></div>';
+  h+='<div class="panel"><h2>Inventory</h2><p class="help">One row per server and domain. Columns: environment, tier, host, ip, role (app, prcs or web), os_user, domain, env_script. Importing replaces this client\'s inventory.</p>'+
+    '<textarea id="invCsv" spellcheck="false" placeholder="environment,tier,host,ip,role,os_user,domain,env_script"></textarea><div id="invMsg"></div><div class="toolbar" style="margin-top:10px"><button type="button" id="invSave">Import</button></div></div></div>';
+  h+='<div class="panel"><h2>Environments</h2>';
+  if(!d.environments.length) h+='<div class="empty">Import an inventory to see environments.</div>';
+  d.environments.forEach(function(e){var cnt=e.servers.length;
+    h+='<div class="env"><div class="env-head"><h3>'+esc(e.name)+'</h3><span class="tag'+(isPrd(e.tier)?' prd':'')+'">'+esc(e.tier||'no tier')+'</span><span class="det">'+cnt+' domain'+(cnt===1?'':'s')+'</span><span class="acts">'+
+      '<button class="sm" data-run="status" data-env="'+esc(e.name)+'">Check status</button><button class="sm go" data-run="start" data-env="'+esc(e.name)+'">Start all</button><button class="sm halt" data-run="stop" data-env="'+esc(e.name)+'">Stop all</button><button class="sm" data-run="restart" data-env="'+esc(e.name)+'">Restart</button><button class="sm" data-run="levels" data-env="'+esc(e.name)+'">Patch levels</button><button class="sm" data-run="ping" data-env="'+esc(e.name)+'">Test connection</button></span></div>'+
+      '<div class="scroll"><table><thead><tr><th>Host</th><th>Role</th><th>Domain</th><th>OS user</th></tr></thead><tbody>'+
+      e.servers.map(function(s){return '<tr><td class="mono">'+esc(s.host)+' <span class="det">'+esc(s.ip)+'</span></td><td>'+esc(s.role)+'</td><td class="mono">'+esc(s.domain)+'</td><td class="mono">'+esc(s.os_user)+'</td></tr>'}).join("")+'</tbody></table></div></div>'});
+  h+='</div><div class="panel"><h2>Recent jobs</h2>';
+  if(!d.jobs.length) h+='<div class="empty">No jobs yet.</div>';
+  else h+='<div class="scroll"><table><thead><tr><th>When</th><th>What</th><th>By</th><th>Result</th></tr></thead><tbody>'+d.jobs.map(function(j){
+    return '<tr><td class="det">'+esc(new Date(j.created_at).toLocaleString())+'</td><td><button class="link" data-job="'+esc(j.id)+'">'+esc(j.title)+'</button>'+(j.note?'<br><span class="det">'+esc(j.note)+'</span>':'')+'</td><td>'+esc(j.created_by)+'</td><td><span class="st '+esc(j.status)+'">'+esc(j.status)+'</span></td></tr>'}).join("")+'</tbody></table></div>';
+  $("main").innerHTML=h+'</div>';
+}
+
+$("main").addEventListener("click",function(e){var t=e.target;
+  if(t.id==="newTok") return api("/api/clients/"+S.cid+"/tokens",{method:"POST",body:{}}).then(function(j){$("tokCmd").textContent=j.command;$("tokFp").textContent=j.fingerprint;$("tokDlg").showModal()});
+  if(t.id==="invSave") return api("/api/clients/"+S.cid+"/inventory",{method:"PUT",body:{csv:$("invCsv").value}}).then(function(j){refresh()}).catch(function(j){$("invMsg").innerHTML='<div class="msg">'+esc(j.error)+'</div>'});
+  var r=t.closest("[data-revoke]"); if(r){ if(confirm("Remove this connector? It stops working immediately and has to be registered again.")) api("/api/connectors/"+r.dataset.revoke,{method:"DELETE"}).then(refresh); return }
+  var jb=t.closest("[data-job]"); if(jb) return watch(jb.dataset.job,jb.textContent);
+  var b=t.closest("[data-run]"); if(b) return runAction(b.dataset.env,b.dataset.run);
+});
+$("tokClose").addEventListener("click",function(){$("tokDlg").close();refresh()});
+$("tokCopy").addEventListener("click",function(){navigator.clipboard&&navigator.clipboard.writeText($("tokCmd").textContent);this.textContent="Copied"});
+
+var confCb=null;
+function confirmBox(title,text,must,cb){confCb={cb:cb,must:must};$("confTitle").textContent=title;$("confText").textContent=text;$("confLabel").hidden=!must;$("confInput").value="";$("confGo").disabled=!!must;$("confDlg").showModal()}
+$("confInput").addEventListener("input",function(){$("confGo").disabled=this.value.trim().toUpperCase()!==String(confCb.must).toUpperCase()});
+$("confCancel").addEventListener("click",function(){$("confDlg").close()});
+$("confForm").addEventListener("submit",function(e){e.preventDefault();var c=confCb;$("confDlg").close();c.cb(c.must?$("confInput").value.trim():null)});
+
+function runAction(env,action){
+  var e=S.detail.environments.filter(function(x){return x.name===env})[0], changes=/start|stop|restart/.test(action);
+  var go=function(typed){api("/api/clients/"+S.cid+"/run",{method:"POST",body:{environment:env,action:action,confirm:typed}})
+    .then(function(j){watch(j.job,action+" "+env);refresh()}).catch(function(j){alert(j.error||"Couldn't start.")})};
+  if(!changes) return go(null);
+  confirmBox(action.charAt(0).toUpperCase()+action.slice(1)+" "+env+"?","The client's connector will run psadmin on "+e.servers.length+" domain"+(e.servers.length===1?"":"s")+" in "+env+", in the safe order, and stop at the first failure.",isPrd(e.tier)?env:null,go);
+}
+
+function watch(id,title){S.job={id:id,next:0};$("conOut").textContent="";$("conTitle").textContent=title;$("console").classList.remove("min");$("conToggle").textContent="Minimize";poll()}
+function poll(){var j=S.job;if(!j)return;
+  api("/api/jobs/"+j.id+"?since="+j.next).then(function(r){if(S.job!==j)return;j.next=r.next;
+    if(r.text){var o=$("conOut");o.textContent+=r.text;o.scrollTop=o.scrollHeight}
+    var st=$("conSt");st.className="st "+r.status;st.textContent=r.status==="queued"?"waiting for connector":r.status;
+    if(r.status==="queued"||r.status==="running") setTimeout(poll,1000);
+    else{var s=(r.steps||[]).filter(function(x){return x.state}).map(function(x){return x.host+" "+x.label.replace(/^Status of /,"")+": "+x.state});
+      if(s.length) $("conOut").textContent+="\n=== "+s.join("\n=== ")+"\n";
+      if(r.note) $("conOut").textContent+="\n"+r.note+"\n"; refresh()}})}
+$("conToggle").addEventListener("click",function(){var m=$("console").classList.toggle("min");this.textContent=m?"Expand":"Minimize"});
+boot();
+})();
+</script>
+</body>
+</html>

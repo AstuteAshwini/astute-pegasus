@@ -1,0 +1,3 @@
+-r connector/requirements.txt
+-r control-plane/requirements.txt
+pytest>=8
