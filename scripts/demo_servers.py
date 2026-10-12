@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path[:0] = [str(ROOT / "connector"), str(ROOT / "tests")]
 
 from pegasus_connector.agent import Agent  # noqa: E402
-from test_end_to_end import FakeServers  # noqa: E402
+from fakes import FakeServers  # noqa: E402
 
 
 class SlowFake(FakeServers):

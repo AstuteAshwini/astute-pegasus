@@ -14,8 +14,8 @@ from urllib.parse import urlparse
 
 import requests
 
-from . import __version__, policy as local_policy, protocol
-from .operations import OperationError, SSHRunner, build
+from . import __version__, patching, policy as local_policy, protocol
+from .operations import OperationError, SSHRunner, build, check_target, parse_levels
 
 API = "/api/connector/v1"
 
@@ -121,6 +121,8 @@ class Agent:
                                "X-Connector-Version": __version__})
         self.seen = collections.deque(maxlen=5000)
         self.stop = threading.Event()
+        self.cache_dir = Path(os.environ.get("PEGASUS_CACHE") or self.config_path.parent / "cache")
+        self.poll_interval = float(os.environ.get("PEGASUS_APPLY_POLL", "5"))
 
     def get(self, path, **kw):
         return self.s.get(f"{self.url}{API}{path}", timeout=kw.pop("timeout", 40), **kw)
@@ -128,16 +130,23 @@ class Agent:
     def post(self, path, body):
         return self.s.post(f"{self.url}{API}{path}", json=body, timeout=30)
 
-    def poll_once(self, wait=25):
-        """One long-poll. Returns True if a job was handled."""
+    def fetch(self, wait=25):
+        """One long-poll. Returns (job, signature) or None."""
         r = self.get("/jobs/next", params={"wait": wait}, timeout=wait + 15)
         if r.status_code == 204:
-            return False
+            return None
         if r.status_code == 401:
             raise PermissionError("The control plane no longer accepts this connector. Register it again.")
         r.raise_for_status()
         j = r.json()
-        self.handle(j["job"], j["signature"])
+        return j["job"], j["signature"]
+
+    def poll_once(self, wait=25):
+        """One long-poll, handling any job in this thread. Returns True if a job was handled."""
+        got = self.fetch(wait)
+        if not got:
+            return False
+        self.handle(*got)
         return True
 
     def handle(self, job, signature):
@@ -151,13 +160,19 @@ class Agent:
             steps = job["params"].get("steps") or []
             if not steps:
                 raise ValueError("job has no steps")
-            plans = [build(st["op"], st, self.runner.user) for st in steps]   # validate everything before running anything
-        except (ValueError, OperationError, KeyError, TypeError) as e:
+            plans = []                                  # validate everything before running anything
+            for st in steps:
+                if st.get("op") in patching.HANDLED:
+                    plans.append(("handler", patching.validate(st["op"], st, self.runner.user)))
+                else:
+                    plans.append(("command", build(st["op"], st, self.runner.user)))
+        except (ValueError, OperationError, KeyError, TypeError, AttributeError) as e:
             sink(f"Refused by the connector: {e}\n")
             sink.flush({"done": True, "status": "rejected", "results": []})
             return
-        results, ok = [], True
+        results, ok, failed_at = [], True, None
         stop_on_failure = bool(job["params"].get("stop_on_failure"))
+        ctx = patching.Context(self.runner, self.config_path, self.cache_dir, job["id"], self.poll_interval)
         flusher_stop = threading.Event()
 
         def flusher():
@@ -166,26 +181,41 @@ class Agent:
 
         threading.Thread(target=flusher, daemon=True).start()
         try:
-            for n, (st, (cmd, stdin)) in enumerate(zip(steps, plans), start=1):
-                t = st["target"]
-                sink(f"\n--- [{n}/{len(steps)}] {st.get('label') or st['op']} on {t.get('host') or t.get('ip')}\n")
-                started, captured = time.time(), []
+            for n, (st, (kind, plan)) in enumerate(zip(steps, plans), start=1):
+                t = st.get("target") or {}
+                where = f" on {t.get('host') or t.get('ip')}" if t else ""
+                if failed_at is not None and not st.get("always"):
+                    continue                              # skipped after an earlier failure
+                sink(f"\n--- [{n}/{len(steps)}] {st.get('label') or st['op']}{where}\n")
+                started, captured, data = time.time(), [], None
 
                 def out(text, captured=captured):
                     captured.append(text)
                     sink(text)
                 try:
-                    code = self.runner.run(_target(st), cmd, stdin, on_output=out)
+                    if kind == "handler":
+                        code, data = patching.run(st["op"], plan, ctx, out)
+                    else:
+                        cmd, stdin = plan
+                        code = self.runner.run(check_target(st["target"]), cmd, stdin, on_output=out)
+                        if st["op"] == "levels":
+                            data = parse_levels("".join(captured))
                 except Exception as e:                            # connection refused, auth failure, timeout...
                     code = None
                     out(f"Error: {e}\n")
-                results.append({"step": n - 1, "exit_code": code, "seconds": round(time.time() - started, 1),
-                                "output": "".join(captured)[-8000:]})
-                if code != 0:
+                r = {"step": n - 1, "exit_code": code, "seconds": round(time.time() - started, 1),
+                     "output": "".join(captured)[-8000:]}
+                if data is not None:
+                    r["data"] = data
+                results.append(r)
+                if code != 0 and not st.get("ignore_failure"):
                     ok = False
-                    if stop_on_failure:
-                        sink("Stopping here because that step failed.\n")
-                        break
+                    if stop_on_failure and failed_at is None and not st.get("independent"):
+                        failed_at = n
+                        if any(x.get("always") for x in steps[n:]):
+                            sink("That step failed. Skipping the rest, except the steps that always run.\n")
+                        else:
+                            sink("Stopping here because that step failed.\n")
         finally:
             flusher_stop.set()
         sink.flush({"done": True, "status": "succeeded" if ok else "failed", "results": results})
@@ -201,21 +231,34 @@ class Agent:
         log(f"Pegasus connector {__version__} for {self.cfg.get('client_name') or self.cfg['tenant']} "
             f"-> {self.url} (key {protocol.fingerprint(self.cfg['signing_key'])})")
         threading.Thread(target=self._heartbeat, daemon=True).start()
+        workers = max(1, int(os.environ.get("PEGASUS_WORKERS", "4")))
+        slots = threading.BoundedSemaphore(workers)   # several jobs at once, e.g. a status check during a download
+
+        def work(job, sig):
+            try:
+                self.handle(job, sig)
+            finally:
+                slots.release()
         backoff = 1
         while not self.stop.is_set():
+            if not slots.acquire(timeout=1):
+                continue                       # every worker is busy
             try:
-                self.poll_once()
-                backoff = 1
+                got = self.fetch()
             except PermissionError as e:
+                slots.release()
                 log(str(e))
                 return 2
             except requests.RequestException as e:
+                slots.release()
                 log(f"Can't reach the control plane ({e.__class__.__name__}); retrying in {backoff}s")
                 self.stop.wait(backoff)
                 backoff = min(backoff * 2, 60)
+                continue
+            backoff = 1
+            if got:
+                threading.Thread(target=work, args=got, daemon=True).start()
+            else:
+                slots.release()
         return 0
 
-
-def _target(step):
-    from .operations import check_target
-    return check_target(step["target"])

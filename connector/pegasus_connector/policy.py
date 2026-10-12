@@ -3,8 +3,8 @@
 policy.json sits next to config.json. Every field is optional:
 
 {
-  "read_only": false,                       # true: only ping, status and patch-level checks
-  "allowed_operations": ["ping", "domain.status", "levels", "domain.start", "domain.stop"],
+  "read_only": false,                       # true: only checks (ping, status, levels, catalog, host.idle, access.check)
+  "allowed_operations": [...],              # default: every operation in operations.OPERATIONS
   "allowed_hosts": [],                      # empty means any host; otherwise names or IPs
   "blocked_hosts": ["hrprddb01"],
   "paused": false                           # true: accept nothing at all (a kill switch that keeps the connector online)
@@ -40,7 +40,9 @@ def check(policy, job):
             raise ValueError(f"local policy doesn't allow '{op}'")
         if policy.get("read_only") and op not in READ_ONLY_OPERATIONS:
             raise ValueError(f"this connector is read-only; '{op}' changes servers")
-        t = step.get("target") or {}
+        t = step.get("target")
+        if not t:
+            continue                  # catalog and downloads run on the connector itself, not on a server
         names = {str(t.get("host") or ""), str(t.get("ip") or "")} - {""}
         allowed = set(policy.get("allowed_hosts") or [])
         if allowed and not names & allowed:

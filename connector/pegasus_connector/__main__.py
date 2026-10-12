@@ -4,12 +4,15 @@
          --ssh-user opc --ssh-key /home/opc/.ssh/id_rsa
   python -m pegasus_connector run
   python -m pegasus_connector status
+  python -m pegasus_connector oracle-login --user you@example.com [--jms-token <token>]
 """
 import argparse
+import getpass
+import os
 import sys
 from pathlib import Path
 
-from . import __version__, protocol
+from . import __version__, oracle, protocol
 from .agent import Agent, default_config_dir, load_config, register
 from .policy import load as load_policy
 
@@ -26,6 +29,11 @@ def main(argv=None):
     r.add_argument("--name", help="name shown in Pegasus (default: this machine's host name)")
     sub.add_parser("run", help="run the connector (foreground)")
     sub.add_parser("status", help="show this connector's registration and local policy")
+    o = sub.add_parser("oracle-login", help="save the Oracle Support account this connector downloads patches with")
+    o.add_argument("--user", help="Oracle Support (MOS) user name; the password is asked for, or read from "
+                                  "PEGASUS_MOS_PASSWORD")
+    o.add_argument("--jms-token", help="Java Management Service download token, for OTN-licensed JDK downloads")
+    o.add_argument("--forget", action="store_true", help="remove the saved Oracle account and token")
     a = p.parse_args(argv)
 
     if a.cmd == "register":
@@ -45,6 +53,8 @@ def main(argv=None):
     if not Path(a.config).exists():
         print(f"No configuration at {a.config}. Run 'register' first.", file=sys.stderr)
         return 1
+    if a.cmd == "oracle-login":
+        return oracle_login(a)
     if a.cmd == "status":
         cfg = load_config(a.config)
         pol = load_policy(Path(a.config).parent / "policy.json")
@@ -52,8 +62,41 @@ def main(argv=None):
         print(f"Control plane {cfg['url']}, signing key {protocol.fingerprint(cfg['signing_key'])}")
         print(f"SSH as {cfg['ssh']['user']} with {cfg['ssh']['key_path']}")
         print(f"Local policy: {pol}")
+        sec = oracle.load_secrets(a.config)
+        print(f"Oracle Support account: {sec.get('mos_user') or 'not set (run oracle-login)'}"
+              f"{'; Java download token set' if sec.get('jms_token') else ''}")
         return 0
     return Agent(a.config).run_forever()
+
+
+def oracle_login(a):
+    if a.forget:
+        oracle.save_secrets(a.config, {})
+        print("Removed the saved Oracle account and token.")
+        return 0
+    sec = oracle.load_secrets(a.config)
+    if a.user:
+        pw = os.environ.get("PEGASUS_MOS_PASSWORD") or getpass.getpass(f"Oracle Support password for {a.user}: ")
+        try:
+            oracle.MOSClient(a.user, pw).login()
+        except oracle.MOSError as e:
+            print(e, file=sys.stderr)
+            return 1
+        except Exception as e:
+            print(f"Couldn't reach Oracle Support from this machine: {e}", file=sys.stderr)
+            return 1
+        sec.update(mos_user=a.user, mos_password=pw)
+        print(f"Signed in to Oracle Support as {a.user}.")
+    if a.jms_token:
+        sec["jms_token"] = a.jms_token.strip()
+        print("Saved the Java download token.")
+    if not a.user and not a.jms_token:
+        print("Give --user and/or --jms-token.", file=sys.stderr)
+        return 1
+    oracle.save_secrets(a.config, sec)
+    print(f"Saved to {oracle.secrets_path(a.config)} (readable only by this account). The control plane never "
+          "receives it.")
+    return 0
 
 
 if __name__ == "__main__":

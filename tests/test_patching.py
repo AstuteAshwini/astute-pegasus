@@ -1,0 +1,298 @@
+"""Patching end to end: read levels, look up Oracle's latest, download and stage, Jira approval, apply, and SSH keys.
+
+Oracle (Java releases, Oracle Support) and Jira are replaced with in-memory fakes; everything else is real: the
+control plane over HTTP, signed jobs, the connector's validation, and its scripts run against simulated servers."""
+import base64
+import os
+import time
+from pathlib import Path
+
+import pytest
+
+from conftest import drain, wait_job
+from pegasus_cloud import app as cp, jira as jiramod
+from pegasus_connector import oracle, protocol
+from pegasus_connector.operations import parse_levels
+
+CATALOG = {
+    "java": {"21": {"version": "21.0.8", "date": "2025-07-15"}},
+    "java_dates": {"21.0.5": "2024-10-15"},
+    "oracle": {"weblogic": {"stamp": "251015", "psu_patch": "38000001", "spb_patch": "38000002",
+                            "released": "2025-10-21", "released_by_stamp": {"250705": "2025-07-15",
+                                                                            "251015": "2025-10-21"}}},
+}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def fake_oracle():
+    real = (oracle.catalog, oracle.download_patch, oracle.download_jdk)
+
+    def catalog(config_path, cache_dir, majors, versions, refresh=False, log=print):
+        assert majors == ["21"] and "21.0.5" in versions
+        return dict(CATALOG, checked="2025-10-22T00:00:00+00:00")
+
+    def download_patch(config_path, cache_dir, patch, platform, filt, log, mos=None):
+        d = Path(cache_dir) / patch
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"p{patch}_141200_Generic.zip").write_bytes(b"zip " + patch.encode())
+        log(f"Patch {patch}: downloaded\n")
+        return sorted(d.iterdir()), mos
+
+    def download_jdk(config_path, cache_dir, version, log):
+        d = Path(cache_dir) / f"jdk-{version}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"jdk-{version}_linux-x64_bin.tar.gz").write_bytes(b"tar " + version.encode())
+        return sorted(d.iterdir())
+
+    oracle.catalog, oracle.download_patch, oracle.download_jdk = catalog, download_patch, download_jdk
+    yield
+    oracle.catalog, oracle.download_patch, oracle.download_jdk = real
+
+
+class FakeJira:
+    """Stands in for jira.Jira: tickets live in a dict; tests set their status and approver."""
+    tickets, comments, transitions, n = {}, [], [], 0
+
+    def __init__(self, cfg, token):
+        assert token == "jira-secret-token"
+        self.cfg = cfg
+
+    def browse(self, key):
+        return f"https://example.atlassian.net/browse/{key}"
+
+    def create(self, summary, description, window=None):
+        FakeJira.n += 1
+        key = f"CHG-{FakeJira.n}"
+        FakeJira.tickets[key] = {"summary": summary, "description": description, "state": "pending", "approver": ""}
+        return key
+
+    def transition(self, key, name):
+        if name:
+            FakeJira.transitions.append((key, name))
+
+    def approval_state(self, key):
+        t = FakeJira.tickets[key]
+        return t["state"], {"approved": "Approved", "rejected": "Declined"}.get(t["state"], "Waiting for approval"), \
+            t["approver"]
+
+    def comment(self, key, text):
+        FakeJira.comments.append((key, text))
+
+    def myself(self):
+        return {"displayName": "Pegasus bot"}
+
+    def project(self):
+        return {"name": "Change management", "issueTypes": [{"name": "Change"}]}
+
+
+@pytest.fixture(scope="module")
+def jira(env):
+    real = jiramod.Jira
+    jiramod.Jira = FakeJira
+    yield FakeJira
+    jiramod.Jira = real
+
+
+def url(e, path):
+    return e["url"] + path.replace("{cid}", e["cid"])
+
+
+def patching(e, refresh=False):
+    r = e["admin"].get(url(e, "/api/clients/{cid}/patching"), params={"environment": "HRDEV", "refresh": refresh or ""})
+    assert r.ok, r.text
+    return r.json()
+
+
+def item(view, host, comp):
+    h = next(h for h in view["hosts"] if h["host"] == host)
+    return next(i for i in h["items"] if i["component"] == comp)
+
+
+def test_parse_levels_reads_owners_and_patches():
+    from fakes import levels_output
+    lv = parse_levels("noise from .bashrc\n" + levels_output())
+    assert lv["jdk"] == {"version": "21.0.5", "home": "/u01/pt/jdk"}
+    assert lv["weblogic"]["patches"][0]["id"] == "37000001"
+    assert lv["owners"]["/u01/pt/bea"] == "psadm1"
+
+
+def test_check_levels_then_catalog_marks_updates_needed(env):
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/check"), json={"environment": "HRDEV"})
+    assert r.ok, r.text
+    assert drain(env) == 2                          # the levels job, then the follow-up Oracle lookup
+    j = wait_job(env, r.json()["job"])
+    assert j["status"] == "succeeded" and j["followup"]
+    assert wait_job(env, j["followup"])["status"] == "succeeded"
+    v = patching(env)
+    assert [h["host"] for h in v["hosts"]] == ["hrdevweb01", "hrdevapp01"]
+    jdk, wls = item(v, "hrdevapp01", "jdk"), item(v, "hrdevapp01", "weblogic")
+    assert jdk["status"] == "needed" and jdk["key"] == "21.0.8|java|" and "Oct2024 CPU" in jdk["installed"]
+    assert wls["status"] == "needed" and wls["key"] == "38000002|2000P|" and "Jul2025" in wls["installed"]
+    assert v["outstanding"] == 2 and not v["approval"]["required"]
+
+
+def test_stage_downloads_once_and_copies_to_every_server(env):
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/stage"), json={"environment": "HRDEV", "all": True})
+    assert r.ok, r.text
+    drain(env)
+    j = wait_job(env, r.json()["job"])
+    assert j["status"] == "succeeded", j["text"]
+    assert "staged and verified" in j["text"]
+    staged = [k for k in env["fake"].files if k[1].startswith("/u01/app/oracle/staging/cpu/")]
+    assert len(staged) == 4                         # 2 updates x 2 servers
+    v = patching(env)
+    assert item(v, "hrdevweb01", "weblogic")["staged"]["dir"] == "/u01/app/oracle/staging/cpu/p38000002"
+    # a second run finds the files already there and skips the copy
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/stage"), json={"environment": "HRDEV", "all": True})
+    drain(env)
+    assert "already staged" in wait_job(env, r.json()["job"])["text"]
+
+
+def enable_jira(env):
+    r = env["admin"].put(url(env, "/api/clients/{cid}/jira"), json={
+        "enabled": True, "url": "https://example.atlassian.net", "user": "bot@beastute.com", "project": "CHG",
+        "token": "jira-secret-token", "require": "all"})
+    assert r.ok, r.text
+    raw = cp.connect().execute("SELECT value FROM settings WHERE key='jira_token'").fetchone()[0]
+    assert "jira-secret-token" not in raw          # stored encrypted
+
+
+def test_apply_needs_an_approved_ticket_from_someone_else(env, jira):
+    enable_jira(env)
+    v = patching(env)
+    assert v["approval"]["required"]
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"), json={"environment": "HRDEV", "scope": "all"})
+    assert r.status_code == 409 and r.json()["need_approval"]
+    r = env["admin"].post(url(env, "/api/clients/{cid}/change-requests"),
+                          json={"environment": "HRDEV", "scope": "all", "notes": "October CPU"})
+    assert r.ok, r.text
+    cr = r.json()["request"]
+    ticket = jira.tickets[cr["jira_key"]]
+    assert "hrdevweb01" in ticket["description"] and "WebLogic" in ticket["summary"]
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"),
+                          json={"environment": "HRDEV", "scope": "all", "change_request": cr["id"]})
+    assert r.status_code == 409 and "isn't approved yet" in r.json()["error"]
+    ticket.update(state="self_approved")
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"),
+                          json={"environment": "HRDEV", "scope": "all", "change_request": cr["id"]})
+    assert r.status_code == 409 and "someone else" in r.json()["error"]
+    ticket.update(state="approved", approver="Change Manager")
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"),
+                          json={"environment": "HRDEV", "scope": "all", "change_request": cr["id"]})
+    assert r.ok, r.text
+    jid = r.json()["job"]
+    # the approval is used up: a second apply with the same ticket is refused
+    r2 = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"),
+                           json={"environment": "HRDEV", "scope": "all", "change_request": cr["id"]})
+    assert r2.status_code == 409
+    env["fake"].calls.clear()
+    drain(env)
+    j = wait_job(env, jid)
+    assert j["status"] == "succeeded", j["text"]
+    ops = [s["op"] for s in j["steps"]]
+    assert ops.index("domain.stop") < ops.index("host.idle") < ops.index("patch.apply") < ops.index("domain.start")
+    labels = [s["label"] for s in j["steps"] if s["op"] == "patch.apply"]
+    assert labels[0].startswith("Apply JDK") and labels[-1].startswith("Apply WebLogic")   # JDK first
+    v = patching(env)
+    assert item(v, "hrdevapp01", "jdk")["status"] == "ok" and item(v, "hrdevapp01", "weblogic")["status"] == "ok"
+    for _ in range(50):
+        if any("SUCCEEDED" in c for _, c in jira.comments):
+            break
+        time.sleep(0.05)
+    assert any(k == cr["jira_key"] and "SUCCEEDED" in c for k, c in jira.comments)
+    crs = {c["jira_key"]: c for c in v["change_requests"]}
+    assert crs[cr["jira_key"]]["status"] == "applied"
+
+
+def test_failed_apply_still_starts_domains(env, jira):
+    for k in [k for k in env["fake"].applied]:
+        env["fake"].applied.discard(k)
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/check"), json={"environment": "HRDEV"})
+    drain(env)
+    assert patching(env)["outstanding"] == 2
+    r = env["admin"].post(url(env, "/api/clients/{cid}/change-requests"), json={"environment": "HRDEV", "scope": "all"})
+    cr = r.json()["request"]
+    jira.tickets[cr["jira_key"]].update(state="approved", approver="Change Manager")
+    env["fake"].fail_apply = True
+    try:
+        r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"),
+                              json={"environment": "HRDEV", "scope": "all", "change_request": cr["id"]})
+        assert r.ok, r.text
+        env["fake"].calls.clear()
+        drain(env)
+        j = wait_job(env, r.json()["job"])
+    finally:
+        env["fake"].fail_apply = False
+    assert j["status"] == "failed"
+    applies = [s for s in j["steps"] if s["op"] == "patch.apply"]
+    assert applies[0]["done"] and not any(s["done"] for s in applies[1:])      # stopped at the first failure
+    starts = [s for s in j["steps"] if s["op"] == "domain.start"]
+    assert starts and all(s["done"] for s in starts)                            # domains started again anyway
+    assert patching(env)["change_requests"][0]["status"] == "failed"
+
+
+def test_plan_change_after_approval_needs_a_new_ticket(env, jira):
+    env["fake"].applied.add(("hrdevweb01", "jdk"))                       # web is already on the new JDK
+    env["admin"].post(url(env, "/api/clients/{cid}/patching/check"), json={"environment": "HRDEV"})
+    drain(env)
+    assert item(patching(env), "hrdevweb01", "jdk")["status"] == "ok"
+    r = env["admin"].post(url(env, "/api/clients/{cid}/change-requests"),
+                          json={"environment": "HRDEV", "scope": "jdk~21.0.8|java|"})
+    assert r.ok, r.text
+    cr = r.json()["request"]
+    assert cr["hosts"] == ["hrdevapp01"]
+    jira.tickets[cr["jira_key"]].update(state="approved", approver="Change Manager")
+    env["fake"].applied.discard(("hrdevweb01", "jdk"))                   # web needs it again: the plan grows
+    env["admin"].post(url(env, "/api/clients/{cid}/patching/check"), json={"environment": "HRDEV"})
+    drain(env)
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"),
+                          json={"environment": "HRDEV", "scope": "jdk~21.0.8|java|", "change_request": cr["id"]})
+    assert r.status_code == 409 and "plan has changed" in r.json()["error"]
+    cp.connect().execute("DELETE FROM staged WHERE host_key='10.0.1.11'")
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"),
+                          json={"environment": "HRDEV", "scope": "jdk~21.0.8|java|", "change_request": cr["id"]})
+    assert r.status_code == 409 and "Download these first" in r.json()["error"]
+
+
+def test_connector_rejects_unsafe_apply_even_when_signed(env):
+    from test_end_to_end import TARGET, handle_and_capture, signed
+    base = {"op": "patch.apply", "target": TARGET, "component": "weblogic", "owner": "psadm1",
+            "home": "/u01/pt/bea", "staged": {"dir": "/u01/app/oracle/staging/cpu/p1", "files": ["p1.zip"]}}
+    for bad in ({"owner": "root"}, {"home": "/u01"}, {"home": "/u01/pt/bea; rm -rf /"},
+                {"staged": {"dir": "/tmp/x", "files": ["../../etc/passwd"]}}, {"component": "kernel"}):
+        job, sig = signed(env, [dict(base, **bad)])
+        assert handle_and_capture(env, job, sig)["status"] == "rejected", bad
+    job, sig = signed(env, [{"op": "patch.download", "keys": ["1234; curl evil|226P|"]}])
+    assert handle_and_capture(env, job, sig)["status"] == "rejected"
+
+
+def ed25519_key(comment="jane@laptop"):
+    blob = b"\x00\x00\x00\x0bssh-ed25519" + b"\x00\x00\x00\x20" + os.urandom(32)
+    return f"ssh-ed25519 {base64.b64encode(blob).decode()} {comment}"
+
+
+def test_ssh_access_add_check_remove(env):
+    key = ed25519_key()
+    r = env["admin"].post(url(env, "/api/clients/{cid}/access"),
+                          json={"action": "add", "key": key, "account": "psadm2", "environments": ["HRDEV"],
+                                "note": "Jane, DBA"})
+    assert r.ok, r.text
+    drain(env)
+    j = wait_job(env, r.json()["job"])
+    assert j["status"] == "succeeded" and j["text"].count("added") == 2
+    reg = env["admin"].get(url(env, "/api/clients/{cid}/access")).json()["keys"]
+    assert len(reg) == 1 and reg[0]["servers"] == ["hrdevapp01", "hrdevweb01"] and reg[0]["account"] == "psadm2"
+    r = env["admin"].post(url(env, "/api/clients/{cid}/access"), json={"action": "remove", "record": reg[0]["id"]})
+    drain(env)
+    assert wait_job(env, r.json()["job"])["status"] == "succeeded"
+    assert env["admin"].get(url(env, "/api/clients/{cid}/access")).json()["keys"] == []
+    r = env["admin"].post(url(env, "/api/clients/{cid}/access"),
+                          json={"action": "add", "key": key, "account": "root", "environments": ["HRDEV"]})
+    assert r.status_code == 400
+    r = env["admin"].post(url(env, "/api/clients/{cid}/access"),
+                          json={"action": "add", "key": key, "environments": ["HRPRD"]})
+    assert r.status_code == 409 and r.json()["need_confirm"]
+
+
+def test_protocol_version_unchanged():
+    assert protocol.PROTOCOL_VERSION == 1

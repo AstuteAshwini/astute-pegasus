@@ -38,28 +38,53 @@ fi
 if [ -n "$TUXDIR" ] && [ -x "$TUXDIR/bin/tmadmin" ]; then
   echo "PL|tuxedo|$("$TUXDIR/bin/tmadmin" -v 2>&1 | grep -i -m1 'version' | tr '|' ' ')|$TUXDIR"
 fi
+for d in "$JH" "$TUXDIR"; do [ -n "$d" ] && [ -d "$d" ] && echo "PL|owner|$d|$(stat -c %U "$d" 2>/dev/null)"; done
+for C in "$(dirname "$PS_HOME" 2>/dev/null)"/oracle-client/*/ /u01/app/oracle/product/pt/oracle-client/*/; do
+  C="${C%/}"; [ -x "$C/OPatch/opatch" ] || continue
+  echo "PL|owner|$C|$(stat -c %U "$C" 2>/dev/null)"
+  o=$(cd "$C" && ORACLE_HOME="$C" "$C/OPatch/opatch" lspatches -oh "$C" 2>&1)
+  ru=$(printf '%s\n' "$o" | grep -o -m1 'Release Update : [0-9.]*' | grep -o '[0-9.]*$')
+  echo "PL|dbclient|$(basename "$C")|$ru|$C"
+  break
+done
 W=""
 for c in "__WLH__" "$BEA_HOME" "$ORACLE_HOME" "$(dirname "$PS_HOME" 2>/dev/null)/bea"; do
   if [ -n "$c" ] && [ -x "$c/OPatch/opatch" ] && [ -d "$c/wlserver" ]; then W="$c"; break; fi
 done
 if [ -n "$W" ]; then
   echo "PL|wlver|$(grep -o 'name="WebLogic Server" version="[^"]*"' "$W/inventory/registry.xml" 2>/dev/null | head -1 | sed 's/.*version="//; s/"$//')|$W"
+  echo "PL|owner|$W|$(stat -c %U "$W" 2>/dev/null)"
   export ORACLE_HOME="$W"
-  out=$(cd "$W" && "$W/OPatch/opatch" lspatches -oh "$W" 2>&1)
+  unset _JAVA_OPTIONS JDK_JAVA_OPTIONS
+  ok=""
+  for args in "-jdk $JH" "-jre $JH" ""; do
+    [ -z "$JH" ] && [ -n "$args" ] && continue
+    out=$(cd "$W" && "$W/OPatch/opatch" lspatches $args -oh "$W" 2>&1)
+    if printf '%s\n' "$out" | grep -qE '^[0-9]+;|OPatch succeeded'; then ok=1; break; fi
+  done
   printf '%s\n' "$out" | grep -E '^[0-9]+;' | while IFS=';' read -r id desc; do echo "PL|wlpatch|$id|$desc"; done
+  [ -n "$ok" ] || echo "PL|wlerr|$(printf '%s' "$out" | grep -v '^[[:space:]]*$' | tail -8 | tr '\n|' '  ')"
 fi
 true
 '''
 
-# operation name -> (needs a domain action?, read-only?)
 OPERATIONS = {
     "ping": "Connect and report host name, user and uptime",
     "domain.status": "psadmin status for one domain",
     "domain.start": "psadmin start/boot for one domain",
     "domain.stop": "psadmin stop/shutdown for one domain",
-    "levels": "Read PeopleTools, JDK, Tuxedo and WebLogic levels",
+    "levels": "Read PeopleTools, JDK, Tuxedo, WebLogic and Database client levels",
+    "catalog": "Look up the latest JDK, WebLogic, Tuxedo and Database client patches (Oracle)",
+    "patch.download": "Download patches into the connector's cache (Oracle Support, Oracle Java downloads)",
+    "patch.stage": "Copy downloaded patches to a server's staging folder",
+    "host.idle": "Check no WebLogic or Tuxedo processes are running",
+    "patch.apply": "Back up a home and apply a staged patch as its owner",
+    "access.check": "Check for a person's SSH public key in an account",
+    "access.add": "Add a person's SSH public key to an account",
+    "access.remove": "Remove a person's SSH public key from an account",
 }
-READ_ONLY_OPERATIONS = {"ping", "domain.status", "levels"}
+# allowed when local policy is read_only: nothing here changes a server
+READ_ONLY_OPERATIONS = {"ping", "domain.status", "levels", "catalog", "host.idle", "access.check"}
 
 
 class OperationError(Exception):
@@ -110,6 +135,39 @@ def run_as(t, ssh_user, inner):
     return f"bash -lc {shlex.quote(inner)}"
 
 
+def parse_levels(text):
+    """The PL| lines the levels script prints, as a dict the control plane stores and compares."""
+    r = {"pt": "", "jdk": None, "tuxedo": None, "weblogic": None, "dbclient": None}
+    patches = []
+    for line in (text or "").splitlines():
+        p = line.strip().split("|")
+        if p[0] != "PL" or len(p) < 2:
+            continue
+        if p[1] == "pt" and len(p) > 2:
+            r["pt"] = p[2]
+        elif p[1] == "jdk" and len(p) > 3 and p[2]:
+            r["jdk"] = {"version": p[2], "home": p[3]}
+        elif p[1] == "tuxedo" and len(p) > 3:
+            v = re.search(r"Version\s+([\d.]+)", p[2])
+            lvl = re.search(r"Patch Level\s+(\d+)", p[2], re.I)
+            r["tuxedo"] = {"version": v.group(1) if v else "", "level": lvl.group(1) if lvl else "0",
+                           "raw": p[2].strip(), "home": p[3]}
+        elif p[1] == "wlver" and len(p) > 3:
+            r["weblogic"] = {"version": p[2], "home": p[3], "patches": []}
+        elif p[1] == "wlpatch" and len(p) > 2:
+            patches.append({"id": p[2], "desc": "|".join(p[3:]).strip()})
+        elif p[1] == "dbclient" and len(p) > 4:
+            r["dbclient"] = {"version": p[2], "ru": p[3], "home": p[4]}
+        elif p[1] == "owner" and len(p) > 3:
+            r.setdefault("owners", {})[p[2]] = p[3]
+        elif p[1] in ("nojdk", "wlerr") and len(p) > 2:
+            r.setdefault("warnings", []).append(
+                ("OPatch couldn't list WebLogic patches: " if p[1] == "wlerr" else "") + p[2].strip())
+    if r["weblogic"] is not None:
+        r["weblogic"]["patches"] = patches
+    return r
+
+
 def build(op, params, ssh_user):
     """(command, stdin) for an operation. Raises OperationError for anything not allowed."""
     if op not in OPERATIONS:
@@ -126,9 +184,9 @@ def build(op, params, ssh_user):
         return run_as(t, ssh_user, COMMANDS[t["role"]][action].format(d=shlex.quote(t["domain"]))), None
     if op == "levels":
         script = LEVELS_SCRIPT.replace("__JH__", t["java_home"]).replace("__WLH__", t["weblogic_home"])
-        wrapper = "bash -s"
+        wrapper = "bash -l -s"
         if t["os_user"] and t["os_user"] != ssh_user:
-            wrapper = f"sudo -n -iu {shlex.quote(t['os_user'])} bash -s"
+            wrapper = f"sudo -n -iu {shlex.quote(t['os_user'])} bash -l -s"
         if t["env_script"]:
             script = f". {shlex.quote(t['env_script'])} >/dev/null 2>&1\n" + script
         return wrapper, script
@@ -142,7 +200,8 @@ class SSHRunner:
         self.user, self.key_path, self.passphrase = user, key_path, passphrase
         self.strict, self.known_hosts = strict_host_keys, known_hosts
 
-    def run(self, target, command, stdin=None, on_output=None, timeout=900):
+    def run(self, target, command, stdin=None, on_output=None, timeout=900, stdin_path=None):
+        """Run one command. stdin: text to send; stdin_path: a local file to stream (patch staging)."""
         c = paramiko.SSHClient()
         c.load_system_host_keys()
         if self.known_hosts:
@@ -157,6 +216,11 @@ class SSHRunner:
             chan.exec_command(command)
             if stdin is not None:
                 chan.sendall(stdin.encode())
+                chan.shutdown_write()
+            elif stdin_path:
+                with open(stdin_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(256 * 1024), b""):
+                        chan.sendall(chunk)
                 chan.shutdown_write()
             deadline = time.time() + timeout
             while True:

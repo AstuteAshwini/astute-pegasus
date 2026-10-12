@@ -1,13 +1,17 @@
-"""Pegasus control plane (milestone 1).
+"""Pegasus control plane.
 
 Hosted web app and job queue. Clients' connectors call in over HTTPS; this service never connects to a client.
 
-* Clients (tenants), their connectors, their server inventory and jobs live in a SQLite database for now
-  (milestone 2 moves to a managed database and adds per-user SSO and roles).
-* Every job handed to a connector is signed with this service's Ed25519 key (protocol.py).
+* People sign in with an email, a password and an authenticator-app code. Each has a role (admin, operator or
+  viewer) and is either Astute staff (every client) or a client's own user (that client only).
+* Clients (tenants), their connectors, server inventory, jobs, patch levels, Jira change requests and the SSH key
+  register live in a SQLite database for now (a managed database comes with hosting).
+* Every job handed to a connector is signed with this service's Ed25519 key (protocol.py). Connectors run only the
+  operations they know, built from their own templates; nothing here is ever executed as a shell command.
 """
 import csv
 import datetime as dt
+import functools
 import hashlib
 import hmac
 import io
@@ -21,13 +25,14 @@ import time
 import uuid
 from pathlib import Path
 
-from flask import Flask, g, jsonify, request, send_from_directory, session
+from flask import Flask, abort, g, jsonify, request, send_from_directory, session
 
-from . import __version__, protocol
+from . import __version__, auth, evaluate as ev, jira as jiramod, protocol, sshkeys
 
 DATA_DIR = Path(os.environ.get("PEGASUS_DATA", Path(__file__).resolve().parent.parent / "data"))
 DB_PATH = DATA_DIR / "pegasus.db"
 KEY_PATH = DATA_DIR / "signing_key.pem"
+# Only needed to create the first admin account. Once someone has signed in it's no longer used.
 ADMIN_PASSWORD = os.environ.get("PEGASUS_ADMIN_PASSWORD", "")
 PUBLIC_URL = os.environ.get("PEGASUS_PUBLIC_URL", "")
 # true: the web page and admin API answer only requests made on this machine directly; anything arriving through a
@@ -39,21 +44,27 @@ QUEUE_TTL = 15 * 60            # a queued job nobody picks up within this expire
 SIGNED_TTL = 10 * 60           # a connector must receive a signed job within this window
 ONLINE_WINDOW = 90             # seconds since last contact to count as online
 LOST_AFTER = 10 * 60           # a running job whose connector has been silent this long is marked failed
+SESSION_HOURS = 12             # sign in again after this
+LOCK_AFTER, LOCK_MINUTES = 5, 15
+DEFAULT_STAGING = "/u01/app/oracle/staging/cpu"
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 SAFE_PATH = re.compile(r"^[A-Za-z0-9_./~\-]{1,255}$")
 SAFE_HOST = re.compile(r"^[A-Za-z0-9_.\-]{1,253}$")
+SAFE_ABS_PATH = re.compile(r"^/[A-Za-z0-9_./\-]{1,250}$")
 ROLES = ("app", "prcs", "web")
 START_ORDER, STOP_ORDER = ["app", "prcs", "web"], ["web", "prcs", "app"]
 SERVER_COLS = ["environment", "tier", "host", "ip", "role", "os_user", "domain", "env_script", "ssh_port"]
+CR_OPEN = ("pending", "approved", "applying")
 
 app = Flask(__name__, static_folder="static")
-app.secret_key = os.environ.get("PEGASUS_SECRET") or secrets.token_hex(32)
-app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Strict",
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Strict", SESSION_COOKIE_NAME="pegasus",
                   SESSION_COOKIE_SECURE=os.environ.get("PEGASUS_COOKIE_SECURE", "true").lower() != "false",
-                  MAX_CONTENT_LENGTH=2 * 1024 * 1024)
+                  PERMANENT_SESSION_LIFETIME=dt.timedelta(hours=SESSION_HOURS), MAX_CONTENT_LENGTH=2 * 1024 * 1024)
 _key_lock = threading.Lock()
 _signing_key = None
+_box = None
+_finalize_lock = threading.Lock()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at REAL NOT NULL);
@@ -71,7 +82,32 @@ CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, client_id TEXT NOT NULL, e
 CREATE TABLE IF NOT EXISTS job_events (job_id TEXT NOT NULL, seq INTEGER NOT NULL, text TEXT, at REAL NOT NULL,
   PRIMARY KEY (job_id, seq));
 CREATE INDEX IF NOT EXISTS jobs_queue ON jobs (client_id, status, created_at);
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE COLLATE NOCASE, name TEXT,
+  pw_hash TEXT NOT NULL, role TEXT NOT NULL, client_id TEXT, totp_secret TEXT, totp_last INTEGER NOT NULL DEFAULT 0,
+  mfa_enabled INTEGER NOT NULL DEFAULT 0, recovery TEXT NOT NULL DEFAULT '[]', must_change INTEGER NOT NULL DEFAULT 0,
+  disabled INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, locked_until REAL NOT NULL DEFAULT 0,
+  session_ver INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL, last_login REAL);
+CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, actor TEXT, client_id TEXT,
+  event TEXT NOT NULL, detail TEXT);
+CREATE INDEX IF NOT EXISTS audit_client ON audit (client_id, at);
+CREATE TABLE IF NOT EXISTS settings (client_id TEXT NOT NULL, key TEXT NOT NULL, value TEXT,
+  PRIMARY KEY (client_id, key));
+CREATE TABLE IF NOT EXISTS levels (client_id TEXT NOT NULL, environment TEXT NOT NULL, host_key TEXT NOT NULL,
+  host TEXT, data TEXT NOT NULL, checked_at REAL NOT NULL, PRIMARY KEY (client_id, environment, host_key));
+CREATE TABLE IF NOT EXISTS catalog (client_id TEXT PRIMARY KEY, data TEXT NOT NULL, checked_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS staged (client_id TEXT NOT NULL, environment TEXT NOT NULL, host_key TEXT NOT NULL,
+  patch_key TEXT NOT NULL, dir TEXT NOT NULL, files TEXT NOT NULL, at REAL NOT NULL,
+  PRIMARY KEY (client_id, environment, host_key, patch_key));
+CREATE TABLE IF NOT EXISTS change_requests (id TEXT PRIMARY KEY, client_id TEXT NOT NULL, environment TEXT NOT NULL,
+  scope TEXT NOT NULL, groups TEXT NOT NULL, signature TEXT NOT NULL, jira_key TEXT, url TEXT, summary TEXT,
+  hosts TEXT, notes TEXT, requested_by TEXT, window TEXT, change_type TEXT, requested_at REAL NOT NULL,
+  status TEXT NOT NULL, approval TEXT, jira_status TEXT, approver TEXT, checked_at REAL, job_id TEXT,
+  finished_at REAL);
+CREATE TABLE IF NOT EXISTS access_keys (client_id TEXT NOT NULL, rid TEXT NOT NULL, fingerprint TEXT NOT NULL,
+  type TEXT, comment TEXT, line TEXT NOT NULL, account TEXT, added_by TEXT, added_at REAL, note TEXT,
+  servers TEXT NOT NULL DEFAULT '{}', updated_at REAL, PRIMARY KEY (client_id, rid));
 """
+MIGRATIONS = {"jobs": [("kind", "TEXT"), ("meta", "TEXT"), ("finalized", "INTEGER NOT NULL DEFAULT 0")]}
 
 
 # ---------------------------------------------------------------- storage
@@ -83,7 +119,7 @@ def db():
 
 def connect():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    c = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+    c = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None, check_same_thread=False)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA busy_timeout=30000")
@@ -100,6 +136,11 @@ def close_db(_):
 def init_db():
     c = connect()
     c.executescript(SCHEMA)
+    for table, cols in MIGRATIONS.items():
+        have = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+        for name, kind in cols:
+            if name not in have:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
     c.close()
 
 
@@ -119,6 +160,29 @@ def signing_key():
         return _signing_key
 
 
+def box():
+    global _box
+    with _key_lock:
+        if _box is None:
+            _box = auth.SecretBox(DATA_DIR / "secret.key")
+        return _box
+
+
+def session_secret():
+    if os.environ.get("PEGASUS_SECRET"):
+        return os.environ["PEGASUS_SECRET"]
+    p = DATA_DIR / "session.key"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if not p.exists():
+        try:
+            fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(secrets.token_hex(32))
+        except FileExistsError:
+            pass
+    return p.read_text().strip()
+
+
 def sha(s):
     return hashlib.sha256(s.encode()).hexdigest()
 
@@ -127,13 +191,65 @@ def iso(t):
     return dt.datetime.fromtimestamp(t, dt.timezone.utc).isoformat(timespec="seconds") if t else None
 
 
+def now_text():
+    return dt.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+
+
 def row(r):
     return dict(r) if r else None
 
 
-# ---------------------------------------------------------------- admin auth (milestone 2: per-user SSO + roles)
+def jload(text, default=None):
+    try:
+        return json.loads(text) if text else default
+    except ValueError:
+        return default
+
+
+def get_setting(cid, key, default=None):
+    r = db().execute("SELECT value FROM settings WHERE client_id=? AND key=?", (cid, key)).fetchone()
+    return jload(r["value"], default) if r else default
+
+
+def put_setting(cid, key, value):
+    db().execute("INSERT INTO settings (client_id, key, value) VALUES (?,?,?) ON CONFLICT(client_id, key) "
+                 "DO UPDATE SET value=excluded.value", (cid, key, json.dumps(value)))
+
+
+def audit(event, cid=None, actor=None, **detail):
+    db().execute("INSERT INTO audit (at, actor, client_id, event, detail) VALUES (?,?,?,?,?)",
+                 (time.time(), actor if actor is not None else actor_label(), cid, event,
+                  json.dumps(detail)[:4000] if detail else None))
+
+
+# ---------------------------------------------------------------- people: sessions, roles
 def is_local_request():
     return request.remote_addr in ("127.0.0.1", "::1") and not any(h in request.headers for h in FORWARD_HEADERS)
+
+
+OPEN_PATHS = ("/api/login", "/api/login/mfa", "/api/mfa/enroll", "/api/session", "/api/setup", "/api/logout")
+MUST_CHANGE_PATHS = ("/api/password",)
+
+
+def current_user():
+    if "user" in g:
+        return g.user
+    g.user = None
+    uid = session.get("uid")
+    if uid and session.get("stage") == "full" and time.time() - session.get("at", 0) < SESSION_HOURS * 3600:
+        u = db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+        if u and not u["disabled"] and u["session_ver"] == session.get("sv"):
+            g.user = u
+    return g.user
+
+
+def actor_label():
+    u = current_user() if request else None
+    return (u["name"] or u["email"]) if u else "pegasus"
+
+
+def who():
+    return actor_label()
 
 
 @app.before_request
@@ -143,23 +259,193 @@ def guard():
         return None
     if ADMIN_LOCAL_ONLY and not is_local_request():
         return jsonify(error="Not found."), 404
-    if p.startswith("/api/") and p not in ("/api/login", "/api/session"):
-        if not session.get("auth"):
-            return jsonify(error="Sign in first."), 401
-        if request.method != "GET" and request.headers.get("X-Requested-With") != "pegasus":
-            return jsonify(error="Bad request origin."), 400
+    if not p.startswith("/api/"):
+        return None
+    if request.method != "GET" and request.headers.get("X-Requested-With") != "pegasus":
+        return jsonify(error="Bad request origin."), 400
+    if p in OPEN_PATHS:
+        return None
+    u = current_user()
+    if not u:
+        return jsonify(error="Sign in first."), 401
+    if u["must_change"] and p not in MUST_CHANGE_PATHS:
+        return jsonify(error="Choose a new password first.", must_change_password=True), 403
     return None
+
+
+def need(role):
+    """Endpoint decorator: the signed-in person must have at least this role."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        def inner(*a, **kw):
+            u = current_user()
+            if not u or auth.ROLE_RANK[u["role"]] < auth.ROLE_RANK[role]:
+                return jsonify(error=f"This needs the {role} role."), 403
+            return fn(*a, **kw)
+        return inner
+    return wrap
+
+
+def staff():
+    u = current_user()
+    return bool(u and not u["client_id"])
+
+
+def get_client(cid):
+    """The client, if the signed-in person may see it; 404 otherwise (so other clients' ids don't leak)."""
+    c = db().execute("SELECT * FROM clients WHERE id=?", (cid,)).fetchone()
+    u = current_user()
+    if not c or not u or (u["client_id"] and u["client_id"] != cid):
+        abort(404)
+    return c
+
+
+def user_view(u):
+    return {"id": u["id"], "email": u["email"], "name": u["name"], "role": u["role"], "client_id": u["client_id"],
+            "mfa": bool(u["mfa_enabled"]), "disabled": bool(u["disabled"]), "must_change": bool(u["must_change"]),
+            "locked": u["locked_until"] > time.time(), "last_login": iso(u["last_login"]),
+            "created_at": iso(u["created_at"]), "recovery_left": len(jload(u["recovery"], []))}
+
+
+def start_session(u, stage):
+    session.clear()
+    session.permanent = True
+    session.update(uid=u["id"], sv=u["session_ver"], stage=stage, at=time.time())
+
+
+@app.get("/api/session")
+def session_info():
+    n = db().execute("SELECT COUNT(*) n FROM users").fetchone()["n"]
+    u = current_user()
+    out = {"auth": bool(u), "setup_needed": n == 0, "version": __version__,
+           "signing_key": protocol.fingerprint(protocol.public_key_b64(signing_key())),
+           "setup_needs_password": bool(ADMIN_PASSWORD), "stage": session.get("stage")}
+    if u:
+        out["user"] = user_view(u)
+        out["who"] = u["name"] or u["email"]
+        out["must_change_password"] = bool(u["must_change"])
+    return jsonify(out)
+
+
+@app.post("/api/setup")
+def setup():
+    """Create the first admin account. Needs PEGASUS_ADMIN_PASSWORD, or (if that isn't set) a request made on this
+    machine. Works only while there are no accounts."""
+    body = request.get_json(silent=True) or {}
+    c = db()
+    if c.execute("SELECT COUNT(*) n FROM users").fetchone()["n"]:
+        return jsonify(error="Pegasus already has accounts. Sign in."), 409
+    if ADMIN_PASSWORD:
+        if not hmac.compare_digest(str(body.get("setup_password", "")).encode(), ADMIN_PASSWORD.encode()):
+            time.sleep(1.5)
+            return jsonify(error="That isn't the setup password (PEGASUS_ADMIN_PASSWORD)."), 401
+    elif not is_local_request():
+        return jsonify(error="Set PEGASUS_ADMIN_PASSWORD, or create the first account on the machine Pegasus runs on."), 403
+    email, name = str(body.get("email") or "").strip().lower(), str(body.get("name") or "").strip()[:80]
+    pw = str(body.get("password") or "")
+    if not auth.EMAIL.match(email):
+        return jsonify(error="Enter a valid email address."), 400
+    if not name:
+        return jsonify(error="Enter your name."), 400
+    problem = auth.password_problem(pw, email, name)
+    if problem:
+        return jsonify(error=problem), 400
+    uid = "u_" + uuid.uuid4().hex[:12]
+    c.execute("INSERT INTO users (id, email, name, pw_hash, role, created_at) VALUES (?,?,?,?,?,?)",
+              (uid, email, name, auth.hash_password(pw), "admin", time.time()))
+    audit("first_admin_created", actor=email, email=email)
+    return jsonify(ok=True)
 
 
 @app.post("/api/login")
 def login():
     body = request.get_json(silent=True) or {}
-    if not ADMIN_PASSWORD or not hmac.compare_digest(str(body.get("password", "")).encode(), ADMIN_PASSWORD.encode()):
+    email, pw = str(body.get("email") or "").strip().lower(), str(body.get("password") or "")
+    u = db().execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+    if u and u["locked_until"] > time.time():
+        return jsonify(error=f"Too many failed sign-ins. Try again after "
+                             f"{dt.datetime.fromtimestamp(u['locked_until']).strftime('%H:%M')}."), 429
+    if not u or u["disabled"] or not auth.check_password(pw, u["pw_hash"]):
+        if u:
+            failed = u["failed"] + 1
+            db().execute("UPDATE users SET failed=?, locked_until=? WHERE id=?",
+                         (failed % LOCK_AFTER if failed >= LOCK_AFTER else failed,
+                          time.time() + LOCK_MINUTES * 60 if failed >= LOCK_AFTER else u["locked_until"], u["id"]))
+            audit("sign_in_failed", actor=email, locked=failed >= LOCK_AFTER)
         time.sleep(1.5)
-        return jsonify(error="Wrong password."), 401
-    session.clear()
-    session.update(auth=True, who=(str(body.get("name") or "").strip()[:40] or "admin"))
-    return jsonify(ok=True)
+        return jsonify(error="Wrong email or password."), 401
+    if u["mfa_enabled"]:
+        start_session(u, "mfa")
+        return jsonify(next="mfa")
+    secret = auth.new_totp_secret()
+    db().execute("UPDATE users SET totp_secret=?, totp_last=0 WHERE id=?", (secret, u["id"]))
+    start_session(u, "enroll")
+    return jsonify(next="enroll", secret=secret, uri=auth.otpauth_uri(secret, u["email"]))
+
+
+def pending_user(stage):
+    if session.get("stage") != stage or time.time() - session.get("at", 0) > 600:
+        return None
+    u = db().execute("SELECT * FROM users WHERE id=?", (session.get("uid"),)).fetchone()
+    return u if u and not u["disabled"] and u["session_ver"] == session.get("sv") else None
+
+
+def signed_in(u):
+    db().execute("UPDATE users SET failed=0, locked_until=0, last_login=? WHERE id=?", (time.time(), u["id"]))
+    u = db().execute("SELECT * FROM users WHERE id=?", (u["id"],)).fetchone()
+    start_session(u, "full")
+    g.pop("user", None)
+    audit("signed_in", actor=u["email"])
+
+
+def mfa_failed(u):
+    failed = u["failed"] + 1
+    db().execute("UPDATE users SET failed=?, locked_until=? WHERE id=?",
+                 (0 if failed >= LOCK_AFTER else failed,
+                  time.time() + LOCK_MINUTES * 60 if failed >= LOCK_AFTER else u["locked_until"], u["id"]))
+    audit("mfa_failed", actor=u["email"])
+    if failed >= LOCK_AFTER:
+        session.clear()
+    time.sleep(1)
+
+
+@app.post("/api/login/mfa")
+def login_mfa():
+    u = pending_user("mfa")
+    if not u:
+        return jsonify(error="Sign in again.", restart=True), 401
+    code = str((request.get_json(silent=True) or {}).get("code") or "").strip()
+    step = auth.verify_totp(u["totp_secret"], code, u["totp_last"])
+    if step:
+        db().execute("UPDATE users SET totp_last=? WHERE id=?", (step, u["id"]))
+        signed_in(u)
+        return jsonify(ok=True)
+    left = auth.use_recovery_code(code, jload(u["recovery"], []))
+    if left is not None:
+        db().execute("UPDATE users SET recovery=? WHERE id=?", (json.dumps(left), u["id"]))
+        signed_in(u)
+        audit("recovery_code_used", actor=u["email"], left=len(left))
+        return jsonify(ok=True, recovery_left=len(left))
+    mfa_failed(u)
+    return jsonify(error="That code didn't work. Use the current 6-digit code from your authenticator app, or a "
+                         "recovery code."), 401
+
+
+@app.post("/api/mfa/enroll")
+def mfa_enroll():
+    u = pending_user("enroll")
+    if not u:
+        return jsonify(error="Sign in again.", restart=True), 401
+    step = auth.verify_totp(u["totp_secret"], (request.get_json(silent=True) or {}).get("code"), 0)
+    if not step:
+        mfa_failed(u)
+        return jsonify(error="That code didn't match. Check the time on your phone and enter the current code."), 401
+    codes, hashes = auth.new_recovery_codes()
+    db().execute("UPDATE users SET mfa_enabled=1, totp_last=?, recovery=? WHERE id=?",
+                 (step, json.dumps(hashes), u["id"]))
+    audit("mfa_enrolled", actor=u["email"])
+    signed_in(u)
+    return jsonify(ok=True, recovery_codes=codes)
 
 
 @app.post("/api/logout")
@@ -168,14 +454,160 @@ def logout():
     return jsonify(ok=True)
 
 
-@app.get("/api/session")
-def session_info():
-    return jsonify(auth=bool(session.get("auth")), who=session.get("who"), version=__version__,
-                   signing_key=protocol.fingerprint(protocol.public_key_b64(signing_key())))
+@app.post("/api/password")
+def change_password():
+    u = current_user()
+    body = request.get_json(silent=True) or {}
+    if not auth.check_password(body.get("current"), u["pw_hash"]):
+        time.sleep(1)
+        return jsonify(error="Your current password isn't right."), 401
+    new = str(body.get("new") or "")
+    problem = auth.password_problem(new, u["email"], u["name"] or "")
+    if problem:
+        return jsonify(error=problem), 400
+    if auth.check_password(new, u["pw_hash"]):
+        return jsonify(error="Choose a password you haven't just used."), 400
+    db().execute("UPDATE users SET pw_hash=?, must_change=0, session_ver=session_ver+1 WHERE id=?",
+                 (auth.hash_password(new), u["id"]))
+    audit("password_changed")
+    u = db().execute("SELECT * FROM users WHERE id=?", (u["id"],)).fetchone()
+    start_session(u, "full")
+    return jsonify(ok=True)
 
 
-def who():
-    return session.get("who") or "admin"
+@app.post("/api/mfa/recovery-codes")
+def new_recovery_codes():
+    u = current_user()
+    if not auth.check_password((request.get_json(silent=True) or {}).get("password"), u["pw_hash"]):
+        time.sleep(1)
+        return jsonify(error="Your password isn't right."), 401
+    codes, hashes = auth.new_recovery_codes()
+    db().execute("UPDATE users SET recovery=? WHERE id=?", (json.dumps(hashes), u["id"]))
+    audit("recovery_codes_replaced")
+    return jsonify(recovery_codes=codes)
+
+
+# ---------------------------------------------------------------- people: administration
+def admin_scope_ok(target):
+    """Staff admins manage everyone. (Client users can't be admins.)"""
+    return staff() and current_user()["role"] == "admin" and target is not None
+
+
+def clean_user_fields(body, existing=None):
+    role = body.get("role", existing["role"] if existing else "viewer")
+    if role not in auth.ROLES:
+        return None, "Choose admin, operator or viewer."
+    cid = body.get("client_id", existing["client_id"] if existing else None) or None
+    if cid and not db().execute("SELECT 1 FROM clients WHERE id=?", (cid,)).fetchone():
+        return None, "That client doesn't exist."
+    if cid and role == "admin":
+        return None, "A client's own users can be operators or viewers. Admins are Astute staff."
+    return {"role": role, "client_id": cid}, None
+
+
+def admins_left(excluding):
+    return db().execute("SELECT COUNT(*) n FROM users WHERE role='admin' AND client_id IS NULL AND disabled=0 "
+                        "AND id<>?", (excluding,)).fetchone()["n"]
+
+
+@app.get("/api/users")
+@need("admin")
+def list_users():
+    if not staff():
+        return jsonify(error="Only Astute staff manage accounts."), 403
+    us = db().execute("SELECT * FROM users ORDER BY client_id IS NOT NULL, email").fetchall()
+    return jsonify(users=[user_view(u) for u in us])
+
+
+@app.post("/api/users")
+@need("admin")
+def create_user():
+    if not staff():
+        return jsonify(error="Only Astute staff manage accounts."), 403
+    body = request.get_json(silent=True) or {}
+    email, name = str(body.get("email") or "").strip().lower(), str(body.get("name") or "").strip()[:80]
+    if not auth.EMAIL.match(email):
+        return jsonify(error="Enter a valid email address."), 400
+    if not name:
+        return jsonify(error="Enter the person's name."), 400
+    fields, err = clean_user_fields(body)
+    if err:
+        return jsonify(error=err), 400
+    if db().execute("SELECT 1 FROM users WHERE email=?", (email,)).fetchone():
+        return jsonify(error="Someone already has that email."), 409
+    temp = auth.temporary_password()
+    uid = "u_" + uuid.uuid4().hex[:12]
+    db().execute("INSERT INTO users (id, email, name, pw_hash, role, client_id, must_change, created_at) "
+                 "VALUES (?,?,?,?,?,?,1,?)", (uid, email, name, auth.hash_password(temp), fields["role"],
+                                              fields["client_id"], time.time()))
+    audit("user_created", fields["client_id"], email=email, role=fields["role"])
+    return jsonify(user=user_view(db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()),
+                   temporary_password=temp)
+
+
+def target_user(uid):
+    u = db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    if not admin_scope_ok(u):
+        abort(404)
+    return u
+
+
+@app.patch("/api/users/<uid>")
+@need("admin")
+def update_user(uid):
+    u = target_user(uid)
+    body = request.get_json(silent=True) or {}
+    fields, err = clean_user_fields(body, u)
+    if err:
+        return jsonify(error=err), 400
+    disabled = bool(body.get("disabled", u["disabled"]))
+    name = str(body.get("name", u["name"]) or "").strip()[:80] or u["name"]
+    losing_admin = u["role"] == "admin" and not u["client_id"] and (fields["role"] != "admin" or disabled
+                                                                     or fields["client_id"])
+    if losing_admin and not admins_left(u["id"]):
+        return jsonify(error="Pegasus needs at least one active admin. Make someone else an admin first."), 409
+    bump = disabled != bool(u["disabled"]) or fields != {"role": u["role"], "client_id": u["client_id"]}
+    db().execute("UPDATE users SET name=?, role=?, client_id=?, disabled=?, session_ver=session_ver+? WHERE id=?",
+                 (name, fields["role"], fields["client_id"], int(disabled), int(bump), uid))
+    audit("user_updated", fields["client_id"], email=u["email"], role=fields["role"], disabled=disabled)
+    return jsonify(user=user_view(db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()))
+
+
+@app.post("/api/users/<uid>/reset-password")
+@need("admin")
+def reset_password(uid):
+    u = target_user(uid)
+    temp = auth.temporary_password()
+    db().execute("UPDATE users SET pw_hash=?, must_change=1, failed=0, locked_until=0, session_ver=session_ver+1 "
+                 "WHERE id=?", (auth.hash_password(temp), uid))
+    audit("password_reset", u["client_id"], email=u["email"])
+    return jsonify(temporary_password=temp)
+
+
+@app.post("/api/users/<uid>/reset-mfa")
+@need("admin")
+def reset_mfa(uid):
+    u = target_user(uid)
+    db().execute("UPDATE users SET mfa_enabled=0, totp_secret='', totp_last=0, recovery='[]', "
+                 "session_ver=session_ver+1 WHERE id=?", (uid,))
+    audit("mfa_reset", u["client_id"], email=u["email"])
+    return jsonify(ok=True)
+
+
+@app.get("/api/audit")
+@need("viewer")
+def audit_log():
+    cid = request.args.get("client") or None
+    if cid:
+        get_client(cid)
+    elif not staff():
+        cid = current_user()["client_id"]
+    if cid:
+        rs = db().execute("SELECT * FROM audit WHERE client_id=? ORDER BY at DESC LIMIT 300", (cid,)).fetchall()
+    else:
+        rs = db().execute("SELECT * FROM audit ORDER BY at DESC LIMIT 300").fetchall()
+    return jsonify(events=[{"at": iso(r["at"]), "actor": r["actor"], "client_id": r["client_id"], "event": r["event"],
+                            "detail": jload(r["detail"], {})} for r in rs])
 
 
 # ---------------------------------------------------------------- clients, tokens, connectors
@@ -188,10 +620,14 @@ def connector_view(c, now=None):
 
 
 @app.get("/api/clients")
+@need("viewer")
 def list_clients():
     now = time.time()
     out = []
-    for c in db().execute("SELECT * FROM clients ORDER BY name COLLATE NOCASE"):
+    u = current_user()
+    rows = (db().execute("SELECT * FROM clients WHERE id=?", (u["client_id"],)) if u["client_id"] else
+            db().execute("SELECT * FROM clients ORDER BY name COLLATE NOCASE"))
+    for c in rows:
         cons = db().execute("SELECT * FROM connectors WHERE client_id=? AND revoked=0", (c["id"],)).fetchall()
         envs = db().execute("SELECT COUNT(DISTINCT environment) n FROM servers WHERE client_id=?", (c["id"],)).fetchone()
         out.append({"id": c["id"], "name": c["name"], "environments": envs["n"],
@@ -200,24 +636,21 @@ def list_clients():
 
 
 @app.post("/api/clients")
+@need("admin")
 def create_client():
+    if not staff():
+        return jsonify(error="Only Astute staff add clients."), 403
     name = str((request.get_json(silent=True) or {}).get("name") or "").strip()
     if not 1 <= len(name) <= 80:
         return jsonify(error="Enter the client's name."), 400
     cid = "c_" + uuid.uuid4().hex[:12]
     db().execute("INSERT INTO clients VALUES (?,?,?)", (cid, name, time.time()))
+    audit("client_created", cid, name=name)
     return jsonify(id=cid, name=name)
 
 
-def get_client(cid):
-    c = db().execute("SELECT * FROM clients WHERE id=?", (cid,)).fetchone()
-    if not c:
-        from flask import abort
-        abort(404)
-    return c
-
-
 @app.get("/api/clients/<cid>")
+@need("viewer")
 def client_detail(cid):
     c = get_client(cid)
     expire_stale(cid)
@@ -236,12 +669,14 @@ def client_detail(cid):
 
 
 @app.post("/api/clients/<cid>/tokens")
+@need("admin")
 def create_token(cid):
     get_client(cid)
     token = "pgr_" + secrets.token_urlsafe(24)
     now = time.time()
     db().execute("INSERT INTO reg_tokens (token_hash, client_id, created_by, created_at, expires_at) VALUES (?,?,?,?,?)",
                  (sha(token), cid, who(), now, now + TOKEN_TTL))
+    audit("connector_token_created", cid)
     url = PUBLIC_URL or request.host_url.rstrip("/")
     return jsonify(token=token, expires_at=iso(now + TOKEN_TTL), url=url,
                    fingerprint=protocol.fingerprint(protocol.public_key_b64(signing_key())),
@@ -250,12 +685,17 @@ def create_token(cid):
 
 
 @app.delete("/api/connectors/<con_id>")
+@need("admin")
 def revoke_connector(con_id):
-    r = db().execute("UPDATE connectors SET revoked=1 WHERE id=?", (con_id,))
-    if not r.rowcount:
+    c = db().execute("SELECT * FROM connectors WHERE id=?", (con_id,)).fetchone()
+    if not c:
         return jsonify(error="No such connector."), 404
+    get_client(c["client_id"])
+    db().execute("UPDATE connectors SET revoked=1 WHERE id=?", (con_id,))
     db().execute("UPDATE jobs SET status='failed', finished_at=?, note='connector removed' "
                  "WHERE connector_id=? AND status='running'", (time.time(), con_id))
+    audit("connector_removed", c["client_id"], connector=con_id, name=c["name"])
+    finalize_pending()
     return jsonify(ok=True)
 
 
@@ -297,6 +737,7 @@ def parse_inventory(text):
 
 
 @app.put("/api/clients/<cid>/inventory")
+@need("admin")
 def put_inventory(cid):
     get_client(cid)
     rows, problems = parse_inventory(str((request.get_json(silent=True) or {}).get("csv") or ""))
@@ -309,7 +750,30 @@ def put_inventory(cid):
                   "ssh_port) VALUES (?,?,?,?,?,?,?,?,?,?)",
                   [(cid, *[s[k] for k in SERVER_COLS]) for s in rows])
     c.execute("COMMIT")
+    audit("inventory_imported", cid, servers=len(rows))
     return jsonify(ok=True, servers=len(rows))
+
+
+def env_servers(cid, env):
+    return [row(s) for s in db().execute("SELECT * FROM servers WHERE client_id=? AND environment=? ORDER BY id",
+                                         (cid, env))]
+
+
+def env_tier(servers):
+    return next((s["tier"] for s in servers if s["tier"]), "")
+
+
+def host_key(s):
+    return s["ip"] or s["host"]
+
+
+def unique_hosts(servers):
+    seen, out = set(), []
+    for s in servers:
+        if host_key(s) not in seen:
+            seen.add(host_key(s))
+            out.append(s)
+    return out
 
 
 # ---------------------------------------------------------------- jobs
@@ -321,66 +785,81 @@ def target_of(s):
     return {k: s[k] for k in ("host", "ip", "role", "os_user", "domain", "env_script", "ssh_port")}
 
 
-def plan_steps(servers, action):
-    if action in ("ping", "levels"):
-        seen, steps = set(), []
-        for s in servers:
-            key = s["ip"] or s["host"]
-            if key in seen:
-                continue
-            seen.add(key)
-            steps.append({"op": action, "target": target_of(s),
-                          "label": "Connection check" if action == "ping" else "Read patch levels"})
-        return steps, False
-    if action == "status":
-        return [{"op": "domain.status", "target": target_of(s), "label": f"Status of {s['role']} {s['domain']}"}
-                for s in servers], False
-
+def domain_steps(servers, action, **flags):
     def ordered(order, op, verb):
-        return [{"op": op, "target": target_of(s), "label": f"{verb} {s['role']} {s['domain']}"}
+        return [dict({"op": op, "target": target_of(s), "label": f"{verb} {s['role']} {s['domain']}"}, **flags)
                 for role in order for s in servers if s["role"] == role]
     if action == "start":
-        return ordered(START_ORDER, "domain.start", "Start"), True
+        return ordered(START_ORDER, "domain.start", "Start")
     if action == "stop":
-        return ordered(STOP_ORDER, "domain.stop", "Stop"), True
-    if action == "restart":
-        return ordered(STOP_ORDER, "domain.stop", "Stop") + ordered(START_ORDER, "domain.start", "Start"), True
+        return ordered(STOP_ORDER, "domain.stop", "Stop")
+    if action == "status":
+        return ordered(START_ORDER, "domain.status", "Status of")
     raise ValueError("Unknown action.")
 
 
+def plan_steps(servers, action):
+    if action in ("ping", "levels"):
+        return [{"op": action, "target": target_of(s),
+                 "label": "Connection check" if action == "ping" else "Read patch levels"}
+                for s in unique_hosts(servers)], False
+    if action == "status":
+        return domain_steps(servers, "status"), False
+    if action in ("start", "stop"):
+        return domain_steps(servers, action), True
+    if action == "restart":
+        return domain_steps(servers, "stop") + domain_steps(servers, "start"), True
+    raise ValueError("Unknown action.")
+
+
+class JobRefused(Exception):
+    def __init__(self, msg, status=409):
+        super().__init__(msg)
+        self.status = status
+
+
+def queue_job(cid, env, kind, title, steps, stop_on_failure=False, meta=None, created_by=None):
+    if not steps:
+        raise JobRefused("Nothing to run for that selection.", 400)
+    if not db().execute("SELECT 1 FROM connectors WHERE client_id=? AND revoked=0", (cid,)).fetchone():
+        raise JobRefused("This client has no connector yet. Add one first.")
+    if env and db().execute("SELECT 1 FROM jobs WHERE client_id=? AND environment=? AND status IN ('queued','running')",
+                            (cid, env)).fetchone():
+        raise JobRefused(f"Something is already running or queued for {env}.")
+    jid = "j_" + uuid.uuid4().hex[:16]
+    now = time.time()
+    db().execute("INSERT INTO jobs (id, client_id, environment, title, params, status, created_by, created_at, "
+                 "expires_at, kind, meta) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                 (jid, cid, env, title, json.dumps({"steps": steps, "stop_on_failure": stop_on_failure}),
+                  "queued", created_by or who(), now, now + QUEUE_TTL, kind, json.dumps(meta or {})))
+    return jid
+
+
 @app.post("/api/clients/<cid>/run")
+@need("operator")
 def run(cid):
     get_client(cid)
     body = request.get_json(silent=True) or {}
     env, action, host = str(body.get("environment") or ""), str(body.get("action") or ""), body.get("host")
-    servers = [row(s) for s in db().execute("SELECT * FROM servers WHERE client_id=? AND environment=?", (cid, env))]
+    servers = env_servers(cid, env)
     if not servers:
         return jsonify(error="That environment has no servers."), 404
     if host:
         servers = [s for s in servers if host in (s["host"], s["ip"])]
         if not servers:
             return jsonify(error="That server isn't in the environment."), 404
-    tier = next((s["tier"] for s in servers if s["tier"]), "")
+    tier = env_tier(servers)
     if action in ("start", "stop", "restart") and is_prd(tier) and str(body.get("confirm") or "").upper() != env.upper():
         return jsonify(error=f"Type {env} to confirm.", need_confirm=True), 409
     try:
         steps, stop_on_failure = plan_steps(servers, action)
+        title = f"{action} {env}" + (f" / {host}" if host else "")
+        jid = queue_job(cid, env, action, title, steps, stop_on_failure)
     except ValueError as e:
         return jsonify(error=str(e)), 400
-    if not steps:
-        return jsonify(error="Nothing to run for that selection."), 400
-    if not db().execute("SELECT 1 FROM connectors WHERE client_id=? AND revoked=0", (cid,)).fetchone():
-        return jsonify(error="This client has no connector yet. Add one first."), 409
-    if db().execute("SELECT 1 FROM jobs WHERE client_id=? AND environment=? AND status IN ('queued','running')",
-                    (cid, env)).fetchone():
-        return jsonify(error=f"Something is already running or queued for {env}."), 409
-    jid = "j_" + uuid.uuid4().hex[:16]
-    title = f"{action} {env}" + (f" / {host}" if host else "")
-    now = time.time()
-    db().execute("INSERT INTO jobs (id, client_id, environment, title, params, status, created_by, created_at, "
-                 "expires_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                 (jid, cid, env, title, json.dumps({"steps": steps, "stop_on_failure": stop_on_failure}),
-                  "queued", who(), now, now + QUEUE_TTL))
+    except JobRefused as e:
+        return jsonify(error=str(e)), e.status
+    audit("job_queued", cid, job=jid, title=title)
     return jsonify(job=jid, steps=len(steps))
 
 
@@ -392,6 +871,7 @@ def expire_stale(cid=None):
     db().execute(f"UPDATE jobs SET status='failed', finished_at=?, note='the connector stopped responding' "
                  f"WHERE status='running' {where} AND connector_id IN "
                  f"(SELECT id FROM connectors WHERE last_seen<?)", (now, *args, now - LOST_AFTER))
+    finalize_pending()
 
 
 def domain_state(role, op, output, code):
@@ -420,19 +900,21 @@ def domain_state(role, op, output, code):
 
 
 def job_view(j, with_steps=False):
+    meta = jload(j["meta"], {}) or {}
     out = {"id": j["id"], "environment": j["environment"], "title": j["title"], "status": j["status"],
-           "created_by": j["created_by"], "created_at": iso(j["created_at"]), "finished_at": iso(j["finished_at"]),
-           "note": j["note"]}
+           "kind": j["kind"], "created_by": j["created_by"], "created_at": iso(j["created_at"]),
+           "finished_at": iso(j["finished_at"]), "note": j["note"], "followup": meta.get("followup")}
     if with_steps:
         steps = json.loads(j["params"])["steps"]
-        results = {r["step"]: r for r in json.loads(j["results"] or "[]")}
+        results = {r["step"]: r for r in jload(j["results"], []) or []}
         out["steps"] = []
         for i, st in enumerate(steps):
             r = results.get(i)
-            item = {"label": st.get("label") or st["op"], "host": st["target"]["host"], "op": st["op"],
+            t = st.get("target") or {}
+            item = {"label": st.get("label") or st["op"], "host": t.get("host", ""), "op": st["op"],
                     "exit_code": r["exit_code"] if r else None, "done": bool(r)}
             if r and st["op"].startswith("domain."):
-                item["state"] = domain_state(st["target"]["role"], st["op"], r.get("output"), r["exit_code"])
+                item["state"] = domain_state(t.get("role"), st["op"], r.get("output"), r["exit_code"])
             out["steps"].append(item)
     return out
 
@@ -443,17 +925,850 @@ def recent_jobs(cid, limit=25):
 
 
 @app.get("/api/jobs/<jid>")
+@need("viewer")
 def get_job(jid):
     j = db().execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
     if not j:
         return jsonify(error="No such job."), 404
+    get_client(j["client_id"])
     expire_stale(j["client_id"])
     j = db().execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
     since = int(request.args.get("since", 0) or 0)
-    ev = db().execute("SELECT seq, text FROM job_events WHERE job_id=? AND seq>=? ORDER BY seq", (jid, since)).fetchall()
+    ev_rows = db().execute("SELECT seq, text FROM job_events WHERE job_id=? AND seq>=? ORDER BY seq",
+                           (jid, since)).fetchall()
     out = job_view(j, with_steps=True)
-    out.update(text="".join(e["text"] or "" for e in ev), next=(ev[-1]["seq"] + 1) if ev else since)
+    out.update(text="".join(e["text"] or "" for e in ev_rows), next=(ev_rows[-1]["seq"] + 1) if ev_rows else since)
     return jsonify(out)
+
+
+# ---------------------------------------------------------------- what happens when a job finishes
+def finalize_pending():
+    """Process finished jobs once: store patch levels, Oracle catalog, staged files, SSH key results, and close
+    change requests. Runs after a connector reports a job done, and after jobs expire or lose their connector."""
+    with _finalize_lock:
+        c = db()
+        js = c.execute("SELECT * FROM jobs WHERE finalized=0 AND status NOT IN ('queued','running')").fetchall()
+        for j in js:
+            c.execute("UPDATE jobs SET finalized=1 WHERE id=?", (j["id"],))
+            try:
+                finalize(j)
+            except Exception as e:           # never let bookkeeping break the connector API
+                app.logger.exception("finalizing %s failed: %s", j["id"], e)
+
+
+def step_results(j):
+    steps = json.loads(j["params"])["steps"]
+    res = {r.get("step"): r for r in jload(j["results"], []) or [] if isinstance(r, dict)}
+    return [(st, res.get(i)) for i, st in enumerate(steps)]
+
+
+def store_levels(cid, env, st, r):
+    t = st.get("target") or {}
+    hk = t.get("ip") or t.get("host")
+    if not hk:
+        return
+    if r and r.get("exit_code") == 0 and isinstance(r.get("data"), dict):
+        data = r["data"]
+    else:
+        tail = [l for l in str((r or {}).get("output") or "").splitlines() if l.strip()]
+        data = {"error": (tail[-1][:300] if tail else "No answer from the server.")}
+    db().execute("INSERT INTO levels (client_id, environment, host_key, host, data, checked_at) VALUES (?,?,?,?,?,?) "
+                 "ON CONFLICT(client_id, environment, host_key) DO UPDATE SET host=excluded.host, data=excluded.data, "
+                 "checked_at=excluded.checked_at", (cid, env, hk, t.get("host") or hk, json.dumps(data), time.time()))
+
+
+def queue_catalog(cid, created_by="pegasus", refresh=False):
+    """Ask the client's connector to look up the latest Oracle releases for the JDKs and products it has seen."""
+    if db().execute("SELECT 1 FROM jobs WHERE client_id=? AND kind='catalog' AND status IN ('queued','running')",
+                    (cid,)).fetchone():
+        return None
+    majors, versions = set(), set()
+    for r in db().execute("SELECT data FROM levels WHERE client_id=?", (cid,)):
+        jdk = (jload(r["data"], {}) or {}).get("jdk") or {}
+        if jdk.get("version"):
+            versions.add(jdk["version"])
+            majors.add(ev.jdk_major(jdk["version"]))
+    majors = {m for m in majors if re.fullmatch(r"\d{1,3}", m)}
+    versions = {v for v in versions if re.fullmatch(r"[0-9][0-9._]{0,30}", v)}
+    step = {"op": "catalog", "label": "Look up the latest Oracle releases", "jdk_majors": sorted(majors)[:10],
+            "jdk_versions": sorted(versions)[:50], "refresh": refresh}
+    try:
+        return queue_job(cid, None, "catalog", "look up latest Oracle patches", [step], created_by=created_by)
+    except JobRefused:
+        return None
+
+
+def finalize(j):
+    cid, env, kind = j["client_id"], j["environment"], j["kind"]
+    meta = jload(j["meta"], {}) or {}
+    pairs = step_results(j)
+    if kind in ("levels", "apply"):
+        for st, r in pairs:
+            if st["op"] == "levels" and r:
+                store_levels(cid, env, st, r)
+        if kind == "levels" and j["status"] in ("succeeded", "failed"):
+            follow = queue_catalog(cid, j["created_by"])
+            if follow:
+                meta["followup"] = follow
+                db().execute("UPDATE jobs SET meta=? WHERE id=?", (json.dumps(meta), j["id"]))
+    if kind == "catalog":
+        for st, r in pairs:
+            if st["op"] == "catalog" and r and isinstance(r.get("data"), dict):
+                db().execute("INSERT INTO catalog (client_id, data, checked_at) VALUES (?,?,?) ON CONFLICT(client_id) "
+                             "DO UPDATE SET data=excluded.data, checked_at=excluded.checked_at",
+                             (cid, json.dumps(r["data"]), time.time()))
+    if kind == "stage":
+        for st, r in pairs:
+            if st["op"] == "patch.stage" and r and r.get("exit_code") == 0:
+                hk = st["target"].get("ip") or st["target"].get("host")
+                for key, v in ((r.get("data") or {}).get("staged") or {}).items():
+                    db().execute("INSERT INTO staged (client_id, environment, host_key, patch_key, dir, files, at) "
+                                 "VALUES (?,?,?,?,?,?,?) ON CONFLICT(client_id, environment, host_key, patch_key) DO "
+                                 "UPDATE SET dir=excluded.dir, files=excluded.files, at=excluded.at",
+                                 (cid, env, hk, key, v.get("dir", ""), json.dumps(v.get("files") or []), time.time()))
+        audit("patches_staged", cid, actor=j["created_by"], job=j["id"], environment=env, result=j["status"])
+    if kind == "apply":
+        audit("patches_applied", cid, actor=j["created_by"], job=j["id"], environment=env, result=j["status"])
+        if meta.get("cr"):
+            ok = j["status"] == "succeeded"
+            db().execute("UPDATE change_requests SET status=?, finished_at=? WHERE id=?",
+                         ("applied" if ok else "failed", time.time(), meta["cr"]))
+            cr = db().execute("SELECT * FROM change_requests WHERE id=?", (meta["cr"],)).fetchone()
+            text = "".join(e["text"] or "" for e in db().execute(
+                "SELECT text FROM job_events WHERE job_id=? ORDER BY seq", (j["id"],)))
+            tail = "\n".join(text.splitlines()[-40:])
+            report = (f"Pegasus finished applying on {now_text()}: *{'SUCCEEDED' if ok else 'FAILED'}*"
+                      + (f" ({j['note']})" if j["note"] else "") + f".\nJob {j['id']}. The full log is in Pegasus.\n\n"
+                      "{noformat}\n" + tail.replace("{noformat}", "{ noformat}") + "\n{noformat}")
+            jira_later(cid, cr["jira_key"], report, "done_transition" if ok else None)
+    if kind and kind.startswith("access"):
+        record_access(j, pairs)
+
+
+def jira_for(cid):
+    cfg = jiramod.config(get_setting(cid, "jira", {}))
+    return jiramod.Jira(cfg, box().open(get_setting(cid, "jira_token", "")))
+
+
+def jira_later(cid, key, comment, transition_field=None):
+    """Comment on (and optionally move) a ticket without holding up the request that triggered it."""
+    cfg = jiramod.config(get_setting(cid, "jira", {}))
+    token = box().open(get_setting(cid, "jira_token", ""))
+
+    def work():
+        try:
+            j = jiramod.Jira(cfg, token)
+            j.comment(key, comment)
+            if transition_field:
+                j.transition(key, cfg.get(transition_field))
+        except jiramod.JiraError as e:
+            c = connect()
+            c.execute("INSERT INTO audit (at, actor, client_id, event, detail) VALUES (?,?,?,?,?)",
+                      (time.time(), "pegasus", cid, "jira_update_failed", json.dumps({"ticket": key, "error": str(e)})))
+            c.close()
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    return t
+
+
+# ---------------------------------------------------------------- patching: levels, latest releases, staging
+def patch_settings(cid):
+    return {"staging_root": get_setting(cid, "staging_root", DEFAULT_STAGING),
+            "targets": get_setting(cid, "cpu_targets", [])}
+
+
+def env_levels(cid, env):
+    return {r["host_key"]: dict(jload(r["data"], {}) or {}, host=r["host"], checked_at=r["checked_at"])
+            for r in db().execute("SELECT * FROM levels WHERE client_id=? AND environment=?", (cid, env))}
+
+
+def client_catalog(cid):
+    r = db().execute("SELECT * FROM catalog WHERE client_id=?", (cid,)).fetchone()
+    return (jload(r["data"], {}) or {}, r["checked_at"]) if r else ({}, None)
+
+
+def env_staged(cid, env):
+    out = {}
+    for r in db().execute("SELECT * FROM staged WHERE client_id=? AND environment=?", (cid, env)):
+        out.setdefault(r["host_key"], {})[r["patch_key"]] = {"dir": r["dir"], "files": jload(r["files"], []),
+                                                             "at": iso(r["at"])}
+    return out
+
+
+def posture(cid, env):
+    """Per host: installed levels, what's newer, and what's already staged."""
+    servers = env_servers(cid, env)
+    levels, staged = env_levels(cid, env), env_staged(cid, env)
+    cat, cat_at = client_catalog(cid)
+    targets = patch_settings(cid)["targets"]
+    hosts = []
+    for s in unique_hosts(servers):
+        hk = host_key(s)
+        lv = levels.get(hk)
+        roles = sorted({x["role"] for x in servers if host_key(x) == hk})
+        h = {"host": s["host"], "ip": s["ip"], "host_key": hk, "roles": roles, "checked": None, "items": [],
+             "pt": "", "warnings": [], "error": ""}
+        if lv:
+            h.update(checked=iso(lv["checked_at"]), pt=lv.get("pt", ""), warnings=lv.get("warnings", []),
+                     error=lv.get("error", ""))
+            if not lv.get("error"):
+                items = ev.evaluate(lv, targets, cat.get("java"), cat.get("oracle"), cat.get("java_dates"))
+                hs = staged.get(hk, {})
+                for it in items:
+                    st = hs.get(it.get("key") or "-")
+                    if st and it.get("needs_opatch") and ev.OPATCH_19_KEY not in hs:
+                        st = None              # OPatch for the Database client goes with it
+                    it["staged"] = st
+                h["items"] = items
+        hosts.append(h)
+    return {"hosts": hosts, "catalog": cat, "catalog_checked": iso(cat_at), "servers": servers}
+
+
+def outstanding_groups(hosts):
+    groups = []
+    for h in hosts:
+        for it in h["items"]:
+            if it["status"] == "needed" and it.get("key") and (it["component"], it["key"]) not in groups:
+                groups.append((it["component"], it["key"]))
+    return groups
+
+
+def change_request_view(cr):
+    out = {k: cr[k] for k in ("id", "environment", "scope", "jira_key", "url", "summary", "notes", "requested_by",
+                              "change_type", "status", "approval", "jira_status", "approver", "job_id")}
+    out.update(hosts=jload(cr["hosts"], []), window=jload(cr["window"], {}), requested_at=iso(cr["requested_at"]),
+               checked_at=iso(cr["checked_at"]), finished_at=iso(cr["finished_at"]))
+    return out
+
+
+def approval_required(cid, tier):
+    c = jiramod.config(get_setting(cid, "jira", {}))
+    return bool(c["enabled"]) and (c["require"] == "all" or is_prd(tier))
+
+
+def refresh_cr(cr, j):
+    if cr["status"] not in ("pending", "approved"):
+        return cr
+    state, name, approver = j.approval_state(cr["jira_key"])
+    status = {"approved": "approved", "rejected": "rejected"}.get(state, "pending")
+    db().execute("UPDATE change_requests SET status=?, approval=?, jira_status=?, approver=?, checked_at=? WHERE id=?",
+                 (status, state, name, approver, time.time(), cr["id"]))
+    return db().execute("SELECT * FROM change_requests WHERE id=?", (cr["id"],)).fetchone()
+
+
+@app.get("/api/clients/<cid>/patching")
+@need("viewer")
+def patching_view(cid):
+    get_client(cid)
+    env = str(request.args.get("environment") or "")
+    servers = env_servers(cid, env)
+    if not servers:
+        return jsonify(error="That environment has no servers."), 404
+    p = posture(cid, env)
+    cat = p["catalog"]
+    crs = db().execute("SELECT * FROM change_requests WHERE client_id=? AND environment=? ORDER BY requested_at DESC",
+                       (cid, env)).fetchall()
+    latest = {}
+    for c in crs:
+        latest.setdefault(c["scope"], c)
+    jira_error = None
+    jcfg = jiramod.config(get_setting(cid, "jira", {}))
+    if request.args.get("refresh") and jcfg["enabled"]:
+        try:
+            jc = None
+            for scope, c in latest.items():
+                if c["status"] in ("pending", "approved"):
+                    jc = jc or jira_for(cid)
+                    latest[scope] = refresh_cr(c, jc)
+        except jiramod.JiraError as e:
+            jira_error = str(e)
+    tier = env_tier(servers)
+    return jsonify(environment=env, tier=tier, hosts=p["hosts"], cpu=ev.cpu_dates(),
+                   catalog_checked=p["catalog_checked"], oracle_error=(cat.get("oracle") or {}).get("error"),
+                   infra_dpk=(cat.get("oracle") or {}).get("infra_dpk"), settings=patch_settings(cid),
+                   approval={"enabled": bool(jcfg["enabled"]), "required": approval_required(cid, tier),
+                             "error": jira_error},
+                   change_requests=[change_request_view(c) for c in latest.values()],
+                   outstanding=len(outstanding_groups(p["hosts"])))
+
+
+@app.post("/api/clients/<cid>/patching/check")
+@need("operator")
+def patching_check(cid):
+    """Read installed levels on every server of the environment; the connector then looks up Oracle's latest."""
+    get_client(cid)
+    body = request.get_json(silent=True) or {}
+    env = str(body.get("environment") or "")
+    servers = env_servers(cid, env)
+    if not servers:
+        return jsonify(error="That environment has no servers."), 404
+    steps, _ = plan_steps(servers, "levels")
+    try:
+        jid = queue_job(cid, env, "levels", f"check patch levels {env}", steps)
+    except JobRefused as e:
+        return jsonify(error=str(e)), e.status
+    if body.get("refresh"):
+        db().execute("DELETE FROM catalog WHERE client_id=?", (cid,))
+    audit("job_queued", cid, job=jid, title=f"check patch levels {env}")
+    return jsonify(job=jid)
+
+
+@app.post("/api/clients/<cid>/patching/lookup")
+@need("operator")
+def patching_lookup(cid):
+    """Look up the latest Oracle releases again (fresh from Oracle, not the connector's 12-hour cache)."""
+    get_client(cid)
+    jid = queue_catalog(cid, who(), refresh=True)
+    if not jid:
+        return jsonify(error="A lookup is already queued or running, or this client has no connector."), 409
+    return jsonify(job=jid)
+
+
+def select_items(hosts, body):
+    """[(host dict, item)] for the updates the request names: items=[{host_key, key}] or all=true (every needed)."""
+    want = {(str(i.get("host_key") or i.get("ip") or i.get("host")), str(i.get("key"))) for i in body.get("items") or []}
+    out = []
+    for h in hosts:
+        for it in h["items"]:
+            if it["status"] != "needed" or not it.get("key"):
+                continue
+            if body.get("all") or (h["host_key"], it["key"]) in want or (h["host"], it["key"]) in want:
+                out.append((h, it))
+    return out
+
+
+@app.post("/api/clients/<cid>/patching/stage")
+@need("operator")
+def patching_stage(cid):
+    """Download the selected updates on the connector and copy them to each server's staging folder."""
+    get_client(cid)
+    body = request.get_json(silent=True) or {}
+    env = str(body.get("environment") or "")
+    servers = env_servers(cid, env)
+    if not servers:
+        return jsonify(error="That environment has no servers."), 404
+    p = posture(cid, env)
+    chosen = select_items(p["hosts"], body)
+    if not chosen:
+        return jsonify(error="Select at least one outstanding update to download."), 400
+    keys, per_host = [], {}
+    for h, it in chosen:
+        need_keys = [(it["key"], ev.stage_label(it))]
+        if it.get("needs_opatch"):
+            need_keys.append((ev.OPATCH_19_KEY, "p6880880"))
+        for k, label in need_keys:
+            if k not in keys:
+                keys.append(k)
+            items = per_host.setdefault(h["host_key"], [])
+            if k not in [x["key"] for x in items]:
+                items.append({"key": k, "label": label})
+    root = patch_settings(cid)["staging_root"]
+    by_key = {host_key(s): s for s in unique_hosts(servers)}
+    steps = [{"op": "patch.download", "label": f"Download {len(keys)} update(s) on the connector", "keys": keys}]
+    for hk, items in per_host.items():
+        steps.append({"op": "patch.stage", "target": target_of(by_key[hk]), "stage_root": root, "items": items,
+                      "label": f"Stage {len(items)} file set(s) in {root}", "independent": True})
+    try:
+        jid = queue_job(cid, env, "stage", f"download and stage CPU patches {env}", steps, stop_on_failure=True)
+    except JobRefused as e:
+        return jsonify(error=str(e)), e.status
+    audit("job_queued", cid, job=jid, title=f"download and stage {env}", keys=keys)
+    return jsonify(job=jid, hosts=len(per_host), updates=len(keys))
+
+
+@app.get("/api/clients/<cid>/patch-settings")
+@need("viewer")
+def get_patch_settings(cid):
+    get_client(cid)
+    return jsonify(patch_settings(cid), components=ev.COMPONENTS, default_platform=ev.DEFAULT_PLATFORM)
+
+
+@app.put("/api/clients/<cid>/patch-settings")
+@need("admin")
+def put_patch_settings(cid):
+    get_client(cid)
+    body = request.get_json(silent=True) or {}
+    if "staging_root" in body:
+        root = str(body.get("staging_root") or "").strip().rstrip("/")
+        if not SAFE_ABS_PATH.match(root) or ".." in root or root.count("/") < 3:
+            return jsonify(error="The staging folder must be a dedicated absolute path like "
+                                 "/u01/app/oracle/staging/cpu."), 400
+        put_setting(cid, "staging_root", root)
+    if "targets" in body:
+        clean, problems = [], []
+        for i, r in enumerate(body.get("targets") or [], start=1):
+            r = {c: str(r.get(c) or "").strip() for c in ev.TARGET_COLS}
+            if not any(r.values()):
+                continue
+            if r["component"] not in ev.COMPONENTS:
+                problems.append(f"Row {i}: choose jdk, weblogic, dbclient or tuxedo.")
+            if not r["target"] or len(r["target"]) > 120:
+                problems.append(f"Row {i}: the target is empty.")
+            if r["component"] == "jdk" and not r["patch_number"] and not re.fullmatch(r"[0-9][0-9._]{0,30}", r["target"]):
+                problems.append(f"Row {i}: a JDK target is a version like 21.0.6.")
+            if r["patch_number"] and not re.match(r"^\d{5,12}$", r["patch_number"]):
+                problems.append(f"Row {i}: the Oracle Support patch number should be digits only.")
+            if r["platform"] and not re.match(r"^\d{1,5}[PL]$", r["platform"]):
+                problems.append(f"Row {i}: platform codes look like 226P (Linux x86-64) or 2000P (Generic).")
+            if r["label"] and not SAFE_NAME.match(r["label"]):
+                problems.append(f"Row {i}: the label can only use letters, digits, . _ and -.")
+            if r["file_filter"] and not re.fullmatch(r"[A-Za-z0-9_.\-]{1,40}", r["file_filter"]):
+                problems.append(f"Row {i}: the file filter may use letters, digits, . _ and - only.")
+            clean.append(r)
+        if problems:
+            return jsonify(error=" ".join(problems)), 400
+        put_setting(cid, "cpu_targets", clean)
+    audit("patch_settings_updated", cid)
+    return jsonify(patch_settings(cid))
+
+
+# ---------------------------------------------------------------- patching: change approval and apply
+def build_apply_plan(cid, env, groups):
+    """(plan, missing, error). One entry per component and server, in the safe order."""
+    servers = env_servers(cid, env)
+    p = posture(cid, env)
+    if not any(h["checked"] for h in p["hosts"]):
+        return None, [], "Check patch levels first."
+    staged = env_staged(cid, env)
+    levels = env_levels(cid, env)
+    by_key = {host_key(s): s for s in unique_hosts(servers)}
+    plan, missing = [], []
+    for component, key in sorted(groups, key=lambda x: ev.APPLY_ORDER.index(x[0])):
+        for h in p["hosts"]:
+            item = next((it for it in h["items"] if it["component"] == component and it.get("key") == key
+                         and it["status"] == "needed"), None)
+            if not item:
+                continue
+            st = staged.get(h["host_key"], {}).get(key)
+            if not st or not st["files"]:
+                missing.append(f"{ev.COMP_TITLE[component]} on {h['host']}")
+                continue
+            lv = levels[h["host_key"]]
+            home = (lv.get(component) or {}).get("home", "")
+            server = by_key[h["host_key"]]
+            owner = (lv.get("owners") or {}).get(home) or server["os_user"] or "psadm1"
+            if not SAFE_NAME.match(owner) or not SAFE_ABS_PATH.match(home or "-"):
+                return None, [], f"{h['host']}: unexpected owner or home for {ev.COMP_TITLE[component]}."
+            opz = ""
+            if item.get("needs_opatch"):
+                sto = staged.get(h["host_key"], {}).get(ev.OPATCH_19_KEY)
+                if not sto or not sto["files"]:
+                    missing.append(f"OPatch on {h['host']}")
+                    continue
+                opz = f"{sto['dir']}/{sto['files'][0]}"
+            plan.append({"component": component, "key": key, "label": item.get("latest_label") or item["target"],
+                         "host": h["host"], "host_key": h["host_key"], "owner": owner, "home": home,
+                         "jdk_home": (lv.get("jdk") or {}).get("home", ""),
+                         "wl_home": (lv.get("weblogic") or {}).get("home", ""), "staged": st,
+                         "version": item["target"] if component == "jdk" else "",
+                         "ids": item.get("verify_ids") or [x for x in re.split(r"[\s,;]+", item["target"]) if x.isdigit()],
+                         "level": item.get("level") or item["target"], "opatch_zip": opz})
+    return plan, missing, None
+
+
+def apply_steps(servers, plan):
+    """Stop every domain once, check nothing is left running, apply each update, then start everything again (even
+    after a failure), check status and read the levels again."""
+    by_key = {host_key(s): s for s in unique_hosts(servers)}
+    steps = domain_steps(servers, "stop", ignore_failure=True)
+    for hk in dict.fromkeys(p["host_key"] for p in plan):
+        steps.append({"op": "host.idle", "target": target_of(by_key[hk]), "label": "Check nothing is still running"})
+    for p in plan:
+        steps.append({"op": "patch.apply", "target": target_of(by_key[p["host_key"]]),
+                      "label": f"Apply {ev.COMP_TITLE[p['component']]} {p['label']} as {p['owner']}",
+                      "component": p["component"], "owner": p["owner"], "home": p["home"],
+                      "jdk_home": p["jdk_home"], "wl_home": p["wl_home"],
+                      "staged": {"dir": p["staged"]["dir"], "files": p["staged"]["files"]},
+                      "version": p["version"], "ids": p["ids"], "level": p["level"], "opatch_zip": p["opatch_zip"]})
+    steps += domain_steps(servers, "start", always=True)
+    steps += domain_steps(servers, "status", always=True, ignore_failure=True)
+    steps += [dict(s, always=True, ignore_failure=True) for s in plan_steps(servers, "levels")[0]]
+    return steps
+
+
+def groups_for_scope(hosts, scope):
+    if scope == "all":
+        groups = outstanding_groups(hosts)
+        return (groups, None) if groups else (None, "Nothing outstanding. Check patch levels again.")
+    comp, _, key = str(scope or "").partition("~")
+    if comp not in ev.COMPONENTS or not key:
+        return None, "Choose an update."
+    return [(comp, key)], None
+
+
+def scope_of(groups, all_mode):
+    return "all" if all_mode else f"{groups[0][0]}~{groups[0][1]}"
+
+
+@app.post("/api/clients/<cid>/change-requests")
+@need("operator")
+def create_change_request(cid):
+    client = get_client(cid)
+    body = request.get_json(silent=True) or {}
+    env = str(body.get("environment") or "")
+    servers = env_servers(cid, env)
+    if not servers:
+        return jsonify(error="That environment has no servers."), 404
+    jcfg = jiramod.config(get_setting(cid, "jira", {}))
+    if not jcfg["enabled"]:
+        return jsonify(error="Change approval isn't switched on for this client."), 400
+    groups, err = groups_for_scope(posture(cid, env)["hosts"], body.get("scope"))
+    if err:
+        return jsonify(error=err), 400
+    plan, missing, err = build_apply_plan(cid, env, groups)
+    if err:
+        return jsonify(error=err), 400
+    if missing:
+        return jsonify(error="Download these first, so the ticket shows exactly what will be applied: "
+                             + ", ".join(missing)), 409
+    if not plan:
+        return jsonify(error="Nothing needs applying. Check patch levels again."), 400
+    sig = ev.plan_signature(plan)
+    scope = scope_of(groups, body.get("scope") == "all")
+    for c in db().execute("SELECT * FROM change_requests WHERE client_id=? AND environment=? AND scope=? AND "
+                          "status IN ('pending','approved','applying')", (cid, env, scope)):
+        if jload(c["signature"], []) == sig:
+            return jsonify(error=f"{c['jira_key']} already covers this update.", request=change_request_view(c)), 409
+    notes = str(body.get("notes") or "").strip()[:2000]
+    window = {}
+    for k in ("start", "end"):
+        v = str((body.get("window") or {}).get(k) or "").strip()
+        if v and not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{3})?)?[+-]\d{4}$", v):
+            return jsonify(error="The planned window dates aren't in a format Jira accepts."), 400
+        window[k] = v
+    if window.get("start") and window.get("end") and window["end"] <= window["start"]:
+        return jsonify(error="The planned end must be after the planned start."), 400
+    comps = [f"{ev.COMP_TITLE[comp]} {next(p['label'] for p in plan if p['component'] == comp)}"
+             for comp in dict.fromkeys(p["component"] for p in plan)]
+    summary = f"[Pegasus] {env}: apply {', '.join(comps)}"
+    change_type = str(body.get("change_type") or "").strip()[:40]
+    if change_type:
+        jcfg["change_type"] = change_type
+    try:
+        jc = jiramod.Jira(jcfg, box().open(get_setting(cid, "jira_token", "")))
+        key = jc.create(summary, ev.describe_plan(env, client["name"], env_tier(servers), plan, notes, who(),
+                                                 now_text(), window), window)
+    except jiramod.JiraError as e:
+        return jsonify(error=str(e)), 502
+    note = None
+    try:
+        jc.transition(key, jcfg["submit_transition"])
+    except jiramod.JiraError as e:
+        note = f"{key} was created, but Pegasus couldn't send it for approval: {e}"
+    cr_id = "cr_" + uuid.uuid4().hex[:12]
+    db().execute("UPDATE change_requests SET status='superseded' WHERE client_id=? AND environment=? AND scope=? AND "
+                 "status IN ('pending','approved')", (cid, env, scope))
+    db().execute("INSERT INTO change_requests (id, client_id, environment, scope, groups, signature, jira_key, url, "
+                 "summary, hosts, notes, requested_by, window, change_type, requested_at, status, approval) "
+                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                 (cr_id, cid, env, scope, json.dumps(groups), json.dumps(sig), key, jc.browse(key), summary,
+                  json.dumps(list(dict.fromkeys(p["host"] for p in plan))), notes, who(), json.dumps(window),
+                  jcfg.get("change_type") or "", time.time(), "pending", "pending"))
+    cr = db().execute("SELECT * FROM change_requests WHERE id=?", (cr_id,)).fetchone()
+    try:
+        cr = refresh_cr(cr, jc)
+    except jiramod.JiraError:
+        pass
+    audit("change_request_raised", cid, environment=env, ticket=key, summary=summary)
+    return jsonify(request=change_request_view(cr), note=note)
+
+
+@app.post("/api/change-requests/<cr_id>/withdraw")
+@need("operator")
+def withdraw_change_request(cr_id):
+    c = db().execute("SELECT * FROM change_requests WHERE id=?", (cr_id,)).fetchone()
+    if not c:
+        return jsonify(error="That change request doesn't exist."), 404
+    get_client(c["client_id"])
+    if c["status"] not in ("pending", "approved"):
+        return jsonify(error=f"{c['jira_key']} can't be withdrawn now ({c['status']})."), 409
+    db().execute("UPDATE change_requests SET status='withdrawn', finished_at=? WHERE id=?", (time.time(), cr_id))
+    jira_later(c["client_id"], c["jira_key"], f"Withdrawn in Pegasus by {who()} on {now_text()}. Pegasus won't apply "
+                                              "this plan under this ticket.")
+    audit("change_request_withdrawn", c["client_id"], ticket=c["jira_key"])
+    return jsonify(ok=True)
+
+
+def claim_approval(cid, env, cr_id, plan):
+    """At the moment of applying: an approved ticket must cover exactly this plan. Marks it used. (cr, error)."""
+    if not cr_id:
+        return None, f"{env} needs an approved Jira ticket before it can be patched. Use Request approval first."
+    c = db().execute("SELECT * FROM change_requests WHERE id=? AND client_id=?", (str(cr_id), cid)).fetchone()
+    if not c or c["environment"] != env:
+        return None, "That change request isn't for this environment."
+    if c["status"] in ("applying", "applied", "failed"):
+        return None, f"{c['jira_key']} has already been used for an apply. Request approval again."
+    if c["status"] not in ("pending", "approved"):
+        return None, f"{c['jira_key']} is {c['status'].replace('_', ' ')}. Request approval again."
+    if jload(c["signature"], []) != ev.plan_signature(plan):
+        db().execute("UPDATE change_requests SET status='stale' WHERE id=?", (c["id"],))
+        return None, (f"The patch plan has changed since {c['jira_key']} was raised (different updates or servers), so "
+                      "that approval doesn't cover it. Request approval again.")
+    try:
+        state, name, approver = jira_for(cid).approval_state(c["jira_key"])
+    except jiramod.JiraError as e:
+        return None, f"Couldn't confirm the approval of {c['jira_key']} with Jira: {e}"
+    new_status = {"approved": "applying", "rejected": "rejected"}.get(state, c["status"])
+    r = db().execute("UPDATE change_requests SET status=?, approval=?, jira_status=?, approver=?, checked_at=? "
+                     "WHERE id=? AND status IN ('pending','approved')",
+                     (new_status, state, name, approver, time.time(), c["id"]))
+    if state == "approved":
+        if not r.rowcount:
+            return None, f"{c['jira_key']} was just used by someone else."
+        return db().execute("SELECT * FROM change_requests WHERE id=?", (c["id"],)).fetchone(), None
+    if state == "self_approved":
+        return None, (f"{c['jira_key']} was approved by the account Pegasus uses to raise tickets, or Pegasus can't tell "
+                      "who approved it. It needs approval from someone else.")
+    if state == "rejected":
+        return None, f"{c['jira_key']} was declined in Jira (status: {name or 'unknown'}). Nothing was applied."
+    return None, f"{c['jira_key']} isn't approved yet (status: {name or 'unknown'})."
+
+
+@app.post("/api/clients/<cid>/patching/apply")
+@need("operator")
+def patching_apply(cid):
+    get_client(cid)
+    body = request.get_json(silent=True) or {}
+    env = str(body.get("environment") or "")
+    servers = env_servers(cid, env)
+    if not servers:
+        return jsonify(error="That environment has no servers."), 404
+    tier = env_tier(servers)
+    if is_prd(tier) and str(body.get("confirm") or "").upper() != env.upper():
+        return jsonify(error=f"Type {env} to confirm.", need_confirm=True), 409
+    groups, err = groups_for_scope(posture(cid, env)["hosts"], body.get("scope"))
+    if err:
+        return jsonify(error=err), 400
+    plan, missing, err = build_apply_plan(cid, env, groups)
+    if err:
+        return jsonify(error=err), 400
+    if missing:
+        return jsonify(error="Download these first: " + ", ".join(missing)), 409
+    if not plan:
+        return jsonify(error="Nothing needs applying. Check patch levels again."), 400
+    if db().execute("SELECT 1 FROM jobs WHERE client_id=? AND environment=? AND status IN ('queued','running')",
+                    (cid, env)).fetchone():
+        return jsonify(error=f"Something is already running or queued for {env}."), 409
+    cr = None
+    if approval_required(cid, tier):
+        cr, err = claim_approval(cid, env, body.get("change_request"), plan)
+        if err:
+            return jsonify(error=err, need_approval=True), 409
+    title = ("apply all outstanding updates " if body.get("scope") == "all" else "apply ") + env
+    if body.get("scope") != "all":
+        title = f"apply {ev.COMP_TITLE[plan[0]['component']]} {plan[0]['label']} to {env}"
+    try:
+        jid = queue_job(cid, env, "apply", title, apply_steps(servers, plan), stop_on_failure=True,
+                        meta={"cr": cr["id"] if cr else None, "signature": ev.plan_signature(plan)})
+    except JobRefused as e:
+        if cr:
+            db().execute("UPDATE change_requests SET status='approved' WHERE id=?", (cr["id"],))
+        return jsonify(error=str(e)), e.status
+    if cr:
+        db().execute("UPDATE change_requests SET job_id=? WHERE id=?", (jid, cr["id"]))
+        jira_later(cid, cr["jira_key"], f"Pegasus queued this change on {now_text()} (job {jid}, by {who()}). "
+                                        f"Approved by {cr['approver'] or 'unknown'}.", "start_transition")
+    audit("apply_queued", cid, job=jid, environment=env, ticket=cr["jira_key"] if cr else None,
+          plan=ev.plan_signature(plan))
+    return jsonify(job=jid, steps=len(plan), change_request=cr["jira_key"] if cr else None)
+
+
+# ---------------------------------------------------------------- Jira settings (per client)
+@app.get("/api/clients/<cid>/jira")
+@need("viewer")
+def get_jira(cid):
+    get_client(cid)
+    return jsonify(config=jiramod.config(get_setting(cid, "jira", {})),
+                   has_token=bool(get_setting(cid, "jira_token", "")))
+
+
+@app.put("/api/clients/<cid>/jira")
+@need("admin")
+def put_jira(cid):
+    get_client(cid)
+    body = request.get_json(silent=True) or {}
+    token = str(body.get("token") or "").strip()
+    has = bool(token or get_setting(cid, "jira_token", ""))
+    new, problems = jiramod.validate(body, jiramod.config(get_setting(cid, "jira", {})), has)
+    if problems:
+        return jsonify(error=" ".join(problems)), 400
+    if token:
+        put_setting(cid, "jira_token", box().seal(token))
+    put_setting(cid, "jira", new)
+    audit("jira_settings_updated", cid, enabled=new["enabled"], project=new["project"], token_changed=bool(token))
+    return jsonify(config=new, has_token=has)
+
+
+@app.delete("/api/clients/<cid>/jira/token")
+@need("admin")
+def forget_jira_token(cid):
+    get_client(cid)
+    put_setting(cid, "jira_token", "")
+    cfg = jiramod.config(get_setting(cid, "jira", {}))
+    if cfg["enabled"]:
+        cfg["enabled"] = False
+        put_setting(cid, "jira", cfg)
+    audit("jira_token_removed", cid)
+    return jsonify(ok=True, has_token=False)
+
+
+@app.post("/api/clients/<cid>/jira/test")
+@need("admin")
+def test_jira(cid):
+    get_client(cid)
+    try:
+        j = jira_for(cid)
+        me = j.myself()
+        proj = j.project()
+    except jiramod.JiraError as e:
+        return jsonify(error=str(e)), 400
+    warn, filled = None, []
+    try:
+        meta = j.create_meta()
+        fields = j.change_fields(meta, {"start": "2030-01-01T20:00:00.000+0000", "end": "2030-01-01T23:00:00.000+0000"})
+        filled = [f["name"] for f in meta.values() if f.get("fieldId") in fields]
+        fields.update(j.cfg.get("extra_fields") or {})
+        fields.update({"project": 1, "summary": 1, "description": 1, "issuetype": 1})
+        missing = jiramod.missing_required(meta, fields)
+        if missing:
+            warn = (f"A {j.cfg['issue_type']} in this project also needs: {'; '.join(missing)}. Add them under "
+                    "Additional fields, or Request approval will fail.")
+    except jiramod.JiraError as e:
+        warn = str(e)
+    return jsonify(ok=True, user=me.get("displayName") or me.get("name"), project=proj.get("name"),
+                   issue_types=[t["name"] for t in proj.get("issueTypes") or []], filled=filled, warning=warn)
+
+
+# ---------------------------------------------------------------- SSH access register
+def access_rid(fp, account):
+    return f"{fp}|{account or ''}"
+
+
+def record_access(j, pairs):
+    meta = jload(j["meta"], {}) or {}
+    key, _ = sshkeys.parse(meta.get("line"))
+    if not key:
+        return
+    mode, account, cid = meta.get("mode"), meta.get("account") or "", j["client_id"]
+    rid = access_rid(key["fingerprint"], account)
+    rec = db().execute("SELECT * FROM access_keys WHERE client_id=? AND rid=?", (cid, rid)).fetchone()
+    if mode == "check" and not rec:
+        return
+    servers = jload(rec["servers"], {}) if rec else {}
+    for st, r in pairs:
+        if not r or not isinstance(r.get("data"), dict):
+            continue
+        res, t = r["data"].get("result"), st.get("target") or {}
+        hk = t.get("ip") or t.get("host")
+        if res in ("ADDED", "EXISTS", "PRESENT"):
+            prev = servers.get(hk, {})
+            servers[hk] = {"host": t.get("host"), "environment": st.get("environment"), "account": r["data"].get("account"),
+                           "since": prev.get("since") or iso(time.time())}
+        elif res in ("REMOVED", "NOT_PRESENT", "ABSENT"):
+            servers.pop(hk, None)
+    if not servers:
+        db().execute("DELETE FROM access_keys WHERE client_id=? AND rid=?", (cid, rid))
+        return
+    if rec:
+        db().execute("UPDATE access_keys SET servers=?, updated_at=?, note=COALESCE(NULLIF(?, ''), note) "
+                     "WHERE client_id=? AND rid=?",
+                     (json.dumps(servers), time.time(), meta.get("note") if mode == "add" else "", cid, rid))
+    else:
+        db().execute("INSERT INTO access_keys (client_id, rid, fingerprint, type, comment, line, account, added_by, "
+                     "added_at, note, servers, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (cid, rid, key["fingerprint"], key["type"], key["comment"], key["line"], account,
+                      j["created_by"], time.time(), meta.get("note") or "", json.dumps(servers), time.time()))
+    audit(f"ssh_key_{mode}", cid, actor=j["created_by"], fingerprint=key["fingerprint"], account=account,
+          servers=len(servers), result=j["status"])
+
+
+@app.post("/api/access/parse")
+@need("viewer")
+def access_parse():
+    key, err = sshkeys.parse((request.get_json(silent=True) or {}).get("key"))
+    if err:
+        return jsonify(error=err), 400
+    return jsonify(type=key["type"], bits=key["bits"], comment=key["comment"], fingerprint=key["fingerprint"])
+
+
+@app.get("/api/clients/<cid>/access")
+@need("viewer")
+def access_list(cid):
+    get_client(cid)
+    out = []
+    for r in db().execute("SELECT * FROM access_keys WHERE client_id=? ORDER BY COALESCE(updated_at, added_at) DESC",
+                          (cid,)):
+        servers = jload(r["servers"], {})
+        out.append({"id": r["rid"], "fingerprint": r["fingerprint"], "type": r["type"], "comment": r["comment"],
+                    "account": r["account"], "added_by": r["added_by"], "added_at": iso(r["added_at"]),
+                    "note": r["note"], "updated_at": iso(r["updated_at"]),
+                    "environments": sorted({s.get("environment") or "" for s in servers.values()} - {""}),
+                    "servers": sorted(s.get("host") or hk for hk, s in servers.items())})
+    return jsonify(keys=out)
+
+
+@app.post("/api/clients/<cid>/access")
+@need("operator")
+def access_run(cid):
+    get_client(cid)
+    body = request.get_json(silent=True) or {}
+    mode = body.get("action")
+    if mode not in ("add", "remove", "check"):
+        return jsonify(error="Choose add, remove or check."), 400
+    account = str(body.get("account") or "").strip()
+    if account and not SAFE_NAME.match(account):
+        return jsonify(error="The account name can only use letters, digits, . _ and -."), 400
+    if account == "root":
+        return jsonify(error="Pegasus doesn't add keys for root. Use opc (or another sudo user) instead."), 400
+    note = str(body.get("note") or "").strip()[:300]
+    only = None
+    if body.get("record"):
+        rec = db().execute("SELECT * FROM access_keys WHERE client_id=? AND rid=?", (cid, str(body["record"]))).fetchone()
+        if not rec:
+            return jsonify(error="That key isn't in the register any more."), 404
+        key, _ = sshkeys.parse(rec["line"])
+        account = rec["account"] or ""
+        servers_rec = jload(rec["servers"], {})
+        env_names = sorted({s.get("environment") for s in servers_rec.values() if s.get("environment")})
+        only = set(servers_rec)
+    else:
+        key, err = sshkeys.parse(body.get("key"))
+        if err:
+            return jsonify(error=err), 400
+        env_names = [str(n) for n in body.get("environments") or []]
+    if not env_names:
+        return jsonify(error="Choose at least one environment."), 400
+    steps, seen, prd = [], set(), set()
+    for env in env_names:
+        servers = env_servers(cid, env)
+        if not servers:
+            return jsonify(error=f"{env} isn't in the inventory."), 404
+        if is_prd(env_tier(servers)):
+            prd.add(env)
+        for s in unique_hosts(servers):
+            hk = host_key(s)
+            if hk in seen or (only is not None and hk not in only):
+                continue
+            seen.add(hk)
+            steps.append({"op": f"access.{mode}", "target": target_of(s), "environment": env, "key": key["line"],
+                          "account": account, "independent": True,
+                          "label": f"{mode.capitalize()} key {key['comment'] or key['fingerprint'][:20]}"
+                                   + (f" for {account}" if account else "")})
+    if not steps:
+        return jsonify(error="None of those servers are in the inventory any more."), 400
+    if mode != "check" and prd:
+        expected = sorted(prd)[0] if len(prd) == 1 else "PRODUCTION"
+        if str(body.get("confirm") or "").upper() != expected.upper():
+            return jsonify(error=f"Type {expected} to confirm.", need_confirm=True, expected=expected,
+                           prd=sorted(prd)), 409
+    title = f"{mode} SSH key {key['comment'] or key['fingerprint'][:20]}" + (f" for {account}" if account else "")
+    try:
+        jid = queue_job(cid, None, f"access.{mode}", title, steps, stop_on_failure=True,
+                        meta={"mode": mode, "line": key["line"], "account": account, "note": note})
+    except JobRefused as e:
+        return jsonify(error=str(e)), e.status
+    audit("job_queued", cid, job=jid, title=title, environments=env_names)
+    return jsonify(job=jid, servers=len(steps), environments=env_names)
 
 
 # ---------------------------------------------------------------- connector API (called by connectors only)
@@ -491,6 +1806,7 @@ def connector_register():
     c.execute("UPDATE reg_tokens SET used_at=?, connector_id=? WHERE token_hash=?", (now, con_id, t["token_hash"]))
     c.execute("COMMIT")
     client = c.execute("SELECT name FROM clients WHERE id=?", (t["client_id"],)).fetchone()
+    audit("connector_registered", t["client_id"], actor="connector", connector=con_id, name=clean("name", 80))
     return jsonify(connector_id=con_id, secret=secret, tenant=t["client_id"], client_name=client["name"],
                    signing_public_key=protocol.public_key_b64(signing_key()))
 
@@ -557,28 +1873,46 @@ def connector_events(jid):
         status = body.get("status") if body.get("status") in ("succeeded", "failed", "rejected") else "failed"
         results = body.get("results") if isinstance(body.get("results"), list) else []
         db().execute("UPDATE jobs SET status=?, finished_at=?, results=? WHERE id=?",
-                     (status, time.time(), json.dumps(results)[:500000], jid))
+                     (status, time.time(), json.dumps(results)[:2000000], jid))
+        finalize_pending()
     return jsonify(ok=True)
 
 
 # ---------------------------------------------------------------- page
+@app.errorhandler(404)
+def not_found(e):
+    if request.path.startswith("/api/"):
+        return jsonify(error="Not found."), 404
+    return e
+
+
+@app.errorhandler(405)
+def not_allowed(e):
+    return jsonify(error="That method isn't allowed here."), 405
+
+
 @app.get("/")
 def index():
     return send_from_directory(app.static_folder, "index.html")
 
 
 def main():
-    if not ADMIN_PASSWORD:
-        raise SystemExit("Set PEGASUS_ADMIN_PASSWORD before starting.")
     init_db()
     signing_key()
+    c = connect()
+    users = c.execute("SELECT COUNT(*) n FROM users").fetchone()["n"]
+    c.close()
     host, port = os.environ.get("PEGASUS_HOST", "127.0.0.1"), int(os.environ.get("PEGASUS_PORT", "8443"))
     print(f"Pegasus control plane {__version__} on http://{host}:{port} "
           f"(signing key {protocol.fingerprint(protocol.public_key_b64(signing_key()))})")
+    if not users:
+        print("No accounts yet: open the page to create the first admin"
+              + (" (you'll need PEGASUS_ADMIN_PASSWORD)." if ADMIN_PASSWORD else " (from this machine)."))
     app.run(host=host, port=port, threaded=True)
 
 
 init_db()
+app.secret_key = session_secret()
 
 if __name__ == "__main__":
     main()

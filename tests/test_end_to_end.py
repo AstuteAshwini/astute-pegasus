@@ -2,89 +2,23 @@
 import filecmp
 import json
 import os
-import sys
-import tempfile
-import threading
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-TMP = tempfile.mkdtemp()
-os.environ.update(PEGASUS_DATA=TMP + "/cp", PEGASUS_ADMIN_PASSWORD="pw", PEGASUS_COOKIE_SECURE="false")
-sys.path[:0] = [str(ROOT / "control-plane"), str(ROOT / "connector")]
+import pytest
+import requests
 
-import pytest  # noqa: E402
-import requests  # noqa: E402
-from werkzeug.serving import make_server  # noqa: E402
-
-from pegasus_cloud import app as cp  # noqa: E402
-from pegasus_connector import agent as ag, protocol  # noqa: E402
-from pegasus_connector.operations import OperationError, build  # noqa: E402
-
-INVENTORY = """environment,tier,host,ip,role,os_user,domain,env_script
-HRDEV,DEV,hrdevweb01,10.0.1.11,web,psadm2,peoplesoft,/u01/pt/psconfig.sh
-HRDEV,DEV,hrdevapp01,10.0.1.21,app,psadm2,HRDEV,/u01/pt/psconfig.sh
-HRDEV,DEV,hrdevapp01,10.0.1.21,prcs,psadm2,PRCSDOM,/u01/pt/psconfig.sh
-HRPRD,PRD,hrprdapp01,10.0.9.21,app,psadm2,HRPRD,/u01/pt/psconfig.sh
-"""
-
-
-class FakeServers:
-    """Pretends to be the PeopleSoft servers: answers psadmin and the levels script."""
-    def __init__(self):
-        self.user = "opc"
-        self.calls = []
-        self.state = {}
-
-    def run(self, target, command, stdin=None, on_output=None, timeout=900):
-        self.calls.append((target["host"], command))
-        out, code = "", 0
-        if "hostname" in command and "uptime" in command:
-            out = f"{target['host']}\nopc\n 10:00 up 3 days\n"
-        elif "sstatus" in command or "-p status" in command or "-w status" in command:
-            up = self.state.get(target["domain"], True)
-            out = ("BBL  ( IDLE )\nPSAPPSRV ( IDLE )\n" if target["role"] == "app" else
-                   "started\n" if up else "is not started\n") if up else "is not started\n"
-        elif " boot " in command or "-p start" in command or "-w start" in command:
-            self.state[target["domain"]] = True
-            out = "started\n"
-        elif "shutdown" in command or "-p stop" in command:
-            self.state[target["domain"]] = False
-            out = "stopped\n"
-        elif command.endswith("bash -s"):
-            out = "PL|pt|8.62.12\nPL|jdk|21.0.12|/u01/pt/jdk\n"
-        else:
-            out, code = "unexpected command\n", 1
-        if on_output:
-            on_output(out)
-        return code
-
-
-@pytest.fixture(scope="module")
-def env():
-    srv = make_server("127.0.0.1", 0, cp.app, threaded=True)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{srv.server_port}"
-    admin = requests.Session()
-    admin.headers["X-Requested-With"] = "pegasus"
-    assert admin.post(url + "/api/login", json={"password": "pw", "name": "ashwini"}).ok
-    cid = admin.post(url + "/api/clients", json={"name": "MiraCosta College"}).json()["id"]
-    assert admin.put(url + f"/api/clients/{cid}/inventory", json={"csv": INVENTORY}).json()["servers"] == 4
-    tok = admin.post(url + f"/api/clients/{cid}/tokens").json()
-    cfg_path = TMP + "/conn/config.json"
-    key = Path(TMP + "/id_rsa"); key.write_text("x")
-    cfg = ag.register(url, tok["token"], cfg_path, "opc", str(key))
-    fake = FakeServers()
-    agent = ag.Agent(cfg_path, runner=fake)
-    yield {"url": url, "admin": admin, "cid": cid, "agent": agent, "fake": fake, "cfg": cfg, "token": tok}
-    srv.shutdown()
+from conftest import INVENTORY, ROOT, TMP, drain
+from pegasus_cloud import app as cp
+from pegasus_connector import agent as ag, protocol
+from pegasus_connector.operations import OperationError, build
 
 
 def run_job(e, body):
     r = e["admin"].post(e["url"] + f"/api/clients/{e['cid']}/run", json=body)
     assert r.status_code == 200, r.text
     jid = r.json()["job"]
-    assert e["agent"].poll_once(wait=2)
+    assert drain(e)
     for _ in range(50):
         j = e["admin"].get(e["url"] + f"/api/jobs/{jid}").json()
         if j["status"] not in ("queued", "running"):
@@ -225,8 +159,11 @@ def test_one_job_at_a_time_per_environment(env):
 
 
 def test_revoked_connector_is_cut_off(env):
-    assert env["admin"].delete(env["url"] + f"/api/connectors/{env['cfg']['connector_id']}").ok
-    assert env["agent"].run_forever(log=lambda *_: None) == 2
+    tok = env["admin"].post(env["url"] + f"/api/clients/{env['cid']}/tokens").json()
+    cfg = ag.register(env["url"], tok["token"], TMP + "/conn2/config.json", "opc", TMP + "/id_rsa")
+    second = ag.Agent(TMP + "/conn2/config.json", runner=env["fake"])
+    assert env["admin"].delete(env["url"] + f"/api/connectors/{cfg['connector_id']}").ok
+    assert second.run_forever(log=lambda *_: None) == 2
 
 
 def test_admin_api_needs_sign_in(env):
@@ -240,7 +177,8 @@ def test_admin_local_only_blocks_tunnelled_requests(env):
     try:
         via_tunnel = {"Cf-Connecting-Ip": "203.0.113.9", "X-Forwarded-For": "203.0.113.9"}
         assert requests.get(env["url"] + "/", headers=via_tunnel).status_code == 404
-        assert requests.post(env["url"] + "/api/login", json={"password": "pw"}, headers=via_tunnel).status_code == 404
+        assert requests.post(env["url"] + "/api/login", json={"email": "a@b.co", "password": "pw"},
+                             headers=via_tunnel).status_code == 404
         r = requests.get(env["url"] + "/api/connector/v1/jobs/next", headers=dict(via_tunnel, Authorization="Bearer k_x.y"))
         assert r.status_code == 401                                   # connector API still reachable, still needs a secret
         assert env["admin"].get(env["url"] + "/api/session").ok           # direct local use still works
