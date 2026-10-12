@@ -84,6 +84,13 @@ class FakeJira:
     def project(self):
         return {"name": "Change management", "issueTypes": [{"name": "Change"}]}
 
+    def create_meta(self):
+        return {"change type": {"name": "Change type", "fieldId": "customfield_1", "schema": {"type": "option"},
+                                "allowedValues": [{"value": "Normal"}]}}
+
+    def change_fields(self, meta, window):
+        return {"customfield_1": {"value": "Normal"}}
+
 
 @pytest.fixture(scope="module")
 def jira(env):
@@ -292,6 +299,18 @@ def test_ssh_access_add_check_remove(env):
     r = env["admin"].post(url(env, "/api/clients/{cid}/access"),
                           json={"action": "add", "key": key, "environments": ["HRPRD"]})
     assert r.status_code == 409 and r.json()["need_confirm"]
+
+
+def test_patch_settings_round_trip(env):
+    base = url(env, "/api/clients/{cid}/patch-settings")
+    assert env["admin"].get(base).json()["staging_root"] == "/u01/app/oracle/staging/cpu"
+    r = env["admin"].put(base, json={"targets": [{"component": "tuxedo", "applies_to": "12.2.2", "target": "RP110",
+                                                  "patch_number": "35000001"}]})
+    assert r.ok, r.text
+    assert env["admin"].put(base, json={"staging_root": "/u01"}).status_code == 400          # too general
+    assert env["admin"].put(base, json={"targets": [{"component": "jdk", "target": "21; rm"}]}).status_code == 400
+    assert env["admin"].get(base).json()["targets"][0]["target"] == "RP110"
+    env["admin"].put(base, json={"targets": []})
 
 
 def test_protocol_version_unchanged():

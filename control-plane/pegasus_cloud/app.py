@@ -1101,6 +1101,10 @@ def posture(cid, env):
     levels, staged = env_levels(cid, env), env_staged(cid, env)
     cat, cat_at = client_catalog(cid)
     targets = patch_settings(cid)["targets"]
+    java_dates = dict(cat.get("java_dates") or {})
+    for info in (cat.get("java") or {}).values():         # a JDK just updated to the latest release
+        if info.get("version") and info.get("date"):
+            java_dates.setdefault(info["version"], info["date"])
     hosts = []
     for s in unique_hosts(servers):
         hk = host_key(s)
@@ -1112,7 +1116,7 @@ def posture(cid, env):
             h.update(checked=iso(lv["checked_at"]), pt=lv.get("pt", ""), warnings=lv.get("warnings", []),
                      error=lv.get("error", ""))
             if not lv.get("error"):
-                items = ev.evaluate(lv, targets, cat.get("java"), cat.get("oracle"), cat.get("java_dates"))
+                items = ev.evaluate(lv, targets, cat.get("java"), cat.get("oracle"), java_dates)
                 hs = staged.get(hk, {})
                 for it in items:
                     st = hs.get(it.get("key") or "-")
@@ -1280,7 +1284,7 @@ def patching_stage(cid):
 @need("viewer")
 def get_patch_settings(cid):
     get_client(cid)
-    return jsonify(patch_settings(cid), components=ev.COMPONENTS, default_platform=ev.DEFAULT_PLATFORM)
+    return jsonify(dict(patch_settings(cid), components=ev.COMPONENTS, default_platform=ev.DEFAULT_PLATFORM))
 
 
 @app.put("/api/clients/<cid>/patch-settings")
@@ -1889,6 +1893,11 @@ def not_found(e):
 @app.errorhandler(405)
 def not_allowed(e):
     return jsonify(error="That method isn't allowed here."), 405
+
+
+@app.get("/favicon.ico")
+def favicon():
+    return "", 204
 
 
 @app.get("/")

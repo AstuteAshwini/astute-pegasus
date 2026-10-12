@@ -18,81 +18,135 @@
 *{box-sizing:border-box}[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans)}
 h1,h2,h3{font-weight:650;letter-spacing:-.012em;line-height:1.2}
+a{color:var(--accent)}
 .mono{font-family:var(--mono);font-size:12.5px}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 button{font:inherit;font-size:13.5px;font-weight:550;border-radius:var(--r-sm);padding:7px 13px;cursor:pointer;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink)}
 button:hover{background:var(--sunk)}button:disabled{opacity:.45;cursor:not-allowed}
 button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
-button.go{color:var(--run)}button.halt{color:var(--stop)}
+button.go{color:var(--run)}button.halt,button.danger{color:var(--stop)}
 button.link{border:none;background:none;color:var(--accent);padding:4px 2px}button.sm{padding:4px 10px;font-size:12.5px}
-input,textarea{font:inherit;font-size:14px;padding:8px 11px;border:1px solid var(--line-strong);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);width:100%}
+input,textarea,select{font:inherit;font-size:14px;padding:8px 11px;border:1px solid var(--line-strong);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);width:100%}
+input[type=checkbox]{width:auto;margin:0 6px 0 0;vertical-align:-2px}
 textarea{font-family:var(--mono);font-size:12.5px;min-height:150px}
-label{display:block;font-size:13px;color:var(--muted);margin-bottom:12px;font-weight:500}label input{margin-top:5px}
+label{display:block;font-size:13px;color:var(--muted);margin-bottom:12px;font-weight:500}label input,label select,label textarea{margin-top:5px}
+label.inline{display:flex;align-items:center;color:var(--ink);font-size:14px}
 .side{position:fixed;inset:0 auto 0 0;width:var(--side);background:var(--night);color:var(--night-ink);display:flex;flex-direction:column}
 .brand{padding:20px 18px;font-size:20px;font-weight:700;color:#fff}.brand small{display:block;font-size:12px;font-weight:450;color:var(--night-muted)}
 .side h3{font-size:12px;color:var(--night-muted);font-weight:600;margin:10px 18px 6px}
 #clientList{flex:1;overflow:auto;padding:0 10px}
-#clientList button{display:block;width:100%;text-align:left;border:none;background:none;color:var(--night-ink);padding:9px 12px;border-radius:var(--r)}
+#clientList button,.side-nav button{display:block;width:100%;text-align:left;border:none;background:none;color:var(--night-ink);padding:9px 12px;border-radius:var(--r)}
 #clientList button small{display:block;color:var(--night-muted);font-size:12px;font-weight:400}
-#clientList button:hover{background:#ffffff10}#clientList button[aria-current=true]{background:var(--night-2);box-shadow:inset 3px 0 0 #C9CEFF}
-.side-foot .mono{word-break:break-all}
+#clientList button:hover,.side-nav button:hover{background:#ffffff10}#clientList button[aria-current=true],.side-nav button[aria-current=true]{background:var(--night-2);box-shadow:inset 3px 0 0 #C9CEFF}
+.side-nav{padding:0 10px 6px}
 .side-foot{border-top:1px solid #ffffff1c;padding:14px 18px;display:grid;gap:8px;font-size:12.5px;color:var(--night-muted)}
-.side-foot button{background:transparent;color:var(--night-ink);border-color:#ffffff33}
-main{margin-left:var(--side);padding:28px 28px 340px;max-width:1240px}
+.side-foot .mono{word-break:break-all}.side-foot button{background:transparent;color:var(--night-ink);border-color:#ffffff33}
+.side-foot .who{color:var(--night-ink);font-weight:600}
+main{margin-left:var(--side);padding:28px 28px 340px;max-width:1280px}
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);padding:18px 20px;margin-bottom:18px}
-.panel h2{font-size:17px;margin:0 0 6px}.help{color:var(--muted);font-size:13.5px;margin:0 0 12px;max-width:85ch}
+.panel h2{font-size:17px;margin:0 0 6px}.help{color:var(--muted);font-size:13.5px;margin:0 0 12px;max-width:90ch}
 .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.msg{font-size:13.5px;padding:10px 13px;border-radius:var(--r);margin:10px 0;background:var(--stop-bg);color:var(--stop)}.msg.ok{background:var(--run-bg);color:var(--run)}
+.msg{font-size:13.5px;padding:10px 13px;border-radius:var(--r);margin:10px 0;background:var(--stop-bg);color:var(--stop)}.msg.ok{background:var(--run-bg);color:var(--run)}.msg.info{background:var(--soft);color:var(--ink)}
 .tag{display:inline-block;font-size:11.5px;font-weight:650;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--accent)}.tag.prd{background:var(--warn-bg);color:var(--warn)}
-.st{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px}
+.st{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;white-space:nowrap}
 .st::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
-.st.up,.st.succeeded,.st.running{background:var(--run-bg);color:var(--run)}.st.down,.st.failed,.st.stopped,.st.rejected{background:var(--stop-bg);color:var(--stop)}
-.st.queued,.st.unknown,.st.expired{background:var(--unk-bg);color:var(--unk)}.st.busy{background:var(--warn-bg);color:var(--warn)}
-table{border-collapse:collapse;width:100%;font-size:13.5px}th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line)}
+.st.up,.st.succeeded,.st.running,.st.ok,.st.approved,.st.applied{background:var(--run-bg);color:var(--run)}
+.st.down,.st.failed,.st.stopped,.st.rejected,.st.needed,.st.err{background:var(--stop-bg);color:var(--stop)}
+.st.queued,.st.unknown,.st.expired,.st.no-target,.st.superseded,.st.withdrawn,.st.stale{background:var(--unk-bg);color:var(--unk)}
+.st.busy,.st.pending,.st.applying{background:var(--warn-bg);color:var(--warn)}
+table{border-collapse:collapse;width:100%;font-size:13.5px}th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);vertical-align:top}
 th{font-weight:550;color:var(--muted);font-size:12.5px;background:var(--sunk)}tr:last-child td{border-bottom:none}
+tr.sub td{border-bottom:none;padding-top:0}
 .scroll{overflow-x:auto}.det{color:var(--muted);font-size:12.5px}
 .env{border:1px solid var(--line);border-radius:var(--r);margin-bottom:12px;overflow:hidden}
 .env-head{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;padding:12px 14px;background:var(--sunk)}
 .env-head h3{margin:0;font-family:var(--mono);font-size:16px}.env-head .acts{margin-left:auto;display:flex;flex-wrap:wrap;gap:6px}
 .cmd{background:var(--sunk);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;font-family:var(--mono);font-size:12.5px;word-break:break-all;margin:8px 0}
 .grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}@media (max-width:1000px){.grid2{grid-template-columns:minmax(0,1fr)}}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 14px}@media (max-width:900px){.grid3{grid-template-columns:minmax(0,1fr)}}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:0 0 18px;flex-wrap:wrap}
+.tabs button{border:none;background:none;border-radius:0;padding:10px 14px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent)}
+.head{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin:0 0 14px}.head h1{font-size:26px;margin:0}
+.apply-row{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r);margin-bottom:8px;background:var(--sunk)}
+.apply-row>span:first-child{flex:1;min-width:240px}.apply-row .cr{display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center}
+.apply-all{border-color:var(--accent)}
+.codes{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;font-family:var(--mono);font-size:14px;background:var(--sunk);padding:12px;border-radius:var(--r);margin:10px 0}
+.envpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:4px 12px;margin:6px 0 12px}
+#qr{display:inline-block;padding:10px;background:#fff;border-radius:var(--r);margin:6px 0}
 #console{position:fixed;left:var(--side);right:0;bottom:0;background:var(--console);color:var(--console-ink);height:300px;display:flex;flex-direction:column;z-index:5}
 #console.min{height:44px}#console.min pre{display:none}
 .con-head{display:flex;gap:10px;align-items:center;padding:10px 20px;border-bottom:1px solid #2A2F55;font-size:13px}.con-head .sp{margin-left:auto}
 .con-head button{background:transparent;color:var(--console-ink);border-color:#3A4070}
 #console pre{flex:1;overflow:auto;margin:0;padding:12px 20px;font:12.5px/1.55 var(--mono);white-space:pre-wrap}
-#login{min-height:100vh;display:grid;place-items:center;background:var(--night)}#login .panel{width:min(380px,92vw)}
-dialog{border:1px solid var(--line);border-radius:var(--r-lg);padding:22px 24px;background:var(--surface);color:var(--ink);width:min(520px,92vw)}
+#gate{min-height:100vh;display:grid;place-items:center;background:var(--night);padding:20px}#gate .panel{width:min(420px,94vw)}
+dialog{border:1px solid var(--line);border-radius:var(--r-lg);padding:22px 24px;background:var(--surface);color:var(--ink);width:min(560px,94vw)}
 dialog::backdrop{background:#0b0f2680}.row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
 .empty{padding:36px 20px;text-align:center;color:var(--muted)}
 @media (max-width:860px){.side{position:static;width:auto}main{margin-left:0;padding:18px 14px 320px}#console{left:0}}
 </style>
 </head>
 <body>
-<section id="login" hidden>
-  <form class="panel" id="loginForm">
-    <h2>Pegasus Cloud</h2><p class="help">Sign in to manage clients and their connectors.</p>
-    <label>Your name<input id="loginName" autocomplete="name"></label>
-    <label>Password<input id="loginPw" type="password" required autocomplete="current-password"></label>
+<section id="gate" hidden>
+  <form class="panel" id="setupForm" hidden>
+    <h2>Set up Pegasus Cloud</h2>
+    <p class="help">Create the first admin account. You'll set up an authenticator app next.</p>
+    <label id="setupPwL">Setup password (PEGASUS_ADMIN_PASSWORD)<input id="setupPw" type="password" autocomplete="off"></label>
+    <label>Your name<input id="setupName" autocomplete="name" required></label>
+    <label>Email<input id="setupEmail" type="email" autocomplete="username" required></label>
+    <label>Password (at least 12 characters)<input id="setupNew" type="password" autocomplete="new-password" required></label>
+    <div id="setupMsg"></div><button class="primary" type="submit">Create account</button>
+  </form>
+  <form class="panel" id="loginForm" hidden>
+    <h2>Pegasus Cloud</h2><p class="help">Sign in to manage clients and their PeopleSoft environments.</p>
+    <label>Email<input id="loginEmail" type="email" autocomplete="username" required></label>
+    <label>Password<input id="loginPw" type="password" autocomplete="current-password" required></label>
     <div id="loginMsg"></div><button class="primary" type="submit">Sign in</button>
+  </form>
+  <form class="panel" id="mfaForm" hidden>
+    <h2>Enter your code</h2><p class="help">Open your authenticator app and enter the 6-digit code for Pegasus. If you've lost your phone, enter one of your recovery codes.</p>
+    <label>Code<input id="mfaCode" inputmode="numeric" autocomplete="one-time-code" required></label>
+    <div id="mfaMsg"></div><div class="toolbar"><button class="primary" type="submit">Continue</button><button type="button" class="link" data-restart>Start over</button></div>
+  </form>
+  <form class="panel" id="enrollForm" hidden>
+    <h2>Set up your authenticator app</h2>
+    <p class="help">Pegasus needs a second step at every sign-in. Scan this code with Microsoft Authenticator, Google Authenticator, 1Password or similar, then enter the 6-digit code it shows.</p>
+    <div id="qr" aria-label="QR code for your authenticator app"></div>
+    <p class="help">Can't scan? Enter this key in the app: <b class="mono" id="enrollSecret"></b></p>
+    <label>Code from the app<input id="enrollCode" inputmode="numeric" autocomplete="one-time-code" required></label>
+    <div id="enrollMsg"></div><div class="toolbar"><button class="primary" type="submit">Turn on</button><button type="button" class="link" data-restart>Start over</button></div>
+  </form>
+  <div class="panel" id="codesPanel" hidden>
+    <h2>Save your recovery codes</h2>
+    <p class="help">Each code signs you in once if you lose your phone. Store them somewhere safe, like your password manager. You won't see them again.</p>
+    <div class="codes" id="codesList"></div>
+    <div class="toolbar"><button type="button" id="codesCopy">Copy codes</button><button type="button" class="primary" id="codesDone">I've saved them</button></div>
+  </div>
+  <form class="panel" id="pwForm" hidden>
+    <h2>Choose a new password</h2><p class="help">You signed in with a temporary password. Choose your own to continue.</p>
+    <label>Temporary password<input id="pwCur" type="password" autocomplete="current-password" required></label>
+    <label>New password (at least 12 characters)<input id="pwNew" type="password" autocomplete="new-password" required></label>
+    <div id="pwMsg"></div><button class="primary" type="submit">Save password</button>
   </form>
 </section>
 
 <div id="shell" hidden>
   <aside class="side">
     <div class="brand">Pegasus Cloud<small>PeopleSoft operations, governed by Astute</small></div>
+    <nav class="side-nav" id="adminNav" hidden><button type="button" id="navUsers">People and access</button></nav>
     <h3>Clients</h3>
     <nav id="clientList" aria-label="Clients"></nav>
     <div class="side-foot">
-      <button type="button" id="addClient">Add client</button>
-      <span id="who"></span><span>Signing key <span class="mono" id="keyFp"></span></span>
-      <button type="button" id="logout">Sign out</button>
+      <button type="button" id="addClient" hidden>Add client</button>
+      <span><span class="who" id="who"></span><br><span id="whoRole"></span></span>
+      <span>Signing key <span class="mono" id="keyFp"></span></span>
+      <div class="toolbar"><button type="button" class="sm" id="myAccount">My account</button><button type="button" class="sm" id="logout">Sign out</button></div>
     </div>
   </aside>
-  <main id="main"><div class="empty">Choose a client, or add one.</div></main>
+  <main id="main"><div class="empty">Choose a client.</div></main>
   <section id="console" class="min" aria-label="Job output">
     <div class="con-head"><span class="st queued" id="conSt">idle</span><b id="conTitle">Console</b><span class="sp"><button class="sm" id="conToggle" type="button">Expand</button></span></div>
-    <pre id="conOut"></pre>
+    <pre id="conOut" aria-live="polite"></pre>
   </section>
 </div>
 
@@ -100,72 +154,172 @@ dialog::backdrop{background:#0b0f2680}.row{display:flex;gap:8px;justify-content:
   <p class="help">Run this on the client's jump host (or a small VM that can reach their PeopleSoft servers over SSH). The token works once and expires in 24 hours. Replace the SSH user and key path with the ones the connector should use.</p>
   <div class="cmd" id="tokCmd"></div>
   <p class="help">The connector prints the control plane's signing key when it registers. Check it matches: <b class="mono" id="tokFp"></b>. Then start it with <code>python -m pegasus_connector run</code>.</p>
+  <p class="help">For patching, also save the client's Oracle Support account on the connector (it never leaves their network): <code>python -m pegasus_connector oracle-login --user name@client.com</code></p>
   <div class="row"><button type="button" id="tokCopy">Copy command</button><button type="button" class="primary" id="tokClose">Done</button></div>
 </dialog>
 
 <dialog id="confDlg"><form id="confForm"><h2 id="confTitle"></h2><p class="help" id="confText"></p>
-  <label id="confLabel">Type the environment name to confirm<input id="confInput" class="mono" autocomplete="off"></label>
+  <label id="confLabel">Type <b id="confMust" class="mono"></b> to confirm<input id="confInput" class="mono" autocomplete="off"></label>
   <div class="row"><button type="button" id="confCancel">Cancel</button><button class="primary" type="submit" id="confGo">Continue</button></div></form></dialog>
 
+<dialog id="reqDlg"><form id="reqForm"><h2 id="reqTitle">Request approval</h2><p class="help" id="reqText"></p>
+  <div class="grid2"><label>Planned start<input type="datetime-local" id="reqStart"></label><label>Planned end<input type="datetime-local" id="reqEnd"></label></div>
+  <label>Change type<select id="reqType"><option>Standard</option><option>Normal</option><option>Emergency</option></select></label>
+  <label>Notes for the approver<textarea id="reqNotes" style="min-height:80px;font-family:var(--sans);font-size:14px"></textarea></label>
+  <div id="reqMsg"></div>
+  <div class="row"><button type="button" id="reqCancel">Cancel</button><button class="primary" type="submit" id="reqGo">Raise Jira ticket</button></div></form></dialog>
+
+<dialog id="userDlg"><form id="userForm"><h2 id="userTitle">Add a person</h2>
+  <label>Name<input id="uName" required></label><label>Email<input id="uEmail" type="email" required></label>
+  <div class="grid2"><label>Role<select id="uRole"><option value="viewer">Viewer: sees everything, changes nothing</option><option value="operator">Operator: runs jobs, patches, manages SSH keys</option><option value="admin">Admin: also settings, connectors, people</option></select></label>
+  <label>Works for<select id="uClient"></select></label></div>
+  <div id="userMsg"></div>
+  <div class="row"><button type="button" id="userCancel">Cancel</button><button class="primary" type="submit" id="userGo">Add</button></div></form></dialog>
+
+<dialog id="tempDlg"><h2 id="tempTitle">Temporary password</h2>
+  <p class="help" id="tempText"></p><div class="cmd" id="tempPw"></div>
+  <div class="row"><button type="button" id="tempCopy">Copy</button><button type="button" class="primary" id="tempClose">Done</button></div></dialog>
+
+<dialog id="acctDlg"><h2>My account</h2>
+  <p class="help" id="acctInfo"></p>
+  <form id="acctPwForm"><h3 style="font-size:15px">Change password</h3>
+    <label>Current password<input id="aCur" type="password" autocomplete="current-password" required></label>
+    <label>New password<input id="aNew" type="password" autocomplete="new-password" required></label>
+    <button type="submit">Change password</button></form>
+  <form id="acctCodesForm" style="margin-top:18px"><h3 style="font-size:15px">Recovery codes</h3>
+    <p class="help">Get a new set (the old ones stop working).</p>
+    <label>Password<input id="aCodesPw" type="password" autocomplete="current-password" required></label>
+    <button type="submit">New recovery codes</button></form>
+  <div id="acctMsg"></div><div class="codes" id="acctCodes" hidden></div>
+  <div class="row"><button type="button" class="primary" id="acctClose">Close</button></div></dialog>
+
+<script src="/static/qrcode.js"></script>
 <script>
 (function(){
 "use strict";
 var $=function(id){return document.getElementById(id)};
-var S={clients:[],cid:null,detail:null,job:null};
+var S={me:null,clients:[],cid:null,detail:null,tab:"overview",job:null,penv:null,pat:null,jira:null,acc:{key:null,sel:{}},users:null,view:"client"};
+var NM={jdk:"JDK",weblogic:"WebLogic",dbclient:"Oracle Database Client",tuxedo:"Tuxedo"};
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 function api(path,opt){opt=opt||{};var o={method:opt.method||"GET",headers:{"X-Requested-With":"pegasus"},credentials:"same-origin"};
   if(opt.body!==undefined){o.headers["Content-Type"]="application/json";o.body=JSON.stringify(opt.body)}
-  return fetch(path,o).then(function(r){return r.json().catch(function(){return{}}).then(function(j){if(r.status===401&&path!=="/api/login"){showLogin();throw j}if(!r.ok)throw j;return j})})}
+  return fetch(path,o).then(function(r){return r.json().catch(function(){return{}}).then(function(j){
+    if(r.status===401&&!/^\/api\/(login|setup|mfa|password)/.test(path)){boot();throw j}
+    if(r.status===403&&j.must_change_password){boot();throw j}
+    if(!r.ok)throw j;return j})})}
 function isPrd(t){return /^(prd|prod|production)$/i.test(String(t||""))}
 function ago(t){if(!t)return"never";var s=Math.round((Date.now()-new Date(t))/1000);return s<60?s+"s ago":s<3600?Math.round(s/60)+" min ago":new Date(t).toLocaleString()}
+function when(t){return t?new Date(t).toLocaleString():""}
+function msg(id,text,kind){$(id).innerHTML=text?'<div class="msg'+(kind?" "+kind:"")+'">'+esc(text)+'</div>':""}
+function can(role){var r={viewer:0,operator:1,admin:2};return S.me&&r[S.me.role]>=r[role]}
+function staffAdmin(){return S.me&&S.me.role==="admin"&&!S.me.client_id}
 
-function showLogin(){$("shell").hidden=true;$("login").hidden=false}
-$("loginForm").addEventListener("submit",function(e){e.preventDefault();
-  api("/api/login",{method:"POST",body:{password:$("loginPw").value,name:$("loginName").value}}).then(function(){$("loginPw").value="";boot()})
-  .catch(function(j){$("loginMsg").innerHTML='<div class="msg">'+esc(j.error||"Sign-in failed.")+'</div>'})});
-$("logout").addEventListener("click",function(){api("/api/logout",{method:"POST",body:{}}).then(showLogin)});
-function boot(){api("/api/session").then(function(s){if(!s.auth)return showLogin();$("login").hidden=true;$("shell").hidden=false;
-  $("who").textContent="Signed in as "+s.who;$("keyFp").textContent=s.signing_key;loadClients()}).catch(showLogin)}
+/* ---------- sign-in ---------- */
+function gate(which){$("shell").hidden=true;$("gate").hidden=false;
+  ["setupForm","loginForm","mfaForm","enrollForm","codesPanel","pwForm"].forEach(function(id){$(id).hidden=id!==which});
+  var f=$(which).querySelector("input");if(f)setTimeout(function(){f.focus()},30)}
+function boot(){api("/api/session").then(function(s){
+  $("keyFp").textContent=s.signing_key;
+  if(s.setup_needed){$("setupPwL").hidden=!s.setup_needs_password;return gate("setupForm")}
+  if(!s.auth) return gate("loginForm");
+  S.me=s.user;
+  if(s.must_change_password) return gate("pwForm");
+  $("gate").hidden=true;$("shell").hidden=false;
+  $("who").textContent=s.who;$("whoRole").textContent=S.me.role.charAt(0).toUpperCase()+S.me.role.slice(1)+(S.me.client_id?"":" · Astute staff");
+  $("addClient").hidden=!staffAdmin();$("adminNav").hidden=!staffAdmin();
+  loadClients()}).catch(function(){gate("loginForm")})}
+document.addEventListener("click",function(e){if(e.target.closest("[data-restart]"))api("/api/logout",{method:"POST",body:{}}).then(boot)});
+$("setupForm").addEventListener("submit",function(e){e.preventDefault();
+  api("/api/setup",{method:"POST",body:{setup_password:$("setupPw").value,name:$("setupName").value,email:$("setupEmail").value,password:$("setupNew").value}})
+  .then(function(){$("loginEmail").value=$("setupEmail").value;$("loginPw").value=$("setupNew").value;$("setupNew").value="";$("setupPw").value="";signIn()})
+  .catch(function(j){msg("setupMsg",j.error||"Couldn't create the account.")})});
+function signIn(){msg("loginMsg","");
+  return api("/api/login",{method:"POST",body:{email:$("loginEmail").value,password:$("loginPw").value}}).then(function(j){
+    $("loginPw").value="";
+    if(j.next==="mfa"){$("mfaCode").value="";msg("mfaMsg","");return gate("mfaForm")}
+    $("enrollSecret").textContent=j.secret.replace(/(.{4})/g,"$1 ").trim();$("qr").innerHTML="";
+    try{var q=qrcode(0,"M");q.addData(j.uri);q.make();$("qr").innerHTML=q.createSvgTag(5,2);$("qr").hidden=false}catch(err){$("qr").hidden=true}
+    $("enrollCode").value="";msg("enrollMsg","");gate("enrollForm")})
+  .catch(function(j){msg("loginMsg",j.error||"Sign-in failed.")})}
+$("loginForm").addEventListener("submit",function(e){e.preventDefault();signIn()});
+$("mfaForm").addEventListener("submit",function(e){e.preventDefault();
+  api("/api/login/mfa",{method:"POST",body:{code:$("mfaCode").value}}).then(function(j){
+    if(j.recovery_left!==undefined) alert("That recovery code is now used up. You have "+j.recovery_left+" left; get a new set under My account.");boot()})
+  .catch(function(j){if(j.restart)return boot();msg("mfaMsg",j.error||"That code didn't work.");$("mfaCode").select()})});
+$("enrollForm").addEventListener("submit",function(e){e.preventDefault();
+  api("/api/mfa/enroll",{method:"POST",body:{code:$("enrollCode").value}}).then(function(j){
+    $("codesList").innerHTML=j.recovery_codes.map(function(c){return "<span>"+esc(c)+"</span>"}).join("");gate("codesPanel")})
+  .catch(function(j){if(j.restart)return boot();msg("enrollMsg",j.error||"That code didn't match.");$("enrollCode").select()})});
+$("codesCopy").addEventListener("click",function(){var t=[].map.call($("codesList").children,function(x){return x.textContent}).join("\n");navigator.clipboard&&navigator.clipboard.writeText(t);this.textContent="Copied"});
+$("codesDone").addEventListener("click",boot);
+$("pwForm").addEventListener("submit",function(e){e.preventDefault();
+  api("/api/password",{method:"POST",body:{current:$("pwCur").value,new:$("pwNew").value}}).then(function(){$("pwCur").value=$("pwNew").value="";boot()})
+  .catch(function(j){msg("pwMsg",j.error||"Couldn't change the password.")})});
+$("logout").addEventListener("click",function(){api("/api/logout",{method:"POST",body:{}}).then(function(){S.cid=null;boot()})});
 
-function loadClients(){return api("/api/clients").then(function(j){S.clients=j.clients;
-  $("clientList").innerHTML=j.clients.map(function(c){return '<button type="button" data-cid="'+esc(c.id)+'"'+(c.id===S.cid?' aria-current="true"':'')+'>'+esc(c.name)+
+/* my account */
+$("myAccount").addEventListener("click",function(){$("acctInfo").textContent=S.me.email+" · "+S.me.role+(S.me.client_id?"":" · Astute staff")+" · "+S.me.recovery_left+" recovery codes left";
+  msg("acctMsg","");$("acctCodes").hidden=true;$("acctDlg").showModal()});
+$("acctClose").addEventListener("click",function(){$("acctDlg").close()});
+$("acctPwForm").addEventListener("submit",function(e){e.preventDefault();
+  api("/api/password",{method:"POST",body:{current:$("aCur").value,new:$("aNew").value}}).then(function(){$("aCur").value=$("aNew").value="";msg("acctMsg","Password changed.","ok")})
+  .catch(function(j){msg("acctMsg",j.error||"Couldn't change it.")})});
+$("acctCodesForm").addEventListener("submit",function(e){e.preventDefault();
+  api("/api/mfa/recovery-codes",{method:"POST",body:{password:$("aCodesPw").value}}).then(function(j){$("aCodesPw").value="";
+    $("acctCodes").innerHTML=j.recovery_codes.map(function(c){return "<span>"+esc(c)+"</span>"}).join("");$("acctCodes").hidden=false;
+    msg("acctMsg","Save these now; the old codes no longer work.","ok")}).catch(function(j){msg("acctMsg",j.error||"Couldn't make new codes.")})});
+
+/* ---------- clients ---------- */
+function loadClients(){return api("/api/clients").then(function(j){S.clients=j.clients;renderClientList();
+  if(S.view==="users") return showUsers();
+  if(!S.cid&&j.clients.length) openClient(j.clients[0].id);
+  else if(!j.clients.length) $("main").innerHTML='<div class="empty">'+(staffAdmin()?"No clients yet. Add one.":"You don't have access to any client yet.")+'</div>'})}
+function renderClientList(){
+  $("clientList").innerHTML=S.clients.map(function(c){return '<button type="button" data-cid="'+esc(c.id)+'"'+(c.id===S.cid&&S.view==="client"?' aria-current="true"':'')+'>'+esc(c.name)+
     '<small>'+c.environments+' environment'+(c.environments===1?'':'s')+' &middot; '+(c.connectors?c.online+' of '+c.connectors+' connector'+(c.connectors===1?'':'s')+' online':'no connector')+'</small></button>'}).join("");
-  if(!S.cid&&j.clients.length) openClient(j.clients[0].id)})}
-$("clientList").addEventListener("click",function(e){var b=e.target.closest("[data-cid]");if(b)openClient(b.dataset.cid)});
+  $("navUsers").setAttribute("aria-current",S.view==="users")}
+$("clientList").addEventListener("click",function(e){var b=e.target.closest("[data-cid]");if(b){S.view="client";openClient(b.dataset.cid)}});
 $("addClient").addEventListener("click",function(){var n=prompt("Client name");if(!n)return;
-  api("/api/clients",{method:"POST",body:{name:n}}).then(function(c){S.cid=c.id;loadClients().then(function(){openClient(c.id)})}).catch(function(j){alert(j.error)})});
+  api("/api/clients",{method:"POST",body:{name:n}}).then(function(c){S.cid=c.id;S.view="client";loadClients().then(function(){openClient(c.id)})}).catch(function(j){alert(j.error)})});
 
-function openClient(cid){S.cid=cid;[].forEach.call($("clientList").children,function(b){b.setAttribute("aria-current",b.dataset.cid===cid)});
-  return api("/api/clients/"+cid).then(function(d){S.detail=d;render()})}
-function refresh(){if(S.cid) openClient(S.cid); loadClients()}
+function openClient(cid){if(cid!==S.cid){S.penv=null;S.pat=null;S.acc={key:null,sel:{}}}S.cid=cid;renderClientList();
+  return api("/api/clients/"+cid).then(function(d){S.detail=d;if(!S.penv&&d.environments.length)S.penv=d.environments[0].name;render()})}
+function refresh(){if(S.cid&&S.view==="client") api("/api/clients/"+S.cid).then(function(d){S.detail=d;if(S.tab==="overview")render()});loadClientsQuiet()}
+function loadClientsQuiet(){api("/api/clients").then(function(j){S.clients=j.clients;renderClientList()})}
 
-function render(){var d=S.detail,h="";
-  h+='<h1 style="font-size:26px;margin:0 0 18px">'+esc(d.name)+'</h1><div class="grid2"><div class="panel"><h2>Connectors</h2>';
+var TABS=[["overview","Overview"],["patching","Patching"],["access","SSH access"],["settings","Settings"],["activity","Activity"]];
+function render(){var d=S.detail;
+  var h='<div class="head"><h1>'+esc(d.name)+'</h1></div><div class="tabs" role="tablist">'+TABS.map(function(t){return '<button type="button" role="tab" data-tab="'+t[0]+'" aria-selected="'+(S.tab===t[0])+'">'+t[1]+'</button>'}).join("")+'</div><div id="tabBody"></div>';
+  $("main").innerHTML=h;
+  ({overview:renderOverview,patching:renderPatching,access:renderAccess,settings:renderSettings,activity:renderActivity})[S.tab]()}
+
+function renderOverview(){var d=S.detail,h='<div class="grid2"><div class="panel"><h2>Connectors</h2>';
   h+='<p class="help">Each connector runs inside the client\'s network and only connects out to Pegasus.</p>';
   if(!d.connectors.length) h+='<div class="empty">No connector yet.</div>';
   else{h+='<table><thead><tr><th>Name</th><th>Status</th><th>Version</th><th></th></tr></thead><tbody>';
-    d.connectors.forEach(function(c){h+='<tr><td><b>'+esc(c.name)+'</b><br><span class="det">'+esc(c.hostname)+'</span></td><td><span class="st '+(c.online?'up':'down')+'">'+(c.online?'Online':'Offline')+'</span><br><span class="det">'+esc(ago(c.last_seen))+'</span></td><td class="mono">'+esc(c.version)+'</td><td><button class="link sm" style="color:var(--stop)" data-revoke="'+esc(c.id)+'">Remove</button></td></tr>'});
+    d.connectors.forEach(function(c){h+='<tr><td><b>'+esc(c.name)+'</b><br><span class="det">'+esc(c.hostname)+'</span></td><td><span class="st '+(c.online?'up':'down')+'">'+(c.online?'Online':'Offline')+'</span><br><span class="det">'+esc(ago(c.last_seen))+'</span></td><td class="mono">'+esc(c.version)+'</td><td>'+(can("admin")?'<button class="link sm" style="color:var(--stop)" data-revoke="'+esc(c.id)+'">Remove</button>':'')+'</td></tr>'});
     h+='</tbody></table>'}
-  h+='<div class="toolbar" style="margin-top:12px"><button type="button" class="primary" id="newTok">Add connector</button></div></div>';
-  h+='<div class="panel"><h2>Inventory</h2><p class="help">One row per server and domain. Columns: environment, tier, host, ip, role (app, prcs or web), os_user, domain, env_script. Importing replaces this client\'s inventory.</p>'+
-    '<textarea id="invCsv" spellcheck="false" placeholder="environment,tier,host,ip,role,os_user,domain,env_script"></textarea><div id="invMsg"></div><div class="toolbar" style="margin-top:10px"><button type="button" id="invSave">Import</button></div></div></div>';
-  h+='<div class="panel"><h2>Environments</h2>';
-  if(!d.environments.length) h+='<div class="empty">Import an inventory to see environments.</div>';
+  if(can("admin")) h+='<div class="toolbar" style="margin-top:12px"><button type="button" class="primary" id="newTok">Add connector</button></div>';
+  h+='</div>';
+  if(can("admin")) h+='<div class="panel"><h2>Inventory</h2><p class="help">One row per server and domain. Columns: environment, tier, host, ip, role (app, prcs or web), os_user, domain, env_script. Importing replaces this client\'s inventory.</p>'+
+    '<textarea id="invCsv" spellcheck="false" placeholder="environment,tier,host,ip,role,os_user,domain,env_script"></textarea><div id="invMsg"></div><div class="toolbar" style="margin-top:10px"><button type="button" id="invSave">Import</button></div></div>';
+  h+='</div><div class="panel"><h2>Environments</h2>';
+  if(!d.environments.length) h+='<div class="empty">'+(can("admin")?"Import an inventory to see environments.":"No environments yet.")+'</div>';
   d.environments.forEach(function(e){var cnt=e.servers.length;
-    h+='<div class="env"><div class="env-head"><h3>'+esc(e.name)+'</h3><span class="tag'+(isPrd(e.tier)?' prd':'')+'">'+esc(e.tier||'no tier')+'</span><span class="det">'+cnt+' domain'+(cnt===1?'':'s')+'</span><span class="acts">'+
-      '<button class="sm" data-run="status" data-env="'+esc(e.name)+'">Check status</button><button class="sm go" data-run="start" data-env="'+esc(e.name)+'">Start all</button><button class="sm halt" data-run="stop" data-env="'+esc(e.name)+'">Stop all</button><button class="sm" data-run="restart" data-env="'+esc(e.name)+'">Restart</button><button class="sm" data-run="levels" data-env="'+esc(e.name)+'">Patch levels</button><button class="sm" data-run="ping" data-env="'+esc(e.name)+'">Test connection</button></span></div>'+
+    h+='<div class="env"><div class="env-head"><h3>'+esc(e.name)+'</h3><span class="tag'+(isPrd(e.tier)?' prd':'')+'">'+esc(e.tier||'no tier')+'</span><span class="det">'+cnt+' domain'+(cnt===1?'':'s')+'</span>'+
+      (can("operator")?'<span class="acts"><button class="sm" data-run="status" data-env="'+esc(e.name)+'">Check status</button><button class="sm go" data-run="start" data-env="'+esc(e.name)+'">Start all</button><button class="sm halt" data-run="stop" data-env="'+esc(e.name)+'">Stop all</button><button class="sm" data-run="restart" data-env="'+esc(e.name)+'">Restart</button><button class="sm" data-run="ping" data-env="'+esc(e.name)+'">Test connection</button></span>':'')+'</div>'+
       '<div class="scroll"><table><thead><tr><th>Host</th><th>Role</th><th>Domain</th><th>OS user</th></tr></thead><tbody>'+
       e.servers.map(function(s){return '<tr><td class="mono">'+esc(s.host)+' <span class="det">'+esc(s.ip)+'</span></td><td>'+esc(s.role)+'</td><td class="mono">'+esc(s.domain)+'</td><td class="mono">'+esc(s.os_user)+'</td></tr>'}).join("")+'</tbody></table></div></div>'});
   h+='</div><div class="panel"><h2>Recent jobs</h2>';
   if(!d.jobs.length) h+='<div class="empty">No jobs yet.</div>';
   else h+='<div class="scroll"><table><thead><tr><th>When</th><th>What</th><th>By</th><th>Result</th></tr></thead><tbody>'+d.jobs.map(function(j){
-    return '<tr><td class="det">'+esc(new Date(j.created_at).toLocaleString())+'</td><td><button class="link" data-job="'+esc(j.id)+'">'+esc(j.title)+'</button>'+(j.note?'<br><span class="det">'+esc(j.note)+'</span>':'')+'</td><td>'+esc(j.created_by)+'</td><td><span class="st '+esc(j.status)+'">'+esc(j.status)+'</span></td></tr>'}).join("")+'</tbody></table></div>';
-  $("main").innerHTML=h+'</div>';
-}
+    return '<tr><td class="det">'+esc(when(j.created_at))+'</td><td><button class="link" data-job="'+esc(j.id)+'">'+esc(j.title)+'</button>'+(j.note?'<br><span class="det">'+esc(j.note)+'</span>':'')+'</td><td>'+esc(j.created_by)+'</td><td><span class="st '+esc(j.status)+'">'+esc(j.status)+'</span></td></tr>'}).join("")+'</tbody></table></div>';
+  $("tabBody").innerHTML=h+'</div>'}
 
 $("main").addEventListener("click",function(e){var t=e.target;
+  var tb=t.closest("[data-tab]"); if(tb){S.tab=tb.dataset.tab;return render()}
   if(t.id==="newTok") return api("/api/clients/"+S.cid+"/tokens",{method:"POST",body:{}}).then(function(j){$("tokCmd").textContent=j.command;$("tokFp").textContent=j.fingerprint;$("tokDlg").showModal()});
-  if(t.id==="invSave") return api("/api/clients/"+S.cid+"/inventory",{method:"PUT",body:{csv:$("invCsv").value}}).then(function(j){refresh()}).catch(function(j){$("invMsg").innerHTML='<div class="msg">'+esc(j.error)+'</div>'});
+  if(t.id==="invSave") return api("/api/clients/"+S.cid+"/inventory",{method:"PUT",body:{csv:$("invCsv").value}}).then(function(){S.penv=null;openClient(S.cid);loadClientsQuiet()}).catch(function(j){msg("invMsg",j.error)});
   var r=t.closest("[data-revoke]"); if(r){ if(confirm("Remove this connector? It stops working immediately and has to be registered again.")) api("/api/connectors/"+r.dataset.revoke,{method:"DELETE"}).then(refresh); return }
   var jb=t.closest("[data-job]"); if(jb) return watch(jb.dataset.job,jb.textContent);
   var b=t.closest("[data-run]"); if(b) return runAction(b.dataset.env,b.dataset.run);
@@ -174,29 +328,280 @@ $("tokClose").addEventListener("click",function(){$("tokDlg").close();refresh()}
 $("tokCopy").addEventListener("click",function(){navigator.clipboard&&navigator.clipboard.writeText($("tokCmd").textContent);this.textContent="Copied"});
 
 var confCb=null;
-function confirmBox(title,text,must,cb){confCb={cb:cb,must:must};$("confTitle").textContent=title;$("confText").textContent=text;$("confLabel").hidden=!must;$("confInput").value="";$("confGo").disabled=!!must;$("confDlg").showModal()}
+function confirmBox(title,text,must,cb,go){confCb={cb:cb,must:must};$("confTitle").textContent=title;$("confText").textContent=text;$("confLabel").hidden=!must;$("confMust").textContent=must||"";$("confInput").value="";$("confGo").disabled=!!must;$("confGo").textContent=go||"Continue";$("confDlg").showModal()}
 $("confInput").addEventListener("input",function(){$("confGo").disabled=this.value.trim().toUpperCase()!==String(confCb.must).toUpperCase()});
 $("confCancel").addEventListener("click",function(){$("confDlg").close()});
 $("confForm").addEventListener("submit",function(e){e.preventDefault();var c=confCb;$("confDlg").close();c.cb(c.must?$("confInput").value.trim():null)});
 
+function envOf(name){return (S.detail.environments||[]).filter(function(x){return x.name===name})[0]||{servers:[]}}
 function runAction(env,action){
-  var e=S.detail.environments.filter(function(x){return x.name===env})[0], changes=/start|stop|restart/.test(action);
+  var e=envOf(env), changes=/start|stop|restart/.test(action);
   var go=function(typed){api("/api/clients/"+S.cid+"/run",{method:"POST",body:{environment:env,action:action,confirm:typed}})
     .then(function(j){watch(j.job,action+" "+env);refresh()}).catch(function(j){alert(j.error||"Couldn't start.")})};
   if(!changes) return go(null);
   confirmBox(action.charAt(0).toUpperCase()+action.slice(1)+" "+env+"?","The client's connector will run psadmin on "+e.servers.length+" domain"+(e.servers.length===1?"":"s")+" in "+env+", in the safe order, and stop at the first failure.",isPrd(e.tier)?env:null,go);
 }
 
-function watch(id,title){S.job={id:id,next:0};$("conOut").textContent="";$("conTitle").textContent=title;$("console").classList.remove("min");$("conToggle").textContent="Minimize";poll()}
+/* ---------- console ---------- */
+function watch(id,title,done){S.job={id:id,next:0,done:done};$("conOut").textContent="";$("conTitle").textContent=title;$("console").classList.remove("min");$("conToggle").textContent="Minimize";poll()}
 function poll(){var j=S.job;if(!j)return;
   api("/api/jobs/"+j.id+"?since="+j.next).then(function(r){if(S.job!==j)return;j.next=r.next;
     if(r.text){var o=$("conOut");o.textContent+=r.text;o.scrollTop=o.scrollHeight}
     var st=$("conSt");st.className="st "+r.status;st.textContent=r.status==="queued"?"waiting for connector":r.status;
-    if(r.status==="queued"||r.status==="running") setTimeout(poll,1000);
-    else{var s=(r.steps||[]).filter(function(x){return x.state}).map(function(x){return x.host+" "+x.label.replace(/^Status of /,"")+": "+x.state});
-      if(s.length) $("conOut").textContent+="\n=== "+s.join("\n=== ")+"\n";
-      if(r.note) $("conOut").textContent+="\n"+r.note+"\n"; refresh()}})}
+    if(r.status==="queued"||r.status==="running") return setTimeout(poll,1000);
+    var s=(r.steps||[]).filter(function(x){return x.state}).map(function(x){return x.host+" "+x.label.replace(/^Status of /,"")+": "+x.state});
+    if(s.length) $("conOut").textContent+="\n=== "+s.join("\n=== ")+"\n";
+    if(r.note) $("conOut").textContent+="\n"+r.note+"\n";
+    if(r.followup){ $("conOut").textContent+="\n=== Next: looking up the latest Oracle releases\n"; S.job={id:r.followup,next:0,done:j.done}; $("conTitle").textContent="look up latest Oracle patches"; return setTimeout(poll,800) }
+    if(j.done) j.done(r); refresh()}).catch(function(){})}
 $("conToggle").addEventListener("click",function(){var m=$("console").classList.toggle("min");this.textContent=m?"Expand":"Minimize"});
+
+/* ---------- patching ---------- */
+function envPicker(id){return '<select id="'+id+'" style="width:auto;min-width:180px">'+S.detail.environments.map(function(e){return '<option'+(e.name===S.penv?' selected':'')+'>'+esc(e.name)+'</option>'}).join("")+'</select>'}
+function renderPatching(){
+  if(!S.detail.environments.length){$("tabBody").innerHTML='<div class="panel empty">Import an inventory first.</div>';return}
+  $("tabBody").innerHTML='<div class="panel"><div class="toolbar" style="margin-bottom:12px">'+envPicker("pEnv")+
+    (can("operator")?'<button type="button" class="primary" id="pCheck">Check patch levels</button><button type="button" id="pLookup" title="Ask Oracle again instead of using the connector\'s 12-hour cache">Look up latest again</button>':'')+
+    '<span class="det" id="pWhen"></span></div><div id="pOut"><div class="empty">Loading…</div></div></div>';
+  loadPatching()}
+function loadPatching(refresh){var env=S.penv;if(!env)return;
+  api("/api/clients/"+S.cid+"/patching?environment="+encodeURIComponent(env)+(refresh!==false?"&refresh=1":"")).then(function(j){if(S.tab!=="patching"||env!==S.penv)return;S.pat=j;renderPat()})
+  .catch(function(j){$("pOut").innerHTML='<div class="msg">'+esc(j.error||"Couldn't load.")+'</div>'})}
+function crFor(scope){return ((S.pat||{}).change_requests||[]).filter(function(c){return c.scope===scope})[0]}
+function applyCell(scope,ready,applyBtn,notReady){
+  if(!ready) return notReady;
+  if(!can("operator")) return '<span class="det">Ready to apply</span>';
+  if(!S.pat.approval.required) return applyBtn("");
+  var c=crFor(scope), req=function(label){return '<button type="button" class="sm" data-req="'+esc(scope)+'">'+label+'</button>'};
+  if(!c) return req("Request approval");
+  var link='<a href="'+esc(c.url)+'" target="_blank" rel="noopener">'+esc(c.jira_key)+'</a>';
+  if(c.status==="approved") return '<span class="cr">'+link+'<span class="st approved">Approved'+(c.approver?' by '+esc(c.approver):'')+'</span>'+applyBtn(c.id)+'</span>';
+  if(c.status==="pending") return '<span class="cr">'+link+'<span class="det">'+(c.approval==="self_approved"?'Approved by the account Pegasus uses. Someone else has to approve it.':'Not approved yet'+(c.jira_status?' (Jira status: '+esc(c.jira_status)+')':''))+'</span>'+
+    '<button type="button" class="link sm" data-crcheck="1">Check now</button><button type="button" class="link sm danger" data-crwithdraw="'+esc(c.id)+'">Withdraw</button></span>';
+  if(c.status==="applying") return '<span class="cr">'+link+'<span class="st applying">Applying now</span></span>';
+  if(c.status==="applied") return '<span class="cr">'+link+'<span class="st applied">Applied</span>'+req("Request again")+'</span>';
+  if(c.status==="rejected") return '<span class="cr">'+link+'<span class="st rejected">Rejected</span>'+req("Request again")+'</span>';
+  if(c.status==="stale") return '<span class="cr">'+link+'<span class="det">The plan changed after this ticket was raised</span>'+req("Request again")+'</span>';
+  if(c.status==="failed") return '<span class="cr">'+link+'<span class="det">Last apply failed</span>'+req("Request again")+'</span>';
+  return req("Request approval")}
+function nodeType(roles){var r=roles||[],p=[];if(r.indexOf("app")>=0)p.push("App server");if(r.indexOf("prcs")>=0)p.push("Process scheduler");if(r.indexOf("web")>=0)p.push("Web (PIA)");return p.join(", ")}
+function renderPat(){var j=S.pat,h="",env=j.environment;
+  var checked=j.hosts.map(function(x){return x.checked}).filter(Boolean).sort().pop();
+  $("pWhen").textContent=checked?"Levels read "+ago(checked)+(j.catalog_checked?" · Oracle releases looked up "+ago(j.catalog_checked):""):"";
+  if(!checked){$("pOut").innerHTML='<div class="empty">Not checked yet.'+(can("operator")?' Click Check patch levels: the connector reads JDK, WebLogic, Tuxedo and Database client levels on every server, then looks up Oracle\'s latest releases.':'')+'</div>';return}
+  if(j.oracle_error){var noAcct=/oracle-login/.test(j.oracle_error);
+    h+='<div class="msg info">'+(noAcct?'<b>Oracle Support isn\'t set up on this client\'s connector</b>, so only the JDK can be compared. On the connector, run:<div class="cmd">python -m pegasus_connector oracle-login --user name@client.com</div>The account stays on the connector; Pegasus never sees it. Then click Look up latest again.':esc(j.oracle_error))+'</div>'}
+  if(j.approval.error) h+='<div class="msg">Jira: '+esc(j.approval.error)+'</div>';
+  var groups={},order=[];
+  j.hosts.forEach(function(host){(host.items||[]).forEach(function(it){if(it.status!=="needed"||!it.key)return;
+    var g=groups[it.key];if(!g){g=groups[it.key]={component:it.component,target:it.target,label:it.latest_label||it.target,key:it.key,hosts:[],ready:0};order.push(it.key)}
+    g.hosts.push(host.host);if(it.staged)g.ready++})});
+  if(order.length){
+    if(j.approval.required) h+='<p class="help">Patching '+esc(env)+' needs an approved Jira ticket. Request approval, then Apply unlocks once someone other than the Pegasus account approves it.</p>';
+    if(order.length>1){var allReady=order.every(function(k){return groups[k].ready===groups[k].hosts.length});
+      var names=order.map(function(k){return NM[groups[k].component]});
+      h+='<div class="apply-row apply-all"><span><b>All '+order.length+' outstanding updates</b> ('+esc(names.join(", "))+') in one maintenance window</span>'+
+        applyCell("all",allReady,function(cr){return '<button type="button" class="sm primary" data-applyall="1"'+(cr?' data-cr="'+esc(cr)+'"':'')+'>Apply all to '+esc(env)+'</button>'},'<span class="det">Download every update first</span>')+'</div>'}
+    order.forEach(function(k){var g=groups[k];
+      h+='<div class="apply-row"><span><b>'+esc(NM[g.component]+" "+g.label)+'</b> for '+g.hosts.length+' server'+(g.hosts.length===1?'':'s')+'</span>'+
+        applyCell(g.component+"~"+k,g.ready===g.hosts.length,function(cr){return '<button type="button" class="sm primary" data-apply="'+esc(k)+'"'+(cr?' data-cr="'+esc(cr)+'"':'')+'>Apply to '+esc(env)+'</button>'},
+          '<span class="det">Download on every server first ('+g.ready+' of '+g.hosts.length+' done)</span>')+'</div>'})}
+  var behind=0,toStage=0;j.hosts.forEach(function(host){(host.items||[]).forEach(function(it){if(it.status==="needed"){behind++;if(it.key&&!it.staged)toStage++}})});
+  h+='<p class="help" style="margin:12px 0 10px"><b>'+(behind?behind+' component'+(behind===1?'':'s')+' behind the latest Oracle release.':'Every component is on the latest known release.')+'</b>'+
+    ' Oracle\'s last Critical Patch Update was '+esc(new Date(j.cpu.last+"T12:00:00").toLocaleDateString(undefined,{month:"long",day:"numeric",year:"numeric"}))+'; the next is '+esc(new Date(j.cpu.next+"T12:00:00").toLocaleDateString(undefined,{month:"long",day:"numeric",year:"numeric"}))+'.'+
+    (j.infra_dpk?' Latest PeopleTools Infrastructure DPK: <b>'+esc(j.infra_dpk.patch)+'</b> ('+esc(j.infra_dpk.released)+').':'')+'</p>';
+  if(toStage&&can("operator")) h+='<div class="toolbar" style="margin-bottom:12px"><button type="button" class="primary" id="pStageAll">Download all '+toStage+' update'+(toStage===1?'':'s')+'</button><span class="det">Downloaded on the connector once, copied to '+esc(j.settings.staging_root)+' on each server. Nothing is installed or restarted.</span></div>';
+  h+='<div class="scroll"><table><thead><tr><th>Server</th><th>Component</th><th>Installed</th><th>Latest</th><th>Status</th><th></th></tr></thead><tbody>';
+  j.hosts.forEach(function(host,hi){var hc='<td><span class="mono">'+esc(host.host)+'</span><br><span class="det">'+esc(nodeType(host.roles))+(host.pt?' · PeopleTools '+esc(host.pt):'')+'</span></td>';
+    if(!host.checked){h+='<tr>'+hc+'<td colspan="5" class="det">Not checked yet.</td></tr>';return}
+    if(host.error){h+='<tr>'+hc+'<td colspan="5"><span class="st err">Couldn\'t check</span> <span class="det">'+esc(host.error)+'</span></td></tr>';return}
+    if(!host.items.length) h+='<tr>'+hc+'<td colspan="5" class="det">No WebLogic, JDK, Database client or Tuxedo found.</td></tr>';
+    host.items.forEach(function(it,ii){
+      var latest=it.latest_label?esc(it.latest_label)+(it.patch_number&&it.status==="needed"?'<br><span class="det">patch '+esc(it.patch_number)+'</span>':''):'<span class="det">Unknown</span>';
+      var act="";
+      if(it.staged&&it.status==="needed") act='<span class="st ok" title="'+esc(it.staged.dir)+'">Downloaded</span>';
+      else if(it.status==="needed"&&it.key&&can("operator")) act='<button type="button" class="sm" data-dl="'+hi+':'+ii+'">Download</button>';
+      var st={needed:"Update available",ok:"Up to date","no-target":"Unknown"}[it.status]||it.status;
+      h+='<tr title="'+esc(it.detail||"")+'">'+(ii===0?hc:'<td></td>')+'<td>'+esc(NM[it.component]||it.component)+'</td><td>'+esc(it.installed)+'</td><td>'+latest+'</td><td><span class="st '+esc(it.status)+'">'+st+'</span></td><td>'+act+'</td></tr>';
+      if(it.status!=="ok"&&it.detail) h+='<tr class="sub"><td></td><td colspan="5" class="det">'+esc(it.detail)+'</td></tr>'});
+    (host.warnings||[]).forEach(function(w){h+='<tr class="sub"><td></td><td colspan="5" class="det">Warning: '+esc(w)+'</td></tr>'})});
+  $("pOut").innerHTML=h+'</tbody></table></div>'}
+function stageItems(refs){var out=[];refs.forEach(function(ref){var p=ref.split(":"),host=S.pat.hosts[+p[0]],it=host.items[+p[1]];out.push({host_key:host.host_key,key:it.key,host:host.host})});return out}
+function startStage(body,what){
+  var hosts={};S.pat.hosts.forEach(function(h){(h.items||[]).forEach(function(it){if(it.status==="needed"&&it.key&&!it.staged&&(body.all||body.items.some(function(x){return x.host_key===h.host_key&&x.key===it.key})))hosts[h.host]=1})});
+  confirmBox("Download "+what+"?","The connector downloads each update once (from Oracle Support with the client's own account, or Oracle's Java downloads), then copies it to "+S.pat.settings.staging_root+" on "+Object.keys(hosts).join(", ")+" and checks the checksum. Nothing is installed or restarted.",null,function(){
+    api("/api/clients/"+S.cid+"/patching/stage",{method:"POST",body:Object.assign({environment:S.penv},body)}).then(function(j){watch(j.job,"download and stage "+S.penv,function(){loadPatching(false)})}).catch(function(j){alert(j.error||"Couldn't start the download.")})},"Download")}
+function startApply(scope,crId){
+  var env=S.penv,e=envOf(env),by={},order=[];
+  S.pat.hosts.forEach(function(host){(host.items||[]).forEach(function(it){if(it.status!=="needed"||!it.key)return;if(scope!=="all"&&it.component+"~"+it.key!==scope)return;
+    if(!by[it.component]){by[it.component]={label:it.latest_label||it.target,hosts:[]};order.push(it.component)}by[it.component].hosts.push(host.host)})});
+  order.sort(function(a,b){return ["jdk","weblogic","dbclient","tuxedo"].indexOf(a)-["jdk","weblogic","dbclient","tuxedo"].indexOf(b)});
+  var text="This takes "+env+" down once: every domain is stopped, Pegasus checks nothing is still running, then applies in order: "+
+    order.map(function(c){return NM[c]+" "+by[c].label+" on "+by[c].hosts.join(", ")}).join("; ")+". Each home is backed up first. If a step fails the rest are skipped, and the domains are started again either way.";
+  var cr=crId&&crFor(scope);if(cr) text+=" Approved under "+cr.jira_key+(cr.approver?" by "+cr.approver:"")+"; the result is posted back to the ticket.";
+  confirmBox((scope==="all"?"Apply all outstanding updates":"Apply "+NM[order[0]])+" to "+env+"?",text,isPrd(e.tier)?env:null,function(typed){
+    var body={environment:env,scope:scope};if(typed)body.confirm=typed;if(crId)body.change_request=crId;
+    api("/api/clients/"+S.cid+"/patching/apply",{method:"POST",body:body}).then(function(j){watch(j.job,"apply "+env,function(){loadPatching()})})
+    .catch(function(j){alert(j.error||"Couldn't start the apply.");if(j.need_approval)loadPatching()})},"Apply")}
+var reqScope=null;
+function requestApproval(scope){var env=S.penv,by={},order=[];
+  S.pat.hosts.forEach(function(host){(host.items||[]).forEach(function(it){if(it.status!=="needed"||!it.key)return;if(scope!=="all"&&it.component+"~"+it.key!==scope)return;
+    if(!by[it.component]){by[it.component]={label:it.latest_label||it.target,hosts:[]};order.push(it.component)}by[it.component].hosts.push(host.host)})});
+  reqScope=scope;$("reqTitle").textContent="Request approval to patch "+env;
+  $("reqText").textContent="Raises a Jira ticket for: "+order.map(function(c){return NM[c]+" "+by[c].label+" on "+by[c].hosts.join(", ")}).join("; ")+". The ticket describes the outage and backout. Nothing changes until it's approved and you click Apply.";
+  var d=new Date();d.setDate(d.getDate()+((6-d.getDay()+7)%7||7));d.setHours(20,0,0,0);
+  var local=function(x){var p=function(n){return String(n).padStart(2,"0")};return x.getFullYear()+"-"+p(x.getMonth()+1)+"-"+p(x.getDate())+"T"+p(x.getHours())+":"+p(x.getMinutes())};
+  $("reqStart").value=local(d);d.setHours(23);$("reqEnd").value=local(d);
+  var ct=(S.jira&&S.jira.change_type)||"Normal",sel=$("reqType");if(![].some.call(sel.options,function(o){return o.value===ct}))sel.add(new Option(ct));sel.value=ct;
+  $("reqNotes").value="";msg("reqMsg","");$("reqDlg").showModal()}
+$("reqCancel").addEventListener("click",function(){$("reqDlg").close()});
+$("reqForm").addEventListener("submit",function(e){e.preventDefault();var b=$("reqGo");
+  var jt=function(v){if(!v)return"";var d=new Date(v),p=function(n){return String(Math.abs(n)).padStart(2,"0")},o=-d.getTimezoneOffset();return v+":00.000"+(o>=0?"+":"-")+p(Math.floor(Math.abs(o)/60))+p(Math.abs(o)%60)};
+  if($("reqStart").value&&$("reqEnd").value&&$("reqEnd").value<=$("reqStart").value) return msg("reqMsg","The planned end must be after the planned start.");
+  b.disabled=true;b.textContent="Raising ticket…";
+  api("/api/clients/"+S.cid+"/change-requests",{method:"POST",body:{environment:S.penv,scope:reqScope,notes:$("reqNotes").value,change_type:$("reqType").value,window:{start:jt($("reqStart").value),end:jt($("reqEnd").value)}}})
+  .then(function(j){$("reqDlg").close();if(j.note)alert(j.note);loadPatching(false)}).catch(function(j){msg("reqMsg",j.error||"Couldn't raise the ticket.")})
+  .finally(function(){b.disabled=false;b.textContent="Raise Jira ticket"})});
+
+$("main").addEventListener("change",function(e){
+  if(e.target.id==="pEnv"){S.penv=e.target.value;$("pOut").innerHTML='<div class="empty">Loading…</div>';loadPatching()}});
+$("main").addEventListener("click",function(e){var t=e.target;if(S.tab!=="patching")return;
+  if(t.id==="pCheck") return api("/api/clients/"+S.cid+"/patching/check",{method:"POST",body:{environment:S.penv}}).then(function(j){watch(j.job,"check patch levels "+S.penv,function(){loadPatching(false)})}).catch(function(j){alert(j.error)});
+  if(t.id==="pLookup") return api("/api/clients/"+S.cid+"/patching/lookup",{method:"POST",body:{}}).then(function(j){watch(j.job,"look up latest Oracle patches",function(){loadPatching(false)})}).catch(function(j){alert(j.error)});
+  if(t.id==="pStageAll") return startStage({all:true},"every outstanding update");
+  var dl=t.closest("[data-dl]");if(dl){var it=stageItems([dl.dataset.dl]);return startStage({items:it},"this update for "+it[0].host)}
+  var aa=t.closest("[data-applyall]");if(aa) return startApply("all",aa.dataset.cr);
+  var ap=t.closest("[data-apply]");if(ap){var g=null;S.pat.hosts.forEach(function(h){h.items.forEach(function(i){if(i.key===ap.dataset.apply)g=i.component})});return startApply(g+"~"+ap.dataset.apply,ap.dataset.cr)}
+  var rq=t.closest("[data-req]");if(rq) return requestApproval(rq.dataset.req);
+  if(t.closest("[data-crcheck]")) return loadPatching();
+  var wd=t.closest("[data-crwithdraw]");if(wd) return confirmBox("Withdraw this request?","Pegasus won't apply under this ticket, and adds a comment to it saying so. You can raise a new one any time.",null,function(){
+    api("/api/change-requests/"+encodeURIComponent(wd.dataset.crwithdraw)+"/withdraw",{method:"POST",body:{}}).then(function(){loadPatching(false)}).catch(function(j){alert(j.error)})},"Withdraw");
+});
+
+/* ---------- SSH access ---------- */
+function renderAccess(){var d=S.detail,h='<div>';
+  if(can("operator")){
+    h+='<div class="panel"><h2>Give someone SSH access</h2><p class="help">Adds a person\'s public key to an account\'s authorized_keys on every server of the environments you pick. Keys are checked twice: here and again on the connector. Pegasus never handles private keys.</p>'+
+      '<label>Their public key (the .pub file)<textarea id="aKey" spellcheck="false" style="min-height:90px" placeholder="ssh-ed25519 AAAA... jane@laptop"></textarea></label><div id="aKeyInfo"></div>'+
+      '<label>Account on the servers<input id="aAcct" placeholder="blank: the connector\'s SSH user (e.g. opc)" autocomplete="off"></label>'+
+      '<label>Note (who and why)<input id="aNote" placeholder="Jane Doe, DBA, ticket CHG-123"></label>'+
+      '<div class="det">Environments</div><div class="envpick">'+d.environments.map(function(e){return '<label class="inline"><input type="checkbox" data-accenv="'+esc(e.name)+'"'+(S.acc.sel[e.name]?" checked":"")+'><span class="mono" style="font-size:13px">'+esc(e.name)+'</span>&nbsp;<span class="tag'+(isPrd(e.tier)?" prd":"")+'">'+esc(e.tier||"no tier")+'</span></label>'}).join("")+'</div>'+
+      '<div id="aMsg"></div><div class="toolbar"><button type="button" class="primary" data-acc="add">Add key</button><button type="button" data-acc="check">Check</button><button type="button" class="danger" data-acc="remove">Remove key</button></div></div>'}
+  h+='<div class="panel"><h2>Keys Pegasus has added</h2><div id="aReg"><div class="empty">Loading…</div></div></div></div>';
+  $("tabBody").innerHTML=h;loadAccess()}
+function loadAccess(){api("/api/clients/"+S.cid+"/access").then(function(j){if(S.tab!=="access")return;
+  if(!j.keys.length){$("aReg").innerHTML='<div class="empty">None yet.</div>';return}
+  $("aReg").innerHTML='<div class="scroll"><table><thead><tr><th>Key</th><th>Account</th><th>Servers</th><th></th></tr></thead><tbody>'+j.keys.map(function(k){
+    return '<tr><td><b>'+esc(k.comment||k.type)+'</b><br><span class="mono det">'+esc(k.fingerprint)+'</span>'+(k.note?'<br><span class="det">'+esc(k.note)+'</span>':'')+'<br><span class="det">Added by '+esc(k.added_by)+' '+esc(ago(k.added_at))+'</span></td><td class="mono">'+esc(k.account||"SSH user")+'</td><td>'+esc(k.servers.join(", "))+'<br><span class="det">'+esc(k.environments.join(", "))+'</span></td><td>'+
+      (can("operator")?'<button type="button" class="link sm" data-rec="check" data-rid="'+esc(k.id)+'">Check</button><button type="button" class="link sm danger" data-rec="remove" data-rid="'+esc(k.id)+'">Remove</button>':'')+'</td></tr>'}).join("")+'</tbody></table></div>'})}
+var keyTimer=null;
+$("main").addEventListener("input",function(e){if(e.target.id!=="aKey")return;clearTimeout(keyTimer);var v=e.target.value;
+  keyTimer=setTimeout(function(){if(!v.trim()){$("aKeyInfo").innerHTML="";S.acc.key=null;return}
+    api("/api/access/parse",{method:"POST",body:{key:v}}).then(function(k){S.acc.key=v;$("aKeyInfo").innerHTML='<div class="msg ok">'+esc(k.type)+(k.bits?" "+k.bits+" bits":"")+' key'+(k.comment?' for '+esc(k.comment):'')+' · '+esc(k.fingerprint)+'</div>'})
+    .catch(function(j){S.acc.key=null;$("aKeyInfo").innerHTML='<div class="msg">'+esc(j.error)+'</div>'})},300)});
+$("main").addEventListener("change",function(e){var c=e.target.closest("[data-accenv]");if(c)S.acc.sel[c.dataset.accenv]=c.checked});
+function accessRun(body,label){
+  var go=function(typed){if(typed)body.confirm=typed;api("/api/clients/"+S.cid+"/access",{method:"POST",body:body}).then(function(j){watch(j.job,label,loadAccess)})
+    .catch(function(j){if(j.need_confirm) return confirmBox(label+" on production?","This changes authorized_keys on production servers ("+j.prd.join(", ")+").",j.expected,go,"Continue");alert(j.error||"Couldn't start.")})};
+  go(null)}
+$("main").addEventListener("click",function(e){if(S.tab!=="access")return;var t=e.target;
+  var b=t.closest("[data-acc]");if(b){var envs=Object.keys(S.acc.sel).filter(function(k){return S.acc.sel[k]});
+    if(!S.acc.key) return msg("aMsg","Paste a valid public key first.");if(!envs.length) return msg("aMsg","Choose at least one environment.");msg("aMsg","");
+    return accessRun({action:b.dataset.acc,key:S.acc.key,account:$("aAcct").value.trim(),note:$("aNote").value.trim(),environments:envs},b.dataset.acc+" SSH key")}
+  var r=t.closest("[data-rec]");if(r){var go=function(){accessRun({action:r.dataset.rec,record:r.dataset.rid},r.dataset.rec+" SSH key")};
+    if(r.dataset.rec==="remove") return confirmBox("Remove this key?","It's removed from authorized_keys on every server it was added to (a backup of the file is kept on each server).",null,go,"Remove");go()}});
+
+/* ---------- settings ---------- */
+var TCOLS=["component","applies_to","target","patch_number","platform","file_filter","label"];
+function renderSettings(){var ro=!can("admin")?" disabled":"";
+  $("tabBody").innerHTML='<div class="panel"><h2>Change approval (Jira)</h2><p class="help">When this is on, Apply doesn\'t patch anything by itself: Pegasus raises a ticket describing exactly what will change, and Apply unlocks only after someone other than the Pegasus account approves it. The token is stored encrypted.</p>'+
+    '<label class="inline"><input type="checkbox" id="jEnabled"'+ro+'>Require an approved Jira ticket before patching</label>'+
+    '<div class="grid3"><label>Needed for<select id="jRequire"'+ro+'><option value="all">Every environment</option><option value="prd">Production only</option></select></label>'+
+    '<label>Jira<select id="jDeploy"'+ro+'><option value="cloud">Jira Cloud</option><option value="datacenter">Jira Data Center</option></select></label>'+
+    '<label>Jira URL<input id="jUrl" placeholder="https://yourcompany.atlassian.net"'+ro+'></label>'+
+    '<label id="jUserL">Account email<input id="jUser"'+ro+'></label><label><span id="jTokL">API token</span><input id="jToken" type="password" autocomplete="off"'+ro+'></label>'+
+    '<label>Project key<input id="jProject" placeholder="CHG"'+ro+'></label><label>Issue type<input id="jType"'+ro+'></label>'+
+    '<label>Change type<input id="jChType"'+ro+'></label><label>Change risk<input id="jRisk"'+ro+'></label><label>Impact<input id="jImpact"'+ro+'></label><label>Urgency<input id="jUrgency"'+ro+'></label>'+
+    '<label>Submit transition<input id="jSubmit" placeholder="optional"'+ro+'></label><label>Start transition<input id="jStart" placeholder="optional, e.g. Implement"'+ro+'></label><label>Done transition<input id="jDone" placeholder="optional, e.g. Done"'+ro+'></label></div>'+
+    '<div class="grid2"><label>Statuses that mean approved<input id="jApproved"'+ro+'></label><label>Statuses that mean rejected<input id="jRejected"'+ro+'></label></div>'+
+    '<label>Additional fields (JSON)<input id="jExtra" class="mono"'+ro+'></label>'+
+    '<label class="inline"><input type="checkbox" id="jSelf"'+ro+'>Don\'t accept approval by the account Pegasus raises tickets with</label>'+
+    '<div id="jMsg"></div>'+(can("admin")?'<div class="toolbar"><button type="button" class="primary" id="jSave">Save</button><button type="button" id="jTest">Test connection</button><button type="button" class="danger" id="jForget" hidden>Remove token</button></div>':'')+'</div>'+
+    '<div class="panel"><h2>Staging folder</h2><p class="help">Where downloaded patches are copied on each server. Pegasus creates it (with sudo if it must) and gives it to the PeopleSoft owner.</p>'+
+    '<div class="toolbar"><input id="sRoot" class="mono" style="max-width:420px"'+ro+'>'+(can("admin")?'<button type="button" id="sSave">Save</button>':'')+'</div><div id="sMsg"></div></div>'+
+    '<div class="panel"><h2>CPU targets (optional)</h2><p class="help">Pegasus finds the latest JDK, WebLogic 14.1.2, Tuxedo 22.1 and Database 19c client patches by itself. Pin a target here only for other releases, or to hold a component at a specific level.</p>'+
+    '<div class="scroll"><table><thead><tr><th>Component</th><th>Applies to version</th><th>Target</th><th>MOS patch</th><th>Platform</th><th>File filter</th><th>Label</th><th></th></tr></thead><tbody id="tBody"></tbody></table></div>'+
+    '<div id="tMsg"></div>'+(can("admin")?'<div class="toolbar" style="margin-top:10px"><button type="button" id="tAdd">Add target</button><button type="button" class="primary" id="tSave">Save targets</button></div>':'')+'</div>';
+  api("/api/clients/"+S.cid+"/jira").then(function(j){var c=j.config;S.jira=c;
+    $("jEnabled").checked=!!c.enabled;$("jRequire").value=c.require;$("jDeploy").value=c.deployment;$("jUrl").value=c.url;$("jUser").value=c.user;$("jProject").value=c.project;$("jType").value=c.issue_type;
+    $("jChType").value=c.change_type||"";$("jRisk").value=c.change_risk||"";$("jImpact").value=c.impact||"";$("jUrgency").value=c.urgency||"";$("jSubmit").value=c.submit_transition||"";
+    $("jStart").value=c.start_transition||"";$("jDone").value=c.done_transition||"";$("jApproved").value=(c.approved_statuses||[]).join(", ");$("jRejected").value=(c.rejected_statuses||[]).join(", ");
+    $("jExtra").value=c.extra_fields&&Object.keys(c.extra_fields).length?JSON.stringify(c.extra_fields):"";$("jSelf").checked=c.block_self_approval!==false;
+    $("jToken").placeholder=j.has_token?"saved (leave blank to keep)":"";if($("jForget"))$("jForget").hidden=!j.has_token;jiraUi()});
+  api("/api/clients/"+S.cid+"/patch-settings").then(function(j){$("sRoot").value=j.staging_root;S.targets=j.targets;renderTargets()})}
+function jiraUi(){var cloud=$("jDeploy").value==="cloud";$("jUserL").hidden=!cloud;$("jTokL").textContent=cloud?"API token":"Personal access token"}
+function renderTargets(){var ro=!can("admin")?" disabled":"";
+  if(!S.targets.length){$("tBody").innerHTML='<tr><td colspan="8" class="det">No targets. Pegasus uses Oracle\'s latest releases.</td></tr>';return}
+  $("tBody").innerHTML=S.targets.map(function(t,i){return '<tr data-i="'+i+'"><td><select data-k="component"'+ro+'>'+["jdk","weblogic","dbclient","tuxedo"].map(function(c){return '<option'+(c===t.component?' selected':'')+'>'+c+'</option>'}).join("")+'</select></td>'+
+    TCOLS.slice(1).map(function(k){return '<td><input data-k="'+k+'" value="'+esc(t[k])+'"'+(k==="platform"?' placeholder="auto"':'')+ro+'></td>'}).join("")+'<td>'+(can("admin")?'<button type="button" class="link sm danger" data-tdel="'+i+'">Remove</button>':'')+'</td></tr>'}).join("")}
+function readTargets(){return [].map.call($("tBody").querySelectorAll("tr[data-i]"),function(tr){var t={};tr.querySelectorAll("[data-k]").forEach(function(i){t[i.dataset.k]=i.value.trim()});return t})}
+$("main").addEventListener("change",function(e){if(e.target.id==="jDeploy")jiraUi()});
+$("main").addEventListener("click",function(e){if(S.tab!=="settings")return;var t=e.target;
+  if(t.id==="jSave"){var body={enabled:$("jEnabled").checked,require:$("jRequire").value,deployment:$("jDeploy").value,url:$("jUrl").value,user:$("jUser").value,project:$("jProject").value,issue_type:$("jType").value,
+      change_type:$("jChType").value,change_risk:$("jRisk").value,impact:$("jImpact").value,urgency:$("jUrgency").value,submit_transition:$("jSubmit").value,start_transition:$("jStart").value,done_transition:$("jDone").value,
+      approved_statuses:$("jApproved").value,rejected_statuses:$("jRejected").value,extra_fields:$("jExtra").value,block_self_approval:$("jSelf").checked};
+    if($("jToken").value)body.token=$("jToken").value;
+    return api("/api/clients/"+S.cid+"/jira",{method:"PUT",body:body}).then(function(j){$("jToken").value="";$("jToken").placeholder=j.has_token?"saved (leave blank to keep)":"";$("jForget").hidden=!j.has_token;msg("jMsg","Saved.","ok")}).catch(function(j){msg("jMsg",j.error||"Couldn't save.")})}
+  if(t.id==="jTest"){msg("jMsg","Testing…","info");return api("/api/clients/"+S.cid+"/jira/test",{method:"POST",body:{}}).then(function(j){
+    msg("jMsg","Connected as "+j.user+" to project "+j.project+"."+(j.filled&&j.filled.length?" Pegasus fills in: "+j.filled.join(", ")+".":"")+(j.warning?" "+j.warning:""),j.warning?"":"ok")}).catch(function(j){msg("jMsg",(j.error||"Couldn't connect.")+" Save first if you just changed the settings.")})}
+  if(t.id==="jForget") return confirmBox("Remove the Jira token?","Change approval is switched off until a token is added again.",null,function(){api("/api/clients/"+S.cid+"/jira/token",{method:"DELETE"}).then(function(){renderSettings()})},"Remove");
+  if(t.id==="sSave") return api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:{staging_root:$("sRoot").value}}).then(function(j){$("sRoot").value=j.staging_root;msg("sMsg","Saved.","ok")}).catch(function(j){msg("sMsg",j.error)});
+  if(t.id==="tAdd"){S.targets=readTargets();S.targets.push({component:"jdk"});return renderTargets()}
+  var d=t.closest("[data-tdel]");if(d){S.targets=readTargets();S.targets.splice(+d.dataset.tdel,1);return renderTargets()}
+  if(t.id==="tSave") return api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:{targets:readTargets()}}).then(function(j){S.targets=j.targets;renderTargets();msg("tMsg","Saved.","ok")}).catch(function(j){msg("tMsg",j.error)})});
+
+/* ---------- activity ---------- */
+var EVT={signed_in:"Signed in",sign_in_failed:"Sign-in failed",mfa_failed:"Wrong MFA code",mfa_enrolled:"Set up MFA",job_queued:"Started a job",apply_queued:"Started patching",
+  patches_applied:"Patching finished",patches_staged:"Download finished",change_request_raised:"Raised a Jira ticket",change_request_withdrawn:"Withdrew a Jira ticket",
+  jira_settings_updated:"Changed Jira settings",jira_token_removed:"Removed the Jira token",jira_update_failed:"Couldn't update Jira",inventory_imported:"Imported inventory",
+  connector_token_created:"Created a connector token",connector_registered:"A connector registered",connector_removed:"Removed a connector",client_created:"Added the client",
+  patch_settings_updated:"Changed patch settings",user_created:"Added a person",user_updated:"Changed a person",password_reset:"Reset a password",mfa_reset:"Reset MFA",
+  ssh_key_add:"Added an SSH key",ssh_key_remove:"Removed an SSH key",ssh_key_check:"Checked an SSH key",password_changed:"Changed their password",recovery_code_used:"Used a recovery code"};
+function auditTable(events){if(!events.length)return '<div class="empty">Nothing yet.</div>';
+  return '<div class="scroll"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead><tbody>'+events.map(function(e){
+    var d=e.detail||{},parts=Object.keys(d).filter(function(k){return d[k]!==null&&d[k]!==""&&typeof d[k]!=="object"}).map(function(k){return k.replace(/_/g," ")+": "+d[k]});
+    return '<tr><td class="det">'+esc(when(e.at))+'</td><td>'+esc(e.actor)+'</td><td>'+esc(EVT[e.event]||e.event.replace(/_/g," "))+'</td><td class="det">'+esc(parts.join(" · "))+'</td></tr>'}).join("")+'</tbody></table></div>'}
+function renderActivity(){$("tabBody").innerHTML='<div class="panel"><h2>Activity</h2><p class="help">Everything people and Pegasus did for this client, newest first.</p><div id="actOut"><div class="empty">Loading…</div></div></div>';
+  api("/api/audit?client="+S.cid).then(function(j){$("actOut").innerHTML=auditTable(j.events)})}
+
+/* ---------- people ---------- */
+$("navUsers").addEventListener("click",function(){S.view="users";renderClientList();showUsers()});
+function showUsers(){api("/api/users").then(function(j){S.users=j.users;var cn={};S.clients.forEach(function(c){cn[c.id]=c.name});
+  var h='<div class="head"><h1>People and access</h1><button type="button" class="primary" id="uAdd">Add a person</button></div><div class="panel"><p class="help">Everyone signs in with a password and an authenticator app. Astute staff see every client; a client\'s own people see only that client and can be operators or viewers.</p>'+
+    '<div class="scroll"><table><thead><tr><th>Person</th><th>Role</th><th>Works for</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead><tbody>'+j.users.map(function(u){
+      var st=u.disabled?'<span class="st down">Disabled</span>':u.locked?'<span class="st busy">Locked</span>':!u.mfa?'<span class="st queued">MFA not set up</span>':u.must_change?'<span class="st queued">Temporary password</span>':'<span class="st up">Active</span>';
+      return '<tr><td><b>'+esc(u.name)+'</b><br><span class="det">'+esc(u.email)+'</span></td><td><select data-urole="'+esc(u.id)+'" style="width:auto">'+["viewer","operator","admin"].map(function(r){return '<option'+(r===u.role?' selected':'')+'>'+r+'</option>'}).join("")+'</select></td><td>'+esc(u.client_id?cn[u.client_id]||u.client_id:"Astute (all clients)")+'</td><td>'+st+'</td><td class="det">'+esc(u.last_login?ago(u.last_login):"never")+'</td>'+
+        '<td><button type="button" class="link sm" data-upw="'+esc(u.id)+'">Reset password</button> <button type="button" class="link sm" data-umfa="'+esc(u.id)+'">Reset MFA</button> <button type="button" class="link sm'+(u.disabled?'':' danger')+'" data-udis="'+esc(u.id)+'" data-v="'+(u.disabled?0:1)+'">'+(u.disabled?"Enable":"Disable")+'</button></td></tr>'}).join("")+'</tbody></table></div><div id="uMsg"></div></div>'+
+    '<div class="panel"><h2>Audit log</h2><div id="uAudit"><div class="empty">Loading…</div></div></div>';
+  $("main").innerHTML=h;api("/api/audit").then(function(a){$("uAudit").innerHTML=auditTable(a.events.slice(0,150))})}).catch(function(j){$("main").innerHTML='<div class="msg">'+esc(j.error||"Couldn't load people.")+'</div>'})}
+function tempShow(title,email,pw){$("tempTitle").textContent=title;$("tempText").textContent="Give this to "+email+" privately. They'll choose their own password and set up an authenticator app when they first sign in.";$("tempPw").textContent=pw;$("tempDlg").showModal()}
+$("tempCopy").addEventListener("click",function(){navigator.clipboard&&navigator.clipboard.writeText($("tempPw").textContent);this.textContent="Copied"});
+$("tempClose").addEventListener("click",function(){$("tempDlg").close();$("tempCopy").textContent="Copy";showUsers()});
+$("main").addEventListener("click",function(e){if(S.view!=="users")return;var t=e.target;
+  if(t.id==="uAdd"){$("uName").value=$("uEmail").value="";$("uRole").value="operator";$("uClient").innerHTML='<option value="">Astute (all clients)</option>'+S.clients.map(function(c){return '<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>'}).join("");msg("userMsg","");$("userDlg").showModal();return}
+  var u=function(id){return S.users.filter(function(x){return x.id===id})[0]};
+  var p=t.closest("[data-upw]");if(p) return confirmBox("Reset "+u(p.dataset.upw).name+"'s password?","They're signed out and get a temporary password to change at their next sign-in.",null,function(){
+    api("/api/users/"+p.dataset.upw+"/reset-password",{method:"POST",body:{}}).then(function(j){tempShow("New temporary password",u(p.dataset.upw).email,j.temporary_password)}).catch(function(j){msg("uMsg",j.error)})},"Reset");
+  var m=t.closest("[data-umfa]");if(m) return confirmBox("Reset "+u(m.dataset.umfa).name+"'s authenticator?","Use this when they've lost their phone and their recovery codes. They set up a new authenticator at their next sign-in.",null,function(){
+    api("/api/users/"+m.dataset.umfa+"/reset-mfa",{method:"POST",body:{}}).then(showUsers).catch(function(j){msg("uMsg",j.error)})},"Reset");
+  var d=t.closest("[data-udis]");if(d) return api("/api/users/"+d.dataset.udis,{method:"PATCH",body:{disabled:d.dataset.v==="1"}}).then(showUsers).catch(function(j){msg("uMsg",j.error)})});
+$("main").addEventListener("change",function(e){var r=e.target.closest("[data-urole]");if(!r||S.view!=="users")return;
+  api("/api/users/"+r.dataset.urole,{method:"PATCH",body:{role:r.value}}).then(showUsers).catch(function(j){msg("uMsg",j.error);showUsers()})});
+$("userCancel").addEventListener("click",function(){$("userDlg").close()});
+$("userForm").addEventListener("submit",function(e){e.preventDefault();
+  api("/api/users",{method:"POST",body:{name:$("uName").value,email:$("uEmail").value,role:$("uRole").value,client_id:$("uClient").value||null}})
+  .then(function(j){$("userDlg").close();tempShow("Temporary password",j.user.email,j.temporary_password)}).catch(function(j){msg("userMsg",j.error||"Couldn't add them.")})});
+
 boot();
 })();
 </script>

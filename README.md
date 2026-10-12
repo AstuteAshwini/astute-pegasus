@@ -18,10 +18,13 @@ python3 -m pytest -q tests
 
 ## Roadmap
 
-1. **Connector and job protocol** (this milestone): registration, signed jobs, local policy, status/start/stop/
-   restart, patch levels, connection test.
-2. **Multi-tenant core**: managed database, per-user SSO and roles, connector certificates, auto-update; move
-   patch staging/apply, Jira approvals and SSH access from `pegasus/` onto the connector.
+1. **Connector and job protocol** (done): registration, signed jobs, local policy, status/start/stop/restart,
+   patch levels, connection test.
+2. **Multi-tenant core** (in progress):
+   * Done: CPU patching on the connector (latest-release lookup, download, staging, apply in one maintenance
+     window), Jira change approval per client, SSH access, accounts with email + password + authenticator-app MFA,
+     roles (admin, operator, viewer), client-scoped users, audit log.
+   * Next: managed database, connector certificates and auto-update.
 3. **Pilot-ready**: hosted on OCI with monitoring and backups, signed Windows installer and Linux package, OCI
    Resource Manager stack, security documentation (HECVAT).
 4. **Sellable SaaS**: billing and onboarding, Azure/AWS/on-prem installers, ServiceNow, SOC 2.
