@@ -1,0 +1,6 @@
+environment,client,tier,host,ip,role,os_user,domain,env_script,pt_home,java_home,weblogic_home,ssh_user,ssh_key,ssh_port
+HRPRD,Example Client,PRD,hrprdweb01,10.0.1.11,web,psadm2,HRPRD_PIA,/u01/app/oracle/product/pt/ps_home8.62/psconfig.sh,/u01/app/oracle/product/pt/ps_home8.62,/u01/app/oracle/product/pt/jdk,/u01/app/oracle/product/pt/bea,,,
+HRPRD,Example Client,PRD,hrprdapp01,10.0.1.21,app,psadm2,HRPRD,/u01/app/oracle/product/pt/ps_home8.62/psconfig.sh,/u01/app/oracle/product/pt/ps_home8.62,/u01/app/oracle/product/pt/jdk,/u01/app/oracle/product/pt/bea,,,
+HRPRD,Example Client,PRD,hrprdapp01,10.0.1.21,prcs,psadm2,HRPRD,/u01/app/oracle/product/pt/ps_home8.62/psconfig.sh,/u01/app/oracle/product/pt/ps_home8.62,/u01/app/oracle/product/pt/jdk,/u01/app/oracle/product/pt/bea,,,
+HRTST,Example Client,TST,hrtstweb01,10.0.2.11,web,psadm2,HRTST_PIA,/u01/app/oracle/product/pt/ps_home8.62/psconfig.sh,,,,,,
+HRTST,Example Client,TST,hrtstapp01,10.0.2.21,app,psadm2,HRTST,/u01/app/oracle/product/pt/ps_home8.62/psconfig.sh,,,,,,

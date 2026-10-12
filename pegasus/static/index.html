@@ -1,0 +1,1357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pegasus · PeopleSoft environments</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231B2046'/%3E%3Cg fill='%23fff'%3E%3Ccircle cx='10' cy='12' r='2'/%3E%3Ccircle cx='21' cy='11' r='2'/%3E%3Ccircle cx='22' cy='22' r='2'/%3E%3Ccircle cx='10' cy='21' r='2'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;450;500;550;600;650;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+/* Pegasus — design tokens */
+:root{
+  --bg:#EEF1F6; --surface:#FFFFFF; --sunk:#F6F8FB; --ink:#151B2E; --muted:#5D6678; --faint:#8A93A6;
+  --line:#DCE1EA; --line-strong:#C3CAD7;
+  --night:#1B2046; --night-2:#262C5C; --night-ink:#E9EBFA; --night-muted:#A6ACD6;
+  --accent:#3D46B8; --accent-ink:#FFFFFF; --soft:#E9EBF9;
+  --run:#0E8A5E; --run-bg:#E2F4EC; --stop:#C2393B; --stop-bg:#FBE8E8; --warn:#A8620A; --warn-bg:#FCEFD9; --unk:#8A93A6; --unk-bg:#EEF0F4;
+  --prd:var(--warn); --prd-bg:var(--warn-bg); --ok:var(--run); --ok-bg:var(--run-bg); --err:var(--stop); --err-bg:var(--stop-bg);
+  --console:#12152B; --console-ink:#D9DCF0;
+  --sans:"Archivo","Segoe UI",system-ui,-apple-system,Roboto,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --r-sm:5px; --r:8px; --r-lg:12px;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0E1222; --surface:#161B30; --sunk:#12172A; --ink:#E6E9F3; --muted:#9AA2B8; --faint:#6E7792;
+  --line:#272E48; --line-strong:#353D5C;
+  --night:#0A0D1C; --night-2:#161B36;
+  --accent:#8C95F2; --accent-ink:#0E1222; --soft:#20264A;
+  --run:#4CCB95; --run-bg:#11302A; --stop:#F07A7A; --stop-bg:#3A1A20; --warn:#E9B158; --warn-bg:#382A12; --unk:#7E88A3; --unk-bg:#1E2338;
+  --console:#080A16;
+}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.5;font-feature-settings:"tnum" 1}
+.mono{font-family:var(--mono);font-size:12.5px;letter-spacing:-.01em}
+h1,h2,h3{font-weight:650;letter-spacing:-.012em;line-height:1.2}
+a{color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* controls */
+button{font:inherit;font-size:13.5px;font-weight:550;border-radius:var(--r-sm);padding:7px 13px;cursor:pointer;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink);transition:background .12s,border-color .12s}
+button:hover{border-color:var(--faint);background:var(--sunk)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button.primary:hover{filter:brightness(1.08);background:var(--accent)}
+button.go{color:var(--run);border-color:color-mix(in srgb,var(--run) 45%,var(--line))}
+button.go:hover{background:var(--run-bg)}
+button.halt{color:var(--stop);border-color:color-mix(in srgb,var(--stop) 45%,var(--line))}
+button.halt:hover{background:var(--stop-bg)}
+button.link{border:none;background:none;color:var(--accent);padding:4px 2px}
+button.link:hover{text-decoration:underline;background:none}
+button.danger,.danger{color:var(--stop)}
+button.sm{padding:4px 10px;font-size:12.5px}
+input,textarea,select{font:inherit;font-size:14px;padding:8px 11px;border:1px solid var(--line-strong);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);width:100%}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--soft)}
+label{display:block;font-size:13px;color:var(--muted);margin-bottom:12px;font-weight:500}
+label input,label select{margin-top:5px}
+label.check{display:flex;gap:9px;align-items:flex-start;color:var(--ink);font-weight:400}
+label.check input{width:auto;margin:3px 0 0}
+code{font-family:var(--mono);font-size:12.5px;background:var(--sunk);border:1px solid var(--line);padding:1px 5px;border-radius:4px}
+
+/* shell: left navigation */
+:root{--side:248px}
+.shell.narrow{--side:72px}
+.side{position:fixed;inset:0 auto 0 0;width:var(--side);background:var(--night);color:var(--night-ink);display:flex;flex-direction:column;z-index:6;transition:width .16s ease;overflow:hidden}
+.side::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.5;
+  background-image:radial-gradient(1px 1px at 22% 12%,#fff8,transparent),radial-gradient(1px 1px at 70% 30%,#fff6,transparent),
+  radial-gradient(1.5px 1.5px at 40% 58%,#fff6,transparent),radial-gradient(1px 1px at 82% 76%,#fff5,transparent),radial-gradient(1px 1px at 18% 88%,#fff5,transparent)}
+.side>*{position:relative}
+@media (prefers-color-scheme:dark){.side{border-right:1px solid #ffffff14}}
+.brand{display:flex;align-items:center;gap:12px;padding:20px 18px 18px;font-size:20px;font-weight:700;letter-spacing:-.02em;color:#fff;white-space:nowrap}
+.brand svg{flex:none}
+.brand small{display:block;font-size:12px;font-weight:450;letter-spacing:0;color:var(--night-muted);white-space:normal;line-height:1.3;margin-top:2px}
+nav.tabs{display:flex;flex-direction:column;gap:2px;padding:8px 12px;flex:1;overflow-y:auto}
+nav.tabs button{display:grid;grid-template-columns:22px 1fr;column-gap:12px;align-items:center;text-align:left;border:none;border-radius:var(--r);background:none;padding:10px 12px;color:var(--night-muted);font-size:14.5px;font-weight:550;white-space:nowrap}
+nav.tabs button svg{grid-row:1/3;width:20px;height:20px}
+nav.tabs button small{grid-column:2;font-size:12px;font-weight:400;color:var(--night-muted);opacity:.8;overflow:hidden;text-overflow:ellipsis}
+nav.tabs button:hover{color:#fff;background:#ffffff10}
+nav.tabs button[aria-selected=true]{color:#fff;background:var(--night-2);box-shadow:inset 3px 0 0 #C9CEFF}
+nav.tabs button[aria-selected=true] small{color:var(--night-ink)}
+.side-foot{border-top:1px solid #ffffff1c;padding:14px 18px 16px;display:grid;gap:10px;font-size:12.5px;color:var(--night-muted)}
+.ssh{display:grid;gap:2px;padding:9px 11px;border-radius:var(--r);background:#ffffff10;border:1px solid #ffffff1f;color:var(--night-ink);min-width:0}
+.ssh .lbl{font-size:11.5px;color:var(--night-muted)}
+.ssh b{font-weight:600}
+.ssh .mono{color:var(--night-muted);word-break:break-all;font-size:11.5px}
+.ssh.missing{background:#E9B15826;border-color:#E9B15866;color:#FFD99A}
+.ssh .tag{background:#ffffff1f;color:#fff;justify-self:start;margin-top:3px}
+.side-foot .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.side-foot button{background:transparent;color:var(--night-ink);border-color:#ffffff33;font-size:12.5px;padding:5px 11px}
+.side-foot button:hover{background:#ffffff14;border-color:#ffffff66}
+.side-foot button.link{color:#C9CEFF;border:none;padding:4px 0}
+#sideToggle{border:1px solid #ffffff2a;color:var(--night-ink);padding:5px;display:inline-flex;margin-left:auto}
+#sideToggle svg{width:18px;height:18px;transition:transform .16s}
+.shell.narrow #sideToggle svg{transform:rotate(180deg)}
+.shell.narrow .brand div,.shell.narrow nav.tabs button span,.shell.narrow nav.tabs button small,
+.shell.narrow .side-foot .ssh,.shell.narrow .side-foot .who-name,.shell.narrow .side-foot #sshBtn,.shell.narrow #logoutBtn{display:none}
+.shell.narrow .brand{padding:20px 19px 18px}
+.shell.narrow nav.tabs button{grid-template-columns:22px;padding:11px 13px}
+.shell.narrow .side-foot{padding:14px 12px}
+.shell.narrow .side-foot .row{justify-content:center}
+.shell.narrow #sideToggle{margin:0}
+.content{margin-left:var(--side);transition:margin-left .16s ease;min-width:0}
+main{max-width:1240px;margin:0 auto;padding:30px 28px 340px}
+@media (max-width:860px){
+  .side,.shell.narrow .side{position:sticky;top:0;inset:auto;width:auto;flex-direction:row;flex-wrap:wrap;align-items:center}
+  .brand{padding:12px 16px;font-size:17px}.brand small{display:none}
+  nav.tabs{flex-direction:row;flex:1 1 100%;order:3;overflow-x:auto;padding:0 10px 8px;gap:4px}
+  nav.tabs button,.shell.narrow nav.tabs button{grid-template-columns:18px auto;padding:7px 12px;font-size:13.5px}
+  nav.tabs button svg{width:17px;height:17px;grid-row:1}
+  nav.tabs button small{display:none}
+  nav.tabs button[aria-selected=true]{box-shadow:inset 0 -2px 0 #C9CEFF}
+  .shell.narrow nav.tabs button span{display:inline}
+  .side-foot{border:none;padding:8px 16px;margin-left:auto;display:flex;align-items:center;gap:8px}
+  #sshBtn{font-size:0!important}#sshBtn::after{content:"SSH";font-size:12.5px}
+  .side-foot .ssh,.side-foot .who-name,#sideToggle{display:none}
+  .content,.shell.narrow .content{margin-left:0}
+  main{padding:20px 16px 320px}
+}
+
+/* generic surfaces */
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg)}
+.pad{padding:18px 20px}
+.pad h2{font-size:17px;margin:0 0 6px}
+p.help{color:var(--muted);font-size:13.5px;margin:0 0 12px;max-width:85ch}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px}
+.toolbar input[type=search]{max-width:320px}
+.toolbar .note{color:var(--muted);font-size:13px;margin-left:auto}
+.empty{padding:48px 20px;text-align:center;color:var(--muted)}
+.empty strong{display:block;color:var(--ink);font-weight:600;font-size:16px;margin-bottom:6px}
+.msg{font-size:13.5px;padding:10px 13px;border-radius:var(--r);margin:10px 0}
+.msg.err{background:var(--err-bg);color:var(--err)}
+.msg.ok{background:var(--ok-bg);color:var(--ok)}
+.tag{display:inline-block;font-size:11.5px;font-weight:650;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--accent)}
+.tag.prd{background:var(--prd-bg);color:var(--prd)}
+.scroll{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+tr:last-child td{border-bottom:none}
+th{font-weight:550;color:var(--muted);font-size:12.5px;background:var(--sunk)}
+.det{color:var(--muted);font-size:12.5px}
+td.det{white-space:normal;min-width:220px}
+.st,.state{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;white-space:nowrap}
+.st::before,.state::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.st.needed{background:var(--warn-bg);color:var(--warn)} .st.ok{background:var(--run-bg);color:var(--run)}
+.st.no-target,.st.err{background:var(--unk-bg);color:var(--unk)}
+.state.up{background:var(--run-bg);color:var(--run)} .state.down{background:var(--stop-bg);color:var(--stop)} .state.unk{background:var(--unk-bg);color:var(--unk)}
+tr.hostrow td{background:var(--soft);font-weight:550}
+
+/* environments page */
+.fleet{display:flex;flex-wrap:wrap;gap:16px 24px;align-items:flex-end;justify-content:space-between;margin-bottom:22px}
+.fleet h1{font-size:28px;margin:0 0 4px}
+.fleet p{margin:0;color:var(--muted);max-width:70ch}
+.fleet p b{color:var(--ink);font-weight:600}
+.fleet-tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.fleet-tools input[type=search]{width:240px}
+.client{font-size:13px;color:var(--muted);margin:28px 0 10px;font-weight:600}
+.client:first-child{margin-top:0}
+.env{margin-bottom:16px;overflow:hidden}
+.env-head{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;padding:16px 20px 12px}
+.env-name{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.env-head h3{margin:0;font-size:20px;font-family:var(--mono);font-weight:600;letter-spacing:-.02em}
+.env-sub{flex-basis:100%;display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--muted);margin-top:-2px}
+.env-sub b{color:var(--ink);font-weight:550}
+.env-head .acts{margin-left:auto;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.env.prd{box-shadow:inset 4px 0 0 var(--prd)}
+.posture{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;border:none;cursor:pointer}
+.posture.ok{background:var(--run-bg);color:var(--run)} .posture.needed{background:var(--warn-bg);color:var(--warn)} .posture.unk{background:var(--unk-bg);color:var(--unk)}
+.posture:hover{filter:brightness(.97)}
+.health{font-size:13px;font-weight:550}
+.health.up{color:var(--run)} .health.down{color:var(--stop)} .health.unk{color:var(--muted)}
+details.more{position:relative}
+details.more summary{list-style:none;cursor:pointer;border:1px solid var(--line-strong);border-radius:var(--r-sm);padding:3px 10px;font-size:13px;font-weight:600;color:var(--muted)}
+details.more summary::-webkit-details-marker{display:none}
+details.more[open] summary{background:var(--sunk)}
+details.more .menu{position:absolute;right:0;top:calc(100% + 6px);z-index:4;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:0 10px 30px #0f142833;padding:6px;min-width:180px;display:grid}
+details.more .menu button{border:none;text-align:left;background:none;padding:8px 10px;font-weight:500}
+details.more .menu button:hover{background:var(--sunk)}
+
+/* topology: Web -> App, Process scheduler alongside */
+.topo{display:grid;grid-template-columns:minmax(0,1fr) 28px minmax(0,1fr) 18px minmax(0,1fr);background:var(--sunk);border-top:1px solid var(--line);padding:16px 20px 18px}
+.lane h4{margin:0 0 10px;font-size:12.5px;font-weight:600;color:var(--muted);display:flex;justify-content:space-between}
+.lane-gap{display:flex;align-items:center;justify-content:center;color:var(--faint)}
+.lane-gap svg{margin-top:26px}
+.node{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;margin-bottom:8px;position:relative}
+.node:last-child{margin-bottom:0}
+.node::before{content:"";position:absolute;left:-1px;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--unk)}
+.node.up::before{background:var(--run)} .node.down::before{background:var(--stop)} .node.unk::before{background:var(--line-strong)}
+.node-top{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.node .dom{font-family:var(--mono);font-weight:600;font-size:13.5px}
+.node .where{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:2px}
+.node .when{font-size:11.5px;color:var(--faint);margin-top:2px}
+.node .acts{display:flex;gap:4px;margin-top:8px}
+.node .acts button{padding:2px 8px;font-size:12px;border-color:transparent;background:transparent;color:var(--muted)}
+.node .acts button.go{color:var(--run)} .node .acts button.halt{color:var(--stop)}
+.node:hover .acts button,.node:focus-within .acts button{border-color:var(--line-strong)}
+.node .acts button:hover{background:var(--sunk)}
+.light{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--muted)}
+.light i{width:9px;height:9px;border-radius:50%;background:var(--line-strong);box-shadow:0 0 0 3px var(--unk-bg)}
+.light.up{color:var(--run)} .light.up i{background:var(--run);box-shadow:0 0 0 3px var(--run-bg)}
+.light.down{color:var(--stop)} .light.down i{background:var(--stop);box-shadow:0 0 0 3px var(--stop-bg)}
+.lane .none{font-size:12.5px;color:var(--faint);padding:10px 0}
+.others{padding:10px 20px 14px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+@media (max-width:860px){.topo{grid-template-columns:1fr;gap:14px}.lane-gap{display:none}}
+
+/* import / discovery / patching */
+.acc{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:18px;align-items:start}
+@media (max-width:980px){.acc{grid-template-columns:minmax(0,1fr)}}
+.acc textarea{min-height:110px;font-family:var(--mono);font-size:12.5px;word-break:break-all;border-style:dashed}
+.acc textarea.drag{border-color:var(--accent);background:var(--soft)}
+.keycard{display:grid;gap:3px;padding:10px 13px;border-radius:var(--r);background:var(--sunk);border:1px solid var(--line);margin:-4px 0 14px;font-size:13px}
+.keycard .mono{word-break:break-all}
+.keycard.bad{background:var(--err-bg);border-color:transparent;color:var(--err)}
+.envpick{border:1px solid var(--line);border-radius:var(--r);max-height:300px;overflow:auto}
+.envpick .grp{font-size:12px;font-weight:600;color:var(--muted);padding:8px 12px 4px;background:var(--sunk);border-bottom:1px solid var(--line)}
+.envpick label{display:flex;gap:10px;align-items:center;margin:0;padding:8px 12px;border-bottom:1px solid var(--line);color:var(--ink);font-weight:450;cursor:pointer}
+.envpick label:last-child{border-bottom:none}
+.envpick label input{width:auto;margin:0}
+.envpick label .det{margin-left:auto}
+.acc-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:14px}
+.acc-actions .note{color:var(--muted);font-size:13px}
+td.keycol{white-space:normal;min-width:190px}
+td.keycol .acts{display:flex;gap:12px;margin-top:4px}
+td.keycol .mono{display:block;color:var(--muted);font-size:11.5px;word-break:break-all}
+.imp{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px}
+@media (max-width:900px){.imp{grid-template-columns:1fr}}
+.imp textarea{min-height:260px;font-family:var(--mono);font-size:12.5px;white-space:pre;border-style:dashed}
+.imp textarea.drag{border-color:var(--accent);background:var(--soft)}
+.disc-form{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr) auto;gap:12px;align-items:end}
+.disc-form label{margin:0}
+@media (max-width:760px){.disc-form{grid-template-columns:1fr}}
+.disc-host{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
+.disc-host h3{font-size:14px;margin:0 0 4px;font-family:var(--mono)}
+.disc-host .note{font-size:13px;color:var(--muted);margin:2px 0}
+.trust{background:var(--warn-bg);color:var(--ink);border-radius:var(--r);padding:11px 13px;margin-top:6px;font-size:13.5px}
+.trust .mono{word-break:break-all}
+.disc-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:12px;align-items:end;margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+.disc-meta label{margin:0}
+@media (max-width:760px){.disc-meta{grid-template-columns:1fr}}
+.stage-bar{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,2fr) auto;gap:12px;align-items:end;margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+.stage-bar label{margin:0}
+@media (max-width:760px){.stage-bar{grid-template-columns:1fr}}
+.mos{font-size:13px;color:var(--muted);padding-bottom:6px}
+.mos b{color:var(--ink);font-weight:600}
+table.targets input,table.targets select{font-family:var(--mono);font-size:12.5px;padding:5px 7px;min-width:90px}
+table.targets td{padding:5px 5px}
+table.cm td{vertical-align:middle}
+table.cm tr.sub td{border-top:none;padding-top:0;font-size:12.5px}
+table.cm tr:has(+ tr.sub) td{border-bottom:none}
+.apply-bar{border:1px solid var(--line);border-radius:var(--r);margin-bottom:14px;overflow:hidden}
+.apply-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding:11px 14px;border-bottom:1px solid var(--line)}
+.apply-row:last-child{border-bottom:none}
+.apply-row.apply-all{background:var(--soft)}
+.apply-row .cr{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:flex-end}
+.apply-row .cr a{font-weight:600}
+.jira-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:4px 16px}
+.jira-grid .wide{grid-column:1/-1}
+.jira-grid textarea{min-height:64px;font-family:var(--mono);font-size:12.5px}
+#reqDlg textarea{min-height:90px;margin-top:5px}
+.paths{padding:8px 16px 0;font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 18px}
+
+/* console drawer */
+#console{position:fixed;left:var(--side);right:0;bottom:0;transition:height .18s ease,left .16s ease;background:var(--console);color:var(--console-ink);border-top:1px solid #2A2F55;z-index:5;display:flex;flex-direction:column;height:300px}
+#console.min{height:44px}
+#console.min #conOut{display:none}
+.con-head{display:flex;gap:10px;align-items:center;padding:10px 20px;border-bottom:1px solid #2A2F55;font-size:13px}
+.con-head b{font-weight:600}
+.con-head .sp{margin-left:auto;display:flex;gap:6px}
+.con-head button{background:transparent;color:var(--console-ink);border-color:#3A4070}
+.con-head button:hover{background:#ffffff10}
+.dot{width:9px;height:9px;border-radius:50%;background:#6B7290;display:inline-block}
+.dot.running{background:#E9B158;animation:pulse 1s infinite}
+.dot.succeeded{background:#4CCB95} .dot.failed{background:#F07A7A}
+@keyframes pulse{50%{opacity:.35}}
+#conOut{flex:1;overflow:auto;margin:0;padding:12px 20px;font-family:var(--mono);font-size:12.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+
+/* dialogs */
+dialog{border:1px solid var(--line);border-radius:var(--r-lg);padding:0;background:var(--surface);color:var(--ink);width:min(470px,92vw);box-shadow:0 24px 60px #0b0f2640}
+dialog::backdrop{background:#0b0f2680}
+dialog form{padding:22px 24px}
+dialog h2{font-size:18px;margin:0 0 6px}
+dialog .row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+
+/* sign-in */
+#login{min-height:100vh;display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr)}
+#login .hero{background:var(--night);color:var(--night-ink);padding:56px clamp(28px,6vw,80px);display:flex;flex-direction:column;justify-content:space-between;position:relative;overflow:hidden}
+#login .hero .sky{position:absolute;right:-30px;bottom:70px;width:min(400px,60%);opacity:.85}
+#login .hero h1{font-size:clamp(38px,5vw,56px);margin:0;letter-spacing:-.03em;color:#fff;position:relative}
+#login .hero .lede{font-size:18px;line-height:1.45;color:var(--night-ink);max-width:30ch;margin:14px 0 0;position:relative}
+#login .hero ul{list-style:none;padding:0;margin:40px 0 0;display:grid;gap:12px;color:var(--night-muted);font-size:14.5px;position:relative;max-width:42ch}
+#login .hero li{display:flex;gap:10px}
+#login .hero li::before{content:"";flex:none;width:6px;height:6px;margin-top:8px;border-radius:50%;background:#C9CEFF}
+#login .hero footer{font-size:13px;color:var(--night-muted);position:relative;margin-top:40px}
+#login .form{display:flex;align-items:center;justify-content:center;padding:40px 24px}
+#login .form .panel{width:min(380px,100%);padding:28px;border-radius:var(--r-lg)}
+#login .form h2{margin:0 0 4px;font-size:22px}
+@media (max-width:860px){#login{grid-template-columns:1fr}#login .hero{padding:36px 24px}#login .hero ul{display:none}#login .hero .sky{display:none}}
+@media (max-width:860px){#console{left:0}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+</style>
+</head>
+<body>
+
+<section id="login" hidden>
+  <div class="hero">
+    <svg class="sky" viewBox="0 0 460 360" aria-hidden="true"><g fill="#fff" opacity=".35"><circle cx="30" cy="40" r="1"/><circle cx="410" cy="300" r="1.2"/><circle cx="120" cy="320" r="1"/><circle cx="380" cy="60" r="1"/><circle cx="250" cy="20" r="1.3"/><circle cx="60" cy="210" r="1"/><circle cx="440" cy="180" r="1"/><circle cx="300" cy="340" r="1"/></g>
+<g stroke="#C9CEFF" stroke-width="1.2" fill="none" opacity=".55"><path d="M140 120 L290 100 L310 240 L150 230 Z"/><path d="M290 100 L350 70 L400 40 L440 30"/><path d="M150 230 L110 280 L70 320"/><path d="M140 120 L90 80 L50 60"/><path d="M310 240 L360 300"/></g>
+<g fill="#fff"><circle cx="140" cy="120" r="4.5"/><circle cx="290" cy="100" r="5"/><circle cx="310" cy="240" r="4.5"/><circle cx="150" cy="230" r="4"/><circle cx="350" cy="70" r="2.6"/><circle cx="400" cy="40" r="2.4"/><circle cx="440" cy="30" r="3.2"/><circle cx="110" cy="280" r="2.4"/><circle cx="70" cy="320" r="2.2"/><circle cx="90" cy="80" r="2.4"/><circle cx="50" cy="60" r="2.2"/><circle cx="360" cy="300" r="2.2"/></g></svg>
+    <div>
+      <h1>Pegasus</h1>
+      <p class="lede">Run, check and patch every PeopleSoft environment from one place.</p>
+      <ul>
+        <li>See every web, app server and process scheduler domain, and start or stop them in the right order.</li>
+        <li>Find out what WebLogic, JDK, Database Client and Tuxedo patches each server is missing, read live from the servers.</li>
+        <li>Download from Oracle Support and apply everything in one maintenance window, with backups and automatic rollback.</li>
+      </ul>
+    </div>
+    <footer>PeopleSoft Environments, Governed by Astute: Start, Update, Secure.</footer>
+  </div>
+  <div class="form">
+    <div class="panel">
+      <h2>Sign in</h2>
+      <p class="help">Use the Pegasus password set on this server.</p>
+      <form id="loginForm">
+        <label>Your name, for the activity log<input id="loginName" autocomplete="name"></label>
+        <label>Password<input id="loginPw" type="password" autocomplete="current-password" required></label>
+        <div id="loginMsg"></div>
+        <button class="primary" type="submit" style="width:100%;padding:10px">Sign in</button>
+      </form>
+    </div>
+  </div>
+</section>
+
+<div id="appShell" class="shell" hidden>
+  <aside class="side">
+    <div class="brand"><svg width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><rect width="34" height="34" rx="8" fill="#ffffff14"/><g stroke="#C9CEFF" stroke-width="1" opacity=".75"><path d="M9 13 L21 11 L23 22 L10 21 Z"/><path d="M10 21 L6 25 M9 13 L5 9 M21 11 L27 6"/></g><g fill="#fff"><circle cx="9" cy="13" r="1.9"/><circle cx="21" cy="11" r="1.9"/><circle cx="23" cy="22" r="1.9"/><circle cx="10" cy="21" r="1.9"/><circle cx="27" cy="6" r="1.2"/><circle cx="5" cy="9" r="1.1"/><circle cx="6" cy="25" r="1.1"/></g></svg><div>Pegasus<small>PeopleSoft environments, governed by Astute</small></div></div>
+    <nav class="tabs" role="tablist" aria-orientation="vertical" aria-label="Sections">
+      <button role="tab" data-tab="envs" aria-selected="true" title="Environments"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg><span>Environments</span><small>Start, stop and status</small></button>
+      <button role="tab" data-tab="import" aria-selected="false" title="Import"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 19h16"/></svg><span>Import</span><small>Add servers</small></button>
+      <button role="tab" data-tab="patching" aria-selected="false" title="Patching"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4 6v6c0 4.5 3.4 8 8 9 4.6-1 8-4.5 8-9V6l-8-3Z"/><path d="m9 12 2 2 4-4"/></svg><span>Patching</span><small>CPU levels, approval, apply</small></button>
+      <button role="tab" data-tab="access" aria-selected="false" title="Access"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 8.7-8.7"/><path d="m16 7 3 3"/><path d="m14 9 2 2"/></svg><span>Access</span><small>Add users' SSH keys</small></button>
+      <button role="tab" data-tab="activity" aria-selected="false" title="Activity"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg><span>Activity</span><small>Who ran what, and logs</small></button>
+    </nav>
+    <div class="side-foot">
+      <span class="ssh" id="sshChip"></span>
+      <div class="row"><button class="link" id="sshBtn" type="button">Change</button></div>
+      <span class="who-name" id="whoName"></span>
+      <div class="row"><button type="button" id="logoutBtn">Sign out</button>
+        <button type="button" id="sideToggle" aria-label="Collapse the menu" title="Collapse the menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg></button></div>
+    </div>
+  </aside>
+  <div class="content">
+  <main>
+    <section data-panel="envs">
+      <div class="fleet">
+        <div>
+          <h1>Environments</h1>
+          <p id="envCount">Loading…</p>
+        </div>
+        <div class="fleet-tools">
+          <input type="search" id="filter" placeholder="Find an environment or host" aria-label="Find an environment or host">
+          <button type="button" class="primary" id="statusAll">Check status everywhere</button>
+          <details class="more"><summary aria-label="More actions">More</summary>
+            <div class="menu">
+              <button type="button" id="refreshBtn">Reload inventory file</button>
+              <button type="button" onclick="location.href='/api/environments.csv'">Download inventory (CSV)</button>
+              <span class="det" id="fileNote" style="padding:6px 10px"></span>
+            </div>
+          </details>
+        </div>
+      </div>
+      <div id="envList"></div>
+    </section>
+
+    <section data-panel="import" hidden>
+      <div class="panel pad" style="margin-bottom:18px">
+        <h2>Discover from servers</h2>
+        <p class="help">Enter the IP addresses of one environment's servers (web, app, process scheduler). The dashboard connects with your SSH user and key, finds the PeopleSoft owner, PS_HOME and every domain, and fills in the rows for you. Nothing is changed on the servers.</p>
+        <div class="disc-form">
+          <label>IP addresses (comma or space separated; add :port if not 22)<input id="discTargets" class="mono" placeholder="10.77.16.15, 10.77.16.16"></label>
+          <label>PeopleSoft OS user (optional)<input id="discUsers" class="mono" placeholder="Auto-detect"></label>
+          <div><button class="primary" type="button" id="discGo">Scan servers</button></div>
+        </div>
+        <div id="discOut"></div>
+      </div>
+      <div class="imp">
+        <div class="panel pad">
+          <h2>Import environments</h2>
+          <p class="help">Paste rows from Excel or a CSV, or drop a .csv file in the box. One row per server; rows with the same environment are grouped. Importing an environment that already exists replaces its rows. The previous file is backed up first.</p>
+          <textarea id="impText" spellcheck="false" placeholder="environment,client,tier,host,ip,role,os_user,domain,env_script"></textarea>
+          <div class="toolbar" style="margin-top:10px">
+            <label style="margin:0"><button type="button" onclick="document.getElementById('impFile').click()">Choose CSV file</button><input type="file" id="impFile" accept=".csv,.tsv,.txt" hidden></label>
+            <button type="button" id="exampleBtn">Insert example rows</button>
+            <button type="button" class="link" id="impClear">Clear</button>
+          </div>
+        </div>
+        <div class="panel pad">
+          <h2>Preview</h2>
+          <div id="impPreview"><p class="help">Rows you paste show up here before anything is saved.</p></div>
+        </div>
+      </div>
+      <div class="panel pad" style="margin-top:18px">
+        <h2>Columns</h2>
+        <p class="help">Required: <code>environment</code>, <code>host</code>. For start/stop: <code>role</code> (web, app or prcs) and <code>domain</code>.<br>
+        Optional: <code>client</code>, <code>tier</code> (PRD environments ask for confirmation before stop), <code>ip</code>, <code>os_user</code> (the PeopleSoft owner, e.g. psadm2, used with sudo when it differs from your SSH user), <code>env_script</code> (path to psconfig.sh, sourced before psadmin), <code>pt_home</code>, <code>java_home</code>, <code>weblogic_home</code>, and per-server <code>ssh_user</code>, <code>ssh_key</code>, <code>ssh_port</code> to override your sign-in values.</p>
+      </div>
+    </section>
+
+    <section data-panel="patching" hidden>
+      <div class="panel pad">
+        <h2>Patch levels</h2>
+        <p class="help">Reads WebLogic, JDK, Oracle Database Client and Tuxedo levels live from every server and compares them with the latest patches on Oracle Support (and Oracle Java releases for the JDK). CPU targets are optional overrides. Read-only.</p>
+        <div class="toolbar">
+          <select id="plEnv" aria-label="Environment" style="max-width:260px"></select>
+          <button type="button" class="primary" id="plCheck">Check patch levels</button>
+          <span class="note" id="plWhen"></span>
+        </div>
+        <div id="plOut"></div>
+        <div class="stage-bar">
+          <label>Staging folder on each server<input id="stageRoot" class="mono" placeholder="/u01/app/oracle/staging/cpu"></label>
+          <div class="mos" id="mosChip"></div>
+          <div><button type="button" class="primary" id="stageGo" disabled>Nothing to download</button></div>
+        </div>
+        <p class="help" style="margin-top:8px">Files go to <code>&lt;staging folder&gt;/&lt;label&gt;/</code> on each server that needs them, written as that server's PeopleSoft owner and checked with SHA-256. Patches are downloaded once into the dashboard's <code>data\patches\&lt;patch number&gt;</code> folder and reused. If a download from Oracle Support doesn't work, put the zip in that folder yourself and stage again.</p>
+      </div>
+
+      <div class="panel pad" style="margin-top:18px" id="jiraPanel">
+        <h2>Change approval (Jira)</h2>
+        <p class="help">When this is on, an Apply button first raises a Jira ticket describing exactly what will be patched, on which servers, the outage and the backout. Apply unlocks only when the ticket is in an approved status, approved by someone other than the Jira account below. Pegasus checks Jira again at the moment you apply, each approval is used once, and the result is posted back to the ticket.</p>
+        <label class="check"><input type="checkbox" id="jrEnabled"> Require an approved Jira ticket before applying patches</label>
+        <div class="jira-grid">
+          <label>Required for<select id="jrRequire"><option value="all">Every environment</option><option value="prd">Production (PRD) only</option></select></label>
+          <label>Jira type<select id="jrDeploy"><option value="cloud">Jira Cloud (email + API token)</option><option value="datacenter">Jira Data Center / Server (personal access token)</option></select></label>
+          <label>Jira URL<input id="jrUrl" class="mono" placeholder="https://yourcompany.atlassian.net"></label>
+          <label id="jrUserL">Account email<input id="jrUser" autocomplete="off" placeholder="pegasus-bot@yourcompany.com"></label>
+          <label><span id="jrTokL">API token</span><input id="jrToken" type="password" class="mono" autocomplete="off"></label>
+          <label>Project key<input id="jrProject" class="mono" placeholder="CHG"></label>
+          <label>Issue type<input id="jrType" placeholder="Change"></label>
+          <label>Default change type<input id="jrChType" placeholder="Normal"></label>
+          <label>Change risk (optional)<input id="jrRisk" placeholder="Medium"></label>
+          <label>Impact (optional)<input id="jrImpact" placeholder="Significant / Large"></label>
+          <label>Urgency (optional)<input id="jrUrgency" placeholder="Medium"></label>
+          <label>Send for approval with transition (optional)<input id="jrSubmit" placeholder="Submit for approval"></label>
+          <label>Statuses that mean approved<input id="jrApproved" placeholder="Approved, Awaiting implementation"></label>
+          <label>Statuses that mean rejected<input id="jrRejected" placeholder="Rejected, Declined"></label>
+          <label>Transition when the apply starts (optional)<input id="jrStart" placeholder="Implement"></label>
+          <label>Transition when it succeeds (optional)<input id="jrDone" placeholder="Done"></label>
+          <label class="wide">Additional fields for new tickets (JSON, optional)<textarea id="jrExtra" spellcheck="false" placeholder='{"labels": ["pegasus"], "priority": {"name": "Medium"}}'></textarea></label>
+        </div>
+        <label class="check"><input type="checkbox" id="jrSelf" checked> Don't accept approvals made by the Jira account above (someone else must approve)</label>
+        <p class="help" id="jrTokNote"></p>
+        <div id="jrMsg"></div>
+        <div class="toolbar"><button type="button" class="primary" id="jrSave">Save approval settings</button><button type="button" id="jrTest">Test connection</button><button type="button" class="link danger" id="jrForget">Forget token</button></div>
+      </div>
+
+      <div class="panel pad" style="margin-top:18px">
+        <h2>CPU targets</h2>
+        <div class="msg ok" id="cpuNote"></div>
+        <p class="help"><b>JDK is automatic:</b> with no JDK row, each server is compared with Oracle's latest JDK release for its version (from Oracle's public Java release service) and the tarball is downloaded from Oracle's Java download service. Add a JDK row only to pin a specific version. WebLogic and Tuxedo patch numbers are published only on My Oracle Support, so add those each quarter.</p>
+        <p class="help">One row per component and version line. Update these each quarter from Oracle's CPU advisory and the PeopleSoft certification notes.<br>
+        <b>JDK:</b> target is a version (e.g. <code>21.0.12</code>); hosts below it need the patch. <b>WebLogic:</b> target is the patch number(s) that must show in <code>opatch lspatches</code>, space separated. <b>Tuxedo:</b> target is the rolling patch level (e.g. <code>051</code>).<br>
+        <b>Applies to</b> limits a row to one version line (e.g. <code>21</code>, <code>14.1.2.0</code>, <code>22.1.0.0.0</code>). <b>MOS patch</b> is the number to download. <b>Platform</b> defaults to 226P (Linux x86-64) for JDK and Tuxedo and 2000P (Generic) for WebLogic. <b>File filter</b> is an optional pattern to pick one file when a patch has several, e.g. <code>141200</code>.</p>
+        <div class="scroll"><table class="targets"><thead><tr><th>Component</th><th>Applies to</th><th>Target</th><th>MOS patch</th><th>Platform</th><th>File filter</th><th>Label</th><th>Notes</th><th></th></tr></thead><tbody id="tgBody"></tbody></table></div>
+        <div class="toolbar" style="margin-top:12px;align-items:end">
+          <label style="margin:0;flex:1;min-width:260px">Java download token (only needed for OTN-licensed JDK releases)<input id="jmsToken" type="password" class="mono" autocomplete="off"></label>
+          <button type="button" id="jmsSave">Save token</button><span class="note" id="jmsNote" style="margin-left:0"></span>
+        </div>
+        <div class="toolbar" style="margin-top:12px"><button type="button" id="tgAdd">Add target</button><button type="button" class="primary" id="tgSave">Save targets</button><span id="tgMsg" class="note" style="margin-left:0"></span></div>
+      </div>
+    </section>
+
+    <section data-panel="access" hidden>
+      <div class="acc">
+        <div class="panel pad">
+          <h2>Give or remove SSH access</h2>
+          <p class="help">Adds a person's public key to <code>authorized_keys</code> on every server in the environments you choose, over your SSH connection. Pegasus backs up the file first, never adds the same key twice, and leaves the other keys alone.</p>
+          <label>Public key (paste it, drop the .pub file here, or <button type="button" class="link" id="accFileBtn">choose the file</button>)<textarea id="accKey" spellcheck="false" placeholder="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... name@company.com"></textarea></label>
+          <input type="file" id="accFile" accept=".pub,.txt,text/plain" hidden>
+          <div id="accKeyInfo"></div>
+          <div class="jira-grid">
+            <label>Account on the servers<input id="accAccount" class="mono" placeholder="your SSH user (e.g. opc)" autocomplete="off"></label>
+            <label>Reason or ticket (for the record)<input id="accNote" placeholder="CHG-1234, MCC DBA access"></label>
+          </div>
+          <p class="help" style="margin-top:-6px">Leave the account blank to use your SSH user, usually <code>opc</code>, which has sudo. For another account such as <code>psadm1</code>, your SSH user needs a passwordless sudo rule for it.</p>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px"><label style="margin-bottom:6px">Environments</label><span><button type="button" class="link sm" id="accAll">Select all</button> <button type="button" class="link sm" id="accNone">Clear</button></span></div>
+          <div class="envpick" id="accEnvs"></div>
+          <div class="acc-actions">
+            <button type="button" class="primary" id="accAdd" disabled>Add key</button>
+            <button type="button" id="accCheck" disabled>Check servers</button>
+            <button type="button" class="halt" id="accRemove" disabled>Remove key</button>
+            <span class="note" id="accSel"></span>
+          </div>
+          <div id="accMsg"></div>
+        </div>
+        <div class="panel">
+          <div class="pad" style="padding-bottom:10px"><h2>Keys added through Pegasus</h2>
+            <p class="help" style="margin:0">Where each key is now. Check confirms it's still there; Remove takes it off every server listed.</p></div>
+          <div class="scroll" id="accList"></div>
+        </div>
+      </div>
+    </section>
+
+    <section data-panel="activity" hidden>
+      <div class="toolbar"><button type="button" id="actRefresh">Refresh</button><span class="note">Last 200 entries from logs/actions.log</span></div>
+      <div class="panel scroll" id="actList"></div>
+    </section>
+  </main>
+  </div>
+
+  <section id="console" class="min" aria-label="Command output">
+    <div class="con-head">
+      <span class="dot" id="conDot"></span><b id="conTitle">Console</b><span id="conSub" style="color:#93A1B0"></span>
+      <span class="sp"><button class="sm" type="button" id="conLog" hidden>Full log</button><button class="sm" type="button" id="conToggle">Expand</button></span>
+    </div>
+    <pre id="conOut">Output from start, stop and status appears here.</pre>
+  </section>
+</div>
+
+<dialog id="sshDlg">
+  <form method="dialog" id="sshForm">
+    <h2>SSH connection</h2>
+    <p class="help">Used for every server unless the CSV sets its own ssh_user or ssh_key. The key path is on the machine running this dashboard.</p>
+    <label>SSH user ID<input id="sshUser" required placeholder="opc" autocomplete="username"></label>
+    <label>Private key file path<input id="sshKey" required class="mono" placeholder="/home/opc/.ssh/id_rsa"></label>
+    <label>Key passphrase (if the key has one)<input id="sshPass" type="password" autocomplete="off"></label>
+    <label class="check"><input type="checkbox" id="sshRemember" checked> Remember on this machine, so I don't have to enter this after a restart</label>
+    <p class="help" id="sshSavedNote"></p>
+    <div id="sshMsg"></div>
+    <div class="row"><button type="button" class="link danger" id="sshForget" style="margin-right:auto" hidden>Forget saved connection</button><button type="button" id="sshCancel">Cancel</button><button class="primary" type="submit">Save connection</button></div>
+  </form>
+</dialog>
+
+<dialog id="mosDlg">
+  <form method="dialog" id="mosForm">
+    <h2>Sign in to Oracle Support</h2>
+    <p class="help">Used only to download patches from updates.oracle.com.</p>
+    <label>Oracle Support user name (email)<input id="mosUser" autocomplete="username"></label>
+    <label>Password<input id="mosPass" type="password" autocomplete="current-password"></label>
+    <label class="check"><input type="checkbox" id="mosRemember" checked> Remember on this machine (the password goes in Windows Credential Manager)</label>
+    <div id="mosMsg"></div>
+    <div class="row"><button type="button" class="link danger" id="mosForget" style="margin-right:auto" hidden>Forget saved sign-in</button><button type="button" id="mosCancel">Cancel</button><button class="primary" type="submit" id="mosGo">Sign in</button></div>
+  </form>
+</dialog>
+
+<dialog id="reqDlg">
+  <form method="dialog" id="reqForm">
+    <h2 id="reqTitle">Request approval</h2>
+    <p class="help" id="reqText"></p>
+    <div class="jira-grid">
+      <label>Planned start<input id="reqStart" type="datetime-local"></label>
+      <label>Planned end<input id="reqEnd" type="datetime-local"></label>
+      <label>Change type<select id="reqType"><option>Normal</option><option>Standard</option><option>Emergency</option></select></label>
+    </div>
+    <label>Notes for the approver (reason, testing, contacts)<textarea id="reqNotes" placeholder="October 2026 CPU. Smoke test by the functional team after the window."></textarea></label>
+    <div id="reqMsg"></div>
+    <div class="row"><button type="button" id="reqCancel">Cancel</button><button class="primary" type="submit" id="reqGo">Raise Jira ticket</button></div>
+  </form>
+</dialog>
+
+<dialog id="confDlg">
+  <form method="dialog" id="confForm">
+    <h2 id="confTitle">Confirm</h2>
+    <p class="help" id="confText"></p>
+    <label id="confLabel">Type the environment name to confirm<input id="confInput" class="mono" autocomplete="off"></label>
+    <div class="row"><button type="button" id="confCancel">Cancel</button><button class="primary" type="submit" id="confGo">Continue</button></div>
+  </form>
+</dialog>
+
+<script>
+(function(){
+"use strict";
+var $=function(id){return document.getElementById(id)};
+var state={envs:[],ssh:null,job:null,pending:null,saved:{}};
+var EXAMPLE=["environment,client,tier,host,ip,role,os_user,domain,env_script",
+"HRPRD,Example Client,PRD,hrprdweb01,10.0.1.11,web,psadm2,HRPRD_PIA,/u01/app/oracle/product/pt/ps_home8.62/psconfig.sh",
+"HRPRD,Example Client,PRD,hrprdapp01,10.0.1.21,app,psadm2,HRPRD,/u01/app/oracle/product/pt/ps_home8.62/psconfig.sh",
+"HRPRD,Example Client,PRD,hrprdapp01,10.0.1.21,prcs,psadm2,HRPRD,/u01/app/oracle/product/pt/ps_home8.62/psconfig.sh",
+"HRTST,Example Client,TST,hrtstweb01,10.0.2.11,web,psadm2,HRTST_PIA,/u01/app/oracle/product/pt/ps_home8.62/psconfig.sh",
+"HRTST,Example Client,TST,hrtstapp01,10.0.2.21,app,psadm2,HRTST,/u01/app/oracle/product/pt/ps_home8.62/psconfig.sh"].join("\n");
+
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
+function isPrd(t){return /^(prd|prod|production)$/i.test(String(t||"").trim())}
+function api(path,opt){
+  opt=opt||{};
+  var o={method:opt.method||"GET",headers:{"X-Requested-With":"psdash"},credentials:"same-origin"};
+  if(opt.body!==undefined){o.headers["Content-Type"]="application/json";o.body=JSON.stringify(opt.body)}
+  return fetch(path,o).then(function(r){
+    return r.json().catch(function(){return{}}).then(function(j){
+      if(r.status===401&&path!=="/api/login"){showLogin();throw j}
+      j._status=r.status; if(!r.ok) throw j; return j});
+  });
+}
+function msg(el,text,kind){$(el).innerHTML=text?'<div class="msg '+(kind||"err")+'">'+esc(text)+'</div>':""}
+
+/* ---------- session ---------- */
+function showLogin(){$("appShell").hidden=true;$("login").hidden=false;$("loginPw").focus()}
+function showApp(){$("login").hidden=true;$("appShell").hidden=false}
+$("loginForm").addEventListener("submit",function(e){
+  e.preventDefault(); msg("loginMsg","");
+  api("/api/login",{method:"POST",body:{password:$("loginPw").value,name:$("loginName").value}})
+    .then(function(){ $("loginPw").value=""; boot() })
+    .catch(function(j){ msg("loginMsg",j.error||"Sign-in failed.") });
+});
+$("logoutBtn").addEventListener("click",function(){api("/api/logout",{method:"POST"}).finally(showLogin)});
+function boot(){
+  api("/api/session").then(function(s){
+    if(!s.auth) return showLogin();
+    showApp(); state.ssh=s.ssh; $("whoName").textContent="Signed in as "+(s.who||"admin"); renderSsh(); loadSaved();
+    var last=""; try{ last=localStorage.getItem("pegasus.tab")||"" }catch(e){}
+    loadEnvs().then(function(){ var b=last&&last!=="envs"&&document.querySelector('nav.tabs [data-tab="'+last+'"]'); if(b) b.click() });
+  }).catch(showLogin);
+}
+
+/* ---------- saved credentials ---------- */
+function loadSaved(){ return api("/api/saved").then(function(j){ state.saved=j; renderSsh() }) }
+
+/* ---------- ssh ---------- */
+function renderSsh(){
+  var c=$("sshChip");
+  if(state.ssh){c.className="ssh";c.innerHTML='<span class="lbl">SSH connection</span><b class="mono">'+esc(state.ssh.user)+'</b><span class="mono">'+esc(state.ssh.key_path)+'</span>'+(state.saved&&state.saved.ssh?'<span class="tag">saved</span>':'');$("sshBtn").textContent="Change SSH connection"}
+  else{c.className="ssh missing";c.textContent="No SSH connection set";$("sshBtn").textContent="Set up SSH"}
+}
+var afterSsh=null;
+function openSsh(then){
+  afterSsh=then||null; msg("sshMsg","");
+  $("sshUser").value=state.ssh?state.ssh.user:""; $("sshKey").value=state.ssh?state.ssh.key_path:""; $("sshPass").value="";
+  var sv=state.saved||{};
+  $("sshForget").hidden=!sv.ssh;
+  $("sshSavedNote").textContent=sv.ssh?("Saved: "+sv.ssh.user+" with "+sv.ssh.key_path+(sv.ssh_passphrase?", passphrase in Windows Credential Manager.":".")):
+    (sv.secure_store===false?"The user ID and key path can be saved. This machine has no secure credential store, so a passphrase won't be saved.":"The user ID and key path are saved in the dashboard's data folder; a passphrase goes in Windows Credential Manager. The key file itself isn't copied.");
+  $("sshDlg").showModal(); ($("sshUser").value?$("sshKey"):$("sshUser")).focus();
+}
+$("sshBtn").addEventListener("click",function(){openSsh()});
+$("sshCancel").addEventListener("click",function(){afterSsh=null;$("sshDlg").close()});
+$("sshForget").addEventListener("click",function(){
+  api("/api/saved/ssh",{method:"DELETE"}).then(function(){ loadSaved(); $("sshForget").hidden=true; $("sshSavedNote").textContent="Forgotten. You'll be asked again after the next restart." });
+});
+$("sshForm").addEventListener("submit",function(e){
+  e.preventDefault();
+  api("/api/credentials",{method:"POST",body:{ssh_user:$("sshUser").value,key_path:$("sshKey").value,passphrase:$("sshPass").value,remember:$("sshRemember").checked}})
+    .then(function(j){state.ssh=j.ssh; if(j.note) alert(j.note); loadSaved(); $("sshDlg").close();var f=afterSsh;afterSsh=null;if(f)f()})
+    .catch(function(j){msg("sshMsg",j.error||"Couldn't save.")});
+});
+
+/* ---------- environments ---------- */
+state.overview={states:{},posture:{}};
+function loadOverview(){ return api("/api/overview").then(function(j){ state.overview=j; renderEnvs() }).catch(function(){}) }
+function loadEnvs(){
+  return api("/api/environments").then(function(j){
+    state.envs=j.environments; $("fileNote").textContent="Inventory file: "+j.file; renderEnvs(); loadOverview();
+  }).catch(function(j){ $("envList").innerHTML='<div class="msg err">'+esc(j.error||"Couldn't read the inventory file.")+'</div>' });
+}
+function matches(e,q){ if(!q) return true; q=q.toLowerCase();
+  return [e.name,e.client,e.tier].concat(e.servers.map(function(s){return s.host+" "+s.ip+" "+s.domain})).join(" ").toLowerCase().indexOf(q)>=0 }
+function domState(env,s){
+  var st=((state.overview.states||{})[env.name.toUpperCase()]||{})[s.host+"|"+s.role+"|"+s.domain];
+  if(!st) return {cls:"unk",text:"Not checked",when:""};
+  var t=new Date(st.time), when=(t.toDateString()===new Date().toDateString()?"":t.toLocaleDateString([], {month:"short",day:"numeric"})+", ")+t.toLocaleTimeString([], {hour:"numeric",minute:"2-digit"});
+  var m={running:["up","Running"],stopped:["down","Stopped"],unreachable:["down","Unreachable"],unknown:["unk","Unclear"]}[st.state]||["unk","Unclear"];
+  return {cls:m[0],text:m[1],when:(st.action==="status"?"Checked ":(st.action==="start"?"Started ":"Stopped "))+when};
+}
+function ptVersion(e){ var m=(e.pt_home||"").match(/(\d+\.\d+\.\d+)/); return m?m[1]:"" }
+var LANES=[["web","Web server (PIA)"],["app","Application server"],["prcs","Process scheduler"]];
+var ARROW='<svg width="22" height="12" viewBox="0 0 22 12" aria-hidden="true"><path d="M1 6h18M14 1l5 5-5 5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>';
+function renderEnvs(){
+  var q=$("filter").value.trim(), list=state.envs.filter(function(e){return matches(e,q)});
+  var hosts={}, clients={}, run=0, down=0, unk=0, behind=0, checkedEnvs=0;
+  state.envs.forEach(function(e){
+    clients[e.client||"-"]=1;
+    e.servers.forEach(function(s){ hosts[s.ip||s.host]=1; if(!/^(web|app|prcs)$/.test(s.role)) return;
+      var c=domState(e,s).cls; if(c==="up") run++; else if(c==="down") down++; else unk++; });
+    var p=(state.overview.posture||{})[e.name.toUpperCase()]; if(p&&p.checked){ checkedEnvs++; if(p.outstanding) behind++ }
+  });
+  var nE=state.envs.length, nH=Object.keys(hosts).length, nC=Object.keys(clients).length, nD=run+down+unk;
+  if(!nE){ $("envCount").textContent="No environments yet."; }
+  else {
+    var sum='<b>'+nE+' environment'+(nE===1?'':'s')+'</b> on '+nH+' server'+(nH===1?'':'s')+(nC>1?' for '+nC+' clients':'')+'. ';
+    sum+= (run===nD?'All '+nD+' domains running.':run+' of '+nD+' domains running'+(down?', <b>'+down+' stopped</b>':'')+(unk?', '+unk+' not checked yet':'')+'.');
+    if(checkedEnvs) sum+=' '+(behind?'<b>'+behind+' environment'+(behind===1?' has':'s have')+' patches outstanding.</b>':'Patched environments are on the latest CPU.');
+    $("envCount").innerHTML=sum;
+  }
+  if(!nE){$("envList").innerHTML='<div class="panel empty"><strong>Add your first environment</strong>Go to Import, enter the IP addresses of an environment\'s servers, and Pegasus finds its domains for you.</div>';return}
+  if(!list.length){$("envList").innerHTML='<div class="panel empty">Nothing matches “'+esc(q)+'”.</div>';return}
+  var h="",last=null;
+  list.forEach(function(e){
+    var cl=e.client||"No client";
+    if(cl!==last){h+='<h2 class="client">'+esc(cl)+'</h2>';last=cl}
+    var prd=isPrd(e.tier), doms=e.servers.filter(function(s){return /^(web|app|prcs)$/.test(s.role)});
+    var r=0,d=0,u=0; doms.forEach(function(s){var c=domState(e,s).cls; if(c==="up")r++; else if(c==="down")d++; else u++});
+    var health=!doms.length?'':(u===doms.length?'<span class="health unk">Status not checked</span>':(d?'<span class="health down">'+d+' of '+doms.length+' domains down</span>':(u?'<span class="health up">'+r+' running</span><span class="health unk">, '+u+' not checked</span>':'<span class="health up">All '+doms.length+' domains running</span>')));
+    var p=(state.overview.posture||{})[e.name.toUpperCase()];
+    var post=!p||!p.checked?'<button type="button" class="posture unk" data-posture="'+esc(e.name)+'">Patches not checked</button>':
+      (p.outstanding?'<button type="button" class="posture needed" data-posture="'+esc(e.name)+'" title="'+esc(p.components.join(", "))+'">'+p.outstanding+' patch update'+(p.outstanding===1?'':'s')+' outstanding</button>':
+      '<button type="button" class="posture ok" data-posture="'+esc(e.name)+'">On the latest CPU</button>');
+    var ptv=ptVersion(e);
+    h+='<article class="panel env'+(prd?' prd':'')+'" data-i="'+state.envs.indexOf(e)+'"><div class="env-head">'+
+      '<div class="env-name"><h3>'+esc(e.name)+'</h3>'+(e.tier?'<span class="tag'+(prd?' prd':'')+'">'+esc(e.tier)+'</span>':'')+post+'</div>'+
+      '<div class="acts"><button class="sm" data-a="status">Check status</button><button class="sm go" data-a="start">Start all</button>'+
+      '<button class="sm halt" data-a="stop">Stop all</button>'+
+      '<details class="more"><summary aria-label="More actions for '+esc(e.name)+'">More</summary><div class="menu">'+
+      '<button type="button" data-a="restart">Restart all</button><button type="button" class="danger" data-a="delete">Remove from Pegasus</button></div></details></div>'+
+      '<div class="env-sub">'+(ptv?'<span>PeopleTools <b>'+esc(ptv)+'</b></span>':'')+(health?'<span>'+health+'</span>':'')+'</div></div>';
+    h+='<div class="topo">';
+    LANES.forEach(function(L,li){
+      var nodes=doms.filter(function(s){return s.role===L[0]});
+      h+='<div class="lane"><h4><span>'+L[1]+'</span><span>'+(nodes.length||'')+'</span></h4>';
+      if(!nodes.length) h+='<div class="none">None in this environment</div>';
+      nodes.forEach(function(s){
+        var st=domState(e,s);
+        h+='<div class="node '+st.cls+'"><div class="node-top"><span class="dom">'+esc(s.domain)+'</span><span class="light '+st.cls+'"><i></i>'+esc(st.text)+'</span></div>'+
+          '<div class="where">'+esc(s.host)+'  '+esc(s.ip)+'</div>'+(st.when?'<div class="when">'+esc(st.when)+'</div>':'')+
+          '<div class="acts" data-host="'+esc(s.host)+'" data-role="'+esc(s.role)+'"><button data-a="status">Status</button><button class="go" data-a="start">Start</button><button class="halt" data-a="stop">Stop</button></div></div>';
+      });
+      h+='</div>';
+      if(li===0) h+='<div class="lane-gap" title="Web servers send requests to the application server">'+ARROW+'</div>';
+      if(li===1) h+='<div class="lane-gap"></div>';
+    });
+    h+='</div>';
+    var others=e.servers.filter(function(s){return !/^(web|app|prcs)$/.test(s.role)});
+    if(others.length) h+='<div class="others">Also in this environment: '+others.map(function(s){return esc(s.host)+' ('+esc(s.role||"no role")+')'}).join(", ")+'</div>';
+    h+='</article>';
+  });
+  $("envList").innerHTML=h;
+}
+$("filter").addEventListener("input",renderEnvs);
+$("refreshBtn").addEventListener("click",function(){ this.closest("details").open=false; loadEnvs() });
+$("statusAll").addEventListener("click",function statusAll(){
+  if(state.job&&state.job.status==="running"){ alert("Another action is still running. Wait for it to finish."); return }
+  api("/api/status-all",{method:"POST"}).then(function(j){ watch(j.job,{action:"check status",environment:"all environments"},function(){ loadOverview() }) })
+    .catch(function(j){ if(j.need_credentials) return openSsh(statusAll); alert(j.error||"Couldn't start the status check.") });
+});
+$("envList").addEventListener("click",function(ev){
+  var po=ev.target.closest("[data-posture]");
+  if(po){ pat.selectEnv=po.dataset.posture; document.querySelector('nav.tabs [data-tab="patching"]').click(); return }
+  var b=ev.target.closest("button[data-a]"); if(!b) return;
+  var dm=b.closest("details"); if(dm) dm.open=false;
+  var card=b.closest(".env"), env=state.envs[+card.dataset.i], row=b.closest("[data-host]");
+  var a=b.dataset.a;
+  if(a==="delete"){ confirmBox("Remove "+env.name+" from Pegasus?","This deletes its rows from the inventory file (a backup is kept). Nothing changes on the servers.",null,function(){
+    api("/api/environments/"+encodeURIComponent(env.name),{method:"DELETE"}).then(loadEnvs).catch(function(j){alert(j.error)}) }); return }
+  var target={environment:env.name,action:a};
+  if(row){target.host=row.dataset.host;target.role=row.dataset.role}
+  var what=(a==="status"?"Check status of ":a.charAt(0).toUpperCase()+a.slice(1)+" ")+(row?row.dataset.host+" ("+row.dataset.role+")":"all domains in "+env.name);
+  if(a==="status") return run(target);
+  var needType=isPrd(env.tier)&&(a==="stop"||a==="restart");
+  confirmBox(what+"?", a==="start"||a==="restart"?"Order: application server, then process scheduler, then web server.":"Order: web server, then process scheduler, then application server.", needType?env.name:null, function(typed){
+    if(typed) target.confirm=typed; run(target);
+  });
+});
+document.addEventListener("click",function(e){ document.querySelectorAll("details.more[open]").forEach(function(d){ if(!d.contains(e.target)) d.open=false }) });
+
+/* ---------- confirm dialog ---------- */
+var confCb=null;
+function confirmBox(title,text,mustType,cb){
+  confCb={cb:cb,must:mustType}; $("confTitle").textContent=title; $("confText").textContent=text+(mustType?" This is a production environment.":"");
+  $("confLabel").hidden=!mustType; $("confInput").value=""; $("confGo").disabled=!!mustType; $("confDlg").showModal();
+  (mustType?$("confInput"):$("confGo")).focus();
+}
+$("confInput").addEventListener("input",function(){ $("confGo").disabled=this.value.trim().toUpperCase()!==String(confCb.must).toUpperCase() });
+$("confCancel").addEventListener("click",function(){confCb=null;$("confDlg").close()});
+$("confForm").addEventListener("submit",function(e){ e.preventDefault(); var c=confCb; confCb=null; $("confDlg").close(); if(c) c.cb(c.must?$("confInput").value.trim():null) });
+
+/* ---------- running + console ---------- */
+function run(target){
+  if(state.job&&state.job.status==="running"){ alert("Another action is still running. Wait for it to finish."); return }
+  api("/api/run",{method:"POST",body:target}).then(function(j){ watch(j.job,target) })
+  .catch(function(j){
+    if(j.need_credentials) return openSsh(function(){run(target)});
+    alert(j.error||"Couldn't start the action.");
+  });
+}
+function watch(id,target,onDone){
+  state.job={id:id,status:"running",target:target,next:0,onDone:onDone};
+  $("console").classList.remove("min"); $("conToggle").textContent="Minimize";
+  $("conOut").textContent=""; $("conLog").hidden=true;
+  setCon("running",target); poll();
+}
+function setCon(status,t){
+  $("conDot").className="dot "+status;
+  $("conTitle").textContent=t.action.charAt(0).toUpperCase()+t.action.slice(1)+" "+t.environment+(t.host?" / "+t.host:"");
+  $("conSub").textContent=status==="running"?"running…":status;
+}
+function poll(){
+  var j=state.job; if(!j) return;
+  api("/api/jobs/"+j.id+"?since="+j.next).then(function(r){
+    if(r.output){ var o=$("conOut"), atEnd=o.scrollTop+o.clientHeight>=o.scrollHeight-20; o.textContent+=r.output; if(atEnd) o.scrollTop=o.scrollHeight }
+    j.next=r.next; j.status=r.status; setCon(r.status,j.target);
+    if(r.status==="running") setTimeout(poll,1000);
+    else { $("conLog").hidden=false; if(j.onDone) j.onDone(r); else recordStatus(r); }
+  }).catch(function(){ setTimeout(poll,3000) });
+}
+function recordStatus(r){ loadOverview() }
+$("conToggle").addEventListener("click",function(){ var c=$("console"); c.classList.toggle("min"); this.textContent=c.classList.contains("min")?"Expand":"Minimize" });
+$("conLog").addEventListener("click",function(){ if(state.job) window.open("/api/jobs/"+state.job.id+"/log","_blank") });
+
+/* ---------- import ---------- */
+var impTimer;
+function preview(){
+  var text=$("impText").value;
+  if(!text.trim()){ $("impPreview").innerHTML='<p class="help">Rows you paste show up here before anything is saved.</p>'; return }
+  api("/api/import/preview",{method:"POST",body:{text:text}}).then(function(j){
+    var nS=0,h='<div class="scroll"><table><thead><tr><th>Environment</th><th>Tier</th><th>Servers</th><th></th></tr></thead><tbody>';
+    j.environments.forEach(function(e){ nS+=e.servers.length;
+      h+='<tr><td class="mono">'+esc(e.name)+'</td><td>'+(e.tier?'<span class="tag'+(isPrd(e.tier)?' prd':'')+'">'+esc(e.tier)+'</span>':'')+'</td><td class="mono">'+esc(e.servers.map(function(s){return s.host+(s.role?" ("+s.role+")":"")}).join(", "))+'</td><td>'+(e.exists?'Replaces existing':'New')+'</td></tr>' });
+    h+='</tbody></table></div>';
+    if(j.ignored.length) h+='<div class="msg ok">Ignored columns: '+esc(j.ignored.join(", "))+'</div>';
+    if(j.problems.length) h+='<div class="msg err">'+j.problems.map(esc).join("<br>")+'</div>';
+    h+='<button class="primary" type="button" id="impGo" style="margin-top:12px">Import '+j.environments.length+' environment'+(j.environments.length===1?'':'s')+' ('+nS+' servers)</button><div id="impMsg"></div>';
+    $("impPreview").innerHTML=h;
+    $("impGo").addEventListener("click",function(){
+      this.disabled=true;
+      api("/api/import",{method:"POST",body:{text:$("impText").value}}).then(function(r){
+        $("impText").value=""; $("impPreview").innerHTML='<div class="msg ok">Imported '+r.environments+' environments ('+r.servers+' servers) into the inventory file.</div>'; loadEnvs();
+      }).catch(function(r){ msg("impMsg",r.error||"Import failed."); $("impGo").disabled=false });
+    });
+  }).catch(function(j){ $("impPreview").innerHTML='<div class="msg err">'+esc(j.error||"Couldn't read those rows.")+'</div>' });
+}
+$("impText").addEventListener("input",function(){clearTimeout(impTimer);impTimer=setTimeout(preview,350)});
+$("exampleBtn").addEventListener("click",function(){$("impText").value=EXAMPLE;preview()});
+$("impClear").addEventListener("click",function(){$("impText").value="";preview()});
+function readFile(f){ if(!f) return; var r=new FileReader(); r.onload=function(){$("impText").value=String(r.result);preview()}; r.readAsText(f) }
+$("impFile").addEventListener("change",function(){readFile(this.files[0]);this.value=""});
+var ta=$("impText");
+ta.addEventListener("dragover",function(e){e.preventDefault();ta.classList.add("drag")});
+ta.addEventListener("dragleave",function(){ta.classList.remove("drag")});
+ta.addEventListener("drop",function(e){ta.classList.remove("drag"); if(e.dataTransfer.files.length){e.preventDefault();readFile(e.dataTransfer.files[0])}});
+
+/* ---------- discover ---------- */
+var disc={results:[]};
+function scan(only){
+  var targets=only||$("discTargets").value.trim();
+  if(!targets){ $("discOut").innerHTML='<div class="msg err">Enter at least one IP address.</div>'; return }
+  var btn=$("discGo"); btn.disabled=true; btn.textContent="Scanning…";
+  if(!only) $("discOut").innerHTML='<p class="help" style="margin-top:12px">Connecting to '+esc(targets)+'…</p>';
+  api("/api/discover",{method:"POST",body:{targets:targets,users:$("discUsers").value}}).then(function(j){
+    if(only){ disc.results=disc.results.map(function(r){ var n=j.results.filter(function(x){return x.target===r.target})[0]; return n||r }) }
+    else disc.results=j.results;
+    disc.results.forEach(function(r){ (r.rows||[]).forEach(function(x){ if(x.use===undefined) x.use=true }) });
+    renderDisc();
+  }).catch(function(j){
+    if(j.need_credentials) return openSsh(function(){scan(only)});
+    $("discOut").innerHTML='<div class="msg err">'+esc(j.error||"Scan failed.")+'</div>';
+  }).finally(function(){ btn.disabled=false; btn.textContent="Scan servers" });
+}
+function renderDisc(){
+  var h="", any=false;
+  disc.results.forEach(function(r,ri){
+    h+='<div class="disc-host"><h3>'+esc(r.host?r.host+"  ("+r.target+")":r.target)+'</h3>';
+    if(r.error) h+='<div class="msg err">'+esc(r.error)+'</div>';
+    if(r.needs_trust) h+='<div class="trust">The dashboard hasn\'t connected to this server before. Its '+esc(r.key_type)+' host key fingerprint is<br><span class="mono">'+esc(r.fingerprint)+'</span><br>If that matches the server (check with <code>ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub</code> on it), trust it and scan again.<div style="margin-top:8px"><button type="button" class="primary sm" data-trust="'+ri+'">Trust key and scan</button></div></div>';
+    (r.notes||[]).forEach(function(n){ h+='<p class="note">'+esc(n)+'</p>' });
+    if(r.rows&&r.rows.length){
+      any=true;
+      h+='<div class="scroll"><table><thead><tr><th></th><th>Role</th><th>Domain</th><th>Owner</th><th>Folder</th><th></th></tr></thead><tbody>';
+      r.rows.forEach(function(x,xi){
+        h+='<tr><td><input type="checkbox" data-r="'+ri+'" data-x="'+xi+'"'+(x.use?' checked':'')+' aria-label="Include '+esc(x.role+' '+x.domain)+'"></td><td>'+esc(x.role)+'</td><td class="mono">'+esc(x.domain)+'</td><td class="mono">'+esc(x.owner||x.os_user||"(SSH user)")+'</td><td class="mono det">'+esc(x.path||"")+'</td><td class="det">'+esc(x.note||"")+'</td></tr>';
+      });
+      h+='</tbody></table></div>';
+    }
+    h+='</div>';
+  });
+  if(any){
+    h+='<div class="disc-meta"><label>Environment name<input id="discEnv" class="mono" placeholder="CS92DMO"></label><label>Client<input id="discClient"></label><label>Tier<input id="discTier" placeholder="PRD, TST, DMO…"></label><div><button class="primary" type="button" id="discSend">Review import</button></div></div><div id="discMsg"></div>';
+  }
+  $("discOut").innerHTML=h;
+  if(any) $("discSend").addEventListener("click",sendToImport);
+}
+$("discGo").addEventListener("click",function(){scan()});
+$("discTargets").addEventListener("keydown",function(e){ if(e.key==="Enter") scan() });
+$("discOut").addEventListener("change",function(e){
+  var t=e.target; if(t.dataset.r===undefined) return;
+  disc.results[+t.dataset.r].rows[+t.dataset.x].use=t.checked;
+});
+$("discOut").addEventListener("click",function(e){
+  var b=e.target.closest("[data-trust]"); if(!b) return;
+  var r=disc.results[+b.dataset.trust]; b.disabled=true;
+  api("/api/trust-host",{method:"POST",body:{target:r.target,fingerprint:r.fingerprint}})
+    .then(function(){ scan(r.target) })
+    .catch(function(j){ b.disabled=false; alert(j.error||"Couldn't save the host key.") });
+});
+function csvCell(v){ v=String(v==null?"":v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v }
+function sendToImport(){
+  var env=$("discEnv").value.trim();
+  if(!env){ msg("discMsg","Give the environment a name."); $("discEnv").focus(); return }
+  var cols=["environment","client","tier","host","ip","role","os_user","domain","env_script","pt_home","java_home","weblogic_home","ssh_port"];
+  var lines=[cols.join(",")];
+  disc.results.forEach(function(r){ (r.rows||[]).forEach(function(x){ if(!x.use) return;
+    var row=Object.assign({},x,{environment:env,client:$("discClient").value.trim(),tier:$("discTier").value.trim()});
+    lines.push(cols.map(function(c){return csvCell(row[c])}).join(","));
+  })});
+  if(lines.length<2){ msg("discMsg","Tick at least one domain."); return }
+  $("impText").value=lines.join("\n"); preview();
+  $("impPreview").scrollIntoView({behavior:"smooth",block:"start"});
+}
+
+/* ---------- patching ---------- */
+var pat={targets:[],levels:null,mos:null,approval:{required:false,requests:[]}};
+var COMPS=["weblogic","jdk","dbclient","tuxedo"], TCOLS=["component","applies_to","target","patch_number","platform","file_filter","label","notes"];
+function loadPatching(){
+  var sel=$("plEnv"), cur=pat.selectEnv||sel.value; pat.selectEnv=null;
+  sel.innerHTML=state.envs.map(function(e){return '<option'+(e.name===cur?' selected':'')+'>'+esc(e.name)+'</option>'}).join("")||'<option value="">No environments</option>';
+  api("/api/cpu-targets").then(function(j){pat.targets=j.targets;renderTargets();
+    var fmt=function(d){return new Date(d+"T12:00:00").toLocaleDateString([], {year:"numeric",month:"long",day:"numeric"})};
+    $("cpuNote").textContent="Latest Oracle Critical Patch Update: "+fmt(j.cpu.last)+". Next: "+fmt(j.cpu.next)+". Suggested label for this quarter: "+j.cpu.label+"."});
+  api("/api/settings").then(function(j){$("stageRoot").value=j.staging_root; $("jmsNote").textContent=j.has_jms_token?"A token is saved.":"No token saved."});
+  api("/api/mos-status").then(function(j){pat.mos=j;renderMos()});
+  loadJira();
+  loadLevels();
+}
+function renderMos(){
+  var m=pat.mos||{};
+  $("mosChip").innerHTML=m.signed_in?'Oracle Support: <b>'+esc(m.user)+'</b>'+(m.remembered?' <span class="tag">saved</span>':'')+' <button type="button" class="link" id="mosBtn">Change</button>':'Oracle Support: not signed in <button type="button" class="link" id="mosBtn">Sign in</button>';
+  $("mosBtn").addEventListener("click",function(){openMos()});
+  if(m.signed_in){
+    $("mosChip").insertAdjacentHTML("beforeend",'<br><button type="button" class="link" id="mosCap">Capture Oracle Support search pages</button>');
+    $("mosCap").addEventListener("click",function capture(){
+      var b=$("mosCap"); b.disabled=true; b.textContent="Capturing… (up to a minute)";
+      api("/api/mos-capture",{method:"POST"}).then(function(j){
+        alert("Saved to "+j.path+"\n\n"+j.notes.join("\n")+"\n\nAttach that zip in the chat so the latest-patch search can be built against it.");
+      }).catch(function(j){ if(j.need_mos) return openMos(capture); alert(j.error||"Capture failed.") })
+        .finally(function(){ b.disabled=false; b.textContent="Capture Oracle Support search pages" });
+    });
+  }
+}
+var afterMos=null;
+function openMos(then){ afterMos=then||null; msg("mosMsg",""); $("mosUser").value=(pat.mos&&pat.mos.user)||""; $("mosPass").value=""; $("mosForget").hidden=!(pat.mos&&pat.mos.remembered); $("mosDlg").showModal(); ($("mosUser").value?$("mosPass"):$("mosUser")).focus() }
+$("mosForget").addEventListener("click",function(){
+  api("/api/saved/mos",{method:"DELETE"}).then(function(){ $("mosForget").hidden=true; return api("/api/mos-status") }).then(function(j){ pat.mos=j; renderMos(); msg("mosMsg","Saved sign-in forgotten.","ok") });
+});
+$("mosCancel").addEventListener("click",function(){afterMos=null;$("mosDlg").close()});
+$("mosForm").addEventListener("submit",function(e){
+  e.preventDefault(); var b=$("mosGo"); b.disabled=true; b.textContent="Signing in…"; msg("mosMsg","");
+  api("/api/mos-login",{method:"POST",body:{user:$("mosUser").value,password:$("mosPass").value,remember:$("mosRemember").checked}})
+    .then(function(j){ if(j.note) alert(j.note); pat.mos={signed_in:true,user:j.user,remembered:$("mosRemember").checked&&!j.note}; renderMos(); $("mosDlg").close(); var f=afterMos; afterMos=null; if(f) f() })
+    .catch(function(j){ msg("mosMsg",j.error||"Sign-in failed.") })
+    .finally(function(){ b.disabled=false; b.textContent="Sign in"; $("mosPass").value="" });
+});
+
+/* targets editor */
+function renderTargets(){
+  if(!pat.targets.length){ $("tgBody").innerHTML='<tr><td colspan="9" class="det">No targets yet. Click Add target.</td></tr>'; return }
+  $("tgBody").innerHTML=pat.targets.map(function(t,i){
+    return '<tr data-i="'+i+'"><td><select data-k="component">'+COMPS.map(function(c){return '<option'+(c===t.component?' selected':'')+'>'+c+'</option>'}).join("")+'</select></td>'+
+      TCOLS.slice(1).map(function(k){return '<td><input data-k="'+k+'" value="'+esc(t[k])+'"'+(k==="platform"?' placeholder="auto"':'')+'></td>'}).join("")+
+      '<td><button type="button" class="link danger sm" data-del="'+i+'">Remove</button></td></tr>';
+  }).join("");
+}
+function readTargets(){
+  return Array.prototype.map.call($("tgBody").querySelectorAll("tr[data-i]"),function(tr){
+    var t={}; tr.querySelectorAll("[data-k]").forEach(function(i){t[i.dataset.k]=i.value.trim()}); return t });
+}
+$("tgAdd").addEventListener("click",function(){ pat.targets=readTargets(); pat.targets.push({component:"jdk",applies_to:"",target:"",patch_number:"",platform:"",file_filter:"",label:"",notes:""}); renderTargets() });
+$("tgBody").addEventListener("click",function(e){ var b=e.target.closest("[data-del]"); if(!b) return; pat.targets=readTargets(); pat.targets.splice(+b.dataset.del,1); renderTargets() });
+$("tgSave").addEventListener("click",function(){
+  $("tgMsg").textContent="";
+  api("/api/cpu-targets",{method:"PUT",body:{targets:readTargets()}}).then(function(j){ pat.targets=j.targets; renderTargets(); $("tgMsg").textContent="Saved."; loadLevels() })
+    .catch(function(j){ $("tgMsg").textContent=j.error||"Couldn't save." });
+});
+
+/* levels */
+function loadLevels(){
+  var env=$("plEnv").value; if(!env){ $("plOut").innerHTML=""; return }
+  Promise.all([
+    api("/api/patch-levels/"+encodeURIComponent(env)+(pat.refresh?"?refresh=1":"")),
+    api("/api/change-requests?environment="+encodeURIComponent(env)+"&refresh=1").catch(function(j){ return {required:false,requests:[],error:j.error} })
+  ]).then(function(r){ pat.refresh=false; pat.levels=r[0]; pat.approval=r[1]; renderLevels() });
+}
+function crFor(scope){ return ((pat.approval||{}).requests||[]).filter(function(c){return c.scope===scope})[0] }
+function applyCell(scope,ready,applyBtn,notReady){
+  if(!ready) return notReady;
+  if(!(pat.approval||{}).required) return applyBtn("");
+  var c=crFor(scope), req=function(label){ return '<button type="button" class="sm" data-req="'+esc(scope)+'">'+label+'</button>' };
+  if(!c) return req("Request approval");
+  var link='<a href="'+esc(c.url)+'" target="_blank" rel="noopener">'+esc(c.jira_key)+'</a>';
+  if(c.status==="approved") return '<span class="cr">'+link+'<span class="st ok">Approved'+(c.approver?' by '+esc(c.approver):'')+'</span>'+applyBtn(c.id)+'</span>';
+  if(c.status==="pending") return '<span class="cr">'+link+'<span class="det">'+(c.approval==="self_approved"
+      ?'Approved by the Pegasus account itself. Someone else has to approve it.'
+      :'Not approved yet'+(c.jira_status?' (Jira status: '+esc(c.jira_status)+')':''))+'</span>'+
+    '<button type="button" class="link sm" data-crcheck="1">Check now</button><button type="button" class="link sm danger" data-crwithdraw="'+esc(c.id)+'">Withdraw</button></span>';
+  if(c.status==="applying") return '<span class="cr">'+link+'<span class="det">Applying now</span></span>';
+  if(c.status==="rejected") return '<span class="cr">'+link+'<span class="st err">Rejected</span>'+req("Request again")+'</span>';
+  if(c.status==="stale") return '<span class="cr">'+link+'<span class="det">The plan changed after this ticket was raised</span>'+req("Request again")+'</span>';
+  if(c.status==="failed") return '<span class="cr">'+link+'<span class="det">Last apply failed</span>'+req("Request again")+'</span>';
+  return req("Request approval");
+}
+function renderLevels(){
+  var j=pat.levels||{};
+  $("plWhen").textContent=j.checked?"Last checked "+new Date(j.checked).toLocaleString():"";
+  if(!j.checked){ $("plOut").innerHTML='<div class="empty">Not checked yet. Click Check patch levels.</div>'; updateStageBtn(); return }
+  var groups={}, order=[];
+  j.hosts.forEach(function(host){ (host.items||[]).forEach(function(it){
+    if(it.status!=="needed"||!it.key) return;
+    var g=groups[it.key]; if(!g){ g=groups[it.key]={component:it.component,target:it.target,label:it.latest_label||"",key:it.key,hosts:[],ready:0}; order.push(it.key) }
+    g.hosts.push(host.host); if(it.staged) g.ready++;
+  }) });
+  var h="";
+  if(order.length){
+    var ap=pat.approval||{};
+    if(ap.error) h+='<div class="msg err">Jira: '+esc(ap.error)+'</div>';
+    else if(ap.required) h+='<p class="help" style="margin:0 0 8px">Patching '+esc($("plEnv").value)+' needs an approved Jira ticket. Request approval, then Apply unlocks once the ticket is approved.</p>';
+    h+='<div class="apply-bar">';
+    if(order.length>1){
+      var allReady=order.every(function(k){return groups[k].ready===groups[k].hosts.length});
+      var names=order.map(function(k){return ({jdk:"JDK",weblogic:"WebLogic",dbclient:"Database Client",tuxedo:"Tuxedo"})[groups[k].component]});
+      h+='<div class="apply-row apply-all"><span><b>All '+order.length+' outstanding updates</b> ('+esc(names.join(", "))+') in one maintenance window</span>'+
+        applyCell("all",allReady,function(cr){ return '<button type="button" class="sm primary" data-applyall="1"'+(cr?' data-cr="'+esc(cr)+'"':'')+'>Apply all to '+esc($("plEnv").value)+'</button>' },
+          '<span class="det">Download every update first ("Download all" below)</span>')+'</div>';
+    }
+    order.forEach(function(k){ var g=groups[k], name=({jdk:"JDK",weblogic:"WebLogic",dbclient:"Oracle Database Client",tuxedo:"Tuxedo"})[g.component],
+      what=name+" "+(g.label?g.label.replace(/^\S+ (?=\w+\d{4} CPU$)/,""):(g.component==="tuxedo"?"RP"+g.target:g.target));
+      h+='<div class="apply-row"><span><b>'+esc(what)+'</b> for '+g.hosts.length+' server'+(g.hosts.length===1?'':'s')+'</span>'+
+        applyCell(g.component+"~"+k,g.ready===g.hosts.length,function(cr){ return '<button type="button" class="sm primary" data-apply="'+esc(k)+'"'+(cr?' data-cr="'+esc(cr)+'"':'')+'>Apply to '+esc($("plEnv").value)+'</button>' },
+          '<span class="det">Download on all servers first ('+g.ready+' of '+g.hosts.length+' done)</span>')+'</div>';
+    });
+    h+='</div>';
+  }
+  var COMPNAME={weblogic:"Weblogic",jdk:"JDK",dbclient:"Oracle Database Client",tuxedo:"Tuxedo"};
+  var nodeType=function(roles){ var r=(roles||[]).map(function(x){return x.toLowerCase()});
+    var mid=[]; if(r.indexOf("app")>=0) mid.push("APPSERVER"); if(r.indexOf("prcs")>=0) mid.push("PRCS");
+    var parts=[]; if(mid.length) parts.push("Mid Tier ("+mid.join(", ")+")"); if(r.indexOf("web")>=0) parts.push("Mid Tier (PIA)");
+    return parts.join(" + ")||r.join(", ") };
+  var behind=0; j.hosts.forEach(function(host){ (host.items||[]).forEach(function(it){ if(it.status==="needed") behind++ }) });
+  h+='<p class="help" style="margin:4px 0 10px"><b>'+(behind?behind+' component'+(behind===1?'':'s')+' not on the latest CPU.':'Every component is on the latest known CPU.')+'</b>'+
+     (j.mos_checked?' Oracle Support release list checked '+esc(new Date(j.mos_checked).toLocaleString())+'.':'')+
+     (j.infra_dpk?' Latest PeopleTools Infrastructure DPK: <b>'+esc(j.infra_dpk.patch)+'</b> ('+esc(j.infra_dpk.released)+').':'')+
+     (j.mos_error?' <span class="det">'+esc(j.mos_error)+'</span>':'')+'</p>';
+  h+='<div class="scroll"><table class="cm"><thead><tr><th>Hostname</th><th>Node Type</th><th>Component</th><th>Current Version</th><th>Latest Version</th><th>Status</th><th></th></tr></thead><tbody>';
+  j.hosts.forEach(function(host,hi){
+    var hcell='<td class="mono">'+esc(host.host)+'</td><td>'+esc(nodeType(host.roles))+'</td>';
+    if(host.error){ h+='<tr>'+hcell+'<td colspan="5"><span class="st err">Couldn\'t check</span> '+esc(host.error)+'</td></tr>'; return }
+    if(!host.items.length) h+='<tr>'+hcell+'<td colspan="5" class="det">No WebLogic, JDK, Database Client or Tuxedo found.</td></tr>';
+    host.items.forEach(function(it,ii){
+      var latest=it.latest_label?esc(it.latest_label)+(it.patch_number&&it.status==="needed"?'<br><span class="det">patch '+esc(it.patch_number)+'</span>':''):'<span class="det">Unknown</span> <button type="button" class="link sm" data-addtarget="'+hi+':'+ii+'">Add CPU target</button>';
+      var act="";
+      if(it.staged) act='<span class="st ok">Downloaded</span>';
+      else if(it.status==="needed"&&(it.patch_number||it.auto)) act='<button type="button" class="sm primary" data-dl="'+hi+':'+ii+'">Download</button>';
+      var st={needed:"Not Applied",ok:"Latest Applied","no-target":"Unknown"}[it.status]||it.status;
+      h+='<tr title="'+esc(it.detail||"")+'">'+hcell+'<td>'+esc(COMPNAME[it.component]||it.component)+'</td><td>'+esc(it.installed)+'</td><td>'+latest+'</td>'+
+        '<td><span class="st '+esc(it.status)+'">'+st+'</span></td><td>'+act+'</td></tr>';
+      if(it.status!=="ok"&&it.detail) h+='<tr class="sub"><td colspan="2"></td><td colspan="5" class="det">'+esc(it.detail)+'</td></tr>';
+    });
+    (host.warnings||[]).forEach(function(w){ h+='<tr class="sub"><td colspan="2"></td><td colspan="5" class="det">Warning on '+esc(host.host)+': '+esc(w)+'</td></tr>' });
+  });
+  $("plOut").innerHTML=h+'</tbody></table></div>';
+  updateStageBtn();
+}
+function itemAt(ref){ var p=ref.split(":"), host=pat.levels.hosts[+p[0]], it=host.items[+p[1]]; return {host:host,it:it} }
+function toStageItem(host,it){ return {host:host.host,ip:host.ip,component:it.component,target_index:it.target_index,auto:it.auto||"",
+  version:it.auto==="jdk"?it.target:"",patch_number:it.patch_number||"",platform:it.platform||""} }
+function selectedItems(){
+  var out=[]; ((pat.levels||{}).hosts||[]).forEach(function(host){ (host.items||[]).forEach(function(it){
+    if(it.status==="needed"&&(it.patch_number||it.auto)&&!it.staged) out.push(toStageItem(host,it)) }) });
+  return out;
+}
+function updateStageBtn(){ var n=selectedItems().length; $("stageGo").disabled=!n; $("stageGo").textContent=n?"Download all "+n+" updates":"Nothing to download" }
+$("plOut").addEventListener("click",function(e){
+  var aa=e.target.closest("[data-applyall]");
+  if(aa){ startApplyAll(aa.dataset.cr); return }
+  var ap=e.target.closest("[data-apply]");
+  if(ap){ startApply(ap.dataset.apply,ap.dataset.cr); return }
+  var rq=e.target.closest("[data-req]");
+  if(rq){ requestApproval(rq.dataset.req); return }
+  if(e.target.closest("[data-crcheck]")){ loadLevels(); return }
+  var wd=e.target.closest("[data-crwithdraw]");
+  if(wd){ var c=((pat.approval||{}).requests||[]).filter(function(x){return x.id===wd.dataset.crwithdraw})[0];
+    confirmBox("Withdraw "+(c?c.jira_key:"this request")+"?","Pegasus won't apply under this ticket, and adds a comment to it saying so. You can raise a new one any time.",null,function(){
+      api("/api/change-requests/"+encodeURIComponent(wd.dataset.crwithdraw)+"/withdraw",{method:"POST",body:{}}).then(loadLevels).catch(function(j){ alert(j.error||"Couldn't withdraw."); loadLevels() }) });
+    return }
+  var b=e.target.closest("[data-dl]");
+  if(b){ var x=itemAt(b.dataset.dl); startStage([toStageItem(x.host,x.it)]); return }
+  var t=e.target.closest("[data-addtarget]");
+  if(t){ var y=itemAt(t.dataset.addtarget), inst=y.it.installed.split(" ")[0];
+    pat.targets=readTargets(); pat.targets.push({component:y.it.component,applies_to:inst,target:"",patch_number:"",platform:"",file_filter:"",label:"",notes:""});
+    renderTargets(); var rows=$("tgBody").querySelectorAll("tr[data-i]"); var last=rows[rows.length-1];
+    last.scrollIntoView({behavior:"smooth",block:"center"}); last.querySelector('[data-k="target"]').focus();
+    $("tgMsg").textContent="Fill in the target and MOS patch number, then Save targets."; }
+});
+$("plEnv").addEventListener("change",loadLevels);
+$("plCheck").addEventListener("click",function check(){
+  var env=$("plEnv").value; if(!env) return;
+  if(state.job&&state.job.status==="running"){ alert("Another action is still running. Wait for it to finish."); return }
+  api("/api/patch-check",{method:"POST",body:{environment:env}}).then(function(j){
+    watch(j.job,{action:"check patch levels",environment:env},function(){ pat.refresh=true; loadLevels() });
+  }).catch(function(j){ if(j.need_credentials) return openSsh(check); alert(j.error||"Couldn't start the check.") });
+});
+$("jmsSave").addEventListener("click",function(){
+  api("/api/settings",{method:"PUT",body:{jms_token:$("jmsToken").value}}).then(function(j){ $("jmsToken").value=""; $("jmsNote").textContent=j.has_jms_token?"Token saved.":"Token cleared." }).catch(function(j){ $("jmsNote").textContent=j.error });
+});
+$("stageRoot").addEventListener("change",function(){
+  api("/api/settings",{method:"PUT",body:{staging_root:this.value}}).then(function(j){$("stageRoot").value=j.staging_root}).catch(function(j){alert(j.error)});
+});
+function startApply(key,crId){
+  var env=$("plEnv").value, envObj=state.envs.filter(function(e){return e.name===env})[0]||{};
+  var g=null; ((pat.levels||{}).hosts||[]).forEach(function(host){ (host.items||[]).forEach(function(it){ if(it.key===key&&it.status==="needed"){ g=g||{component:it.component,target:it.target,hosts:[]}; g.hosts.push(host.host) } }) });
+  if(!g) return;
+  if(state.job&&state.job.status==="running"){ alert("Another action is still running. Wait for it to finish."); return }
+  var name=({jdk:"JDK",weblogic:"WebLogic",dbclient:"Oracle Database Client",tuxedo:"Tuxedo"})[g.component];
+  var text="This takes "+env+" down: it stops every domain in the environment, backs up and patches "+name+" on "+g.hosts.join(", ")+
+    " one server at a time, then starts all domains and checks status. If a server fails, the rest are left alone and the domains are started again.";
+  var go=function(typed){
+    var body={environment:env,component:g.component,key:key}; if(typed) body.confirm=typed; if(crId) body.change_request=crId;
+    api("/api/patch-apply",{method:"POST",body:body}).then(function(j){
+      watch(j.job,{action:"apply "+name,environment:env},function(){ loadLevels() });
+    }).catch(function(j){
+      if(j.need_credentials) return openSsh(function(){go(typed)});
+      alert(j.error||"Couldn't start the apply."); if(j.need_approval) loadLevels();
+    });
+  };
+  var cr=crId&&crFor(g.component+"~"+key); if(cr) text+=" Approved under "+cr.jira_key+(cr.approver?" by "+cr.approver:"")+"; the result is posted back to the ticket.";
+  confirmBox("Apply "+name+" "+g.target+" to "+env+"?",text,isPrd(envObj.tier)?env:null,go);
+}
+function startApplyAll(crId){
+  var env=$("plEnv").value, envObj=state.envs.filter(function(e){return e.name===env})[0]||{};
+  if(state.job&&state.job.status==="running"){ alert("Another action is still running. Wait for it to finish."); return }
+  var NM={jdk:"JDK",weblogic:"WebLogic",dbclient:"Oracle Database Client",tuxedo:"Tuxedo"}, ORD=["jdk","weblogic","dbclient","tuxedo"];
+  var by={}; ((pat.levels||{}).hosts||[]).forEach(function(host){ (host.items||[]).forEach(function(it){
+    if(it.status==="needed"&&it.key){ (by[it.component]=by[it.component]||[]).push(host.host) } }) });
+  var steps=ORD.filter(function(c){return by[c]}).map(function(c){return NM[c]+" on "+by[c].join(", ")});
+  var text="This takes "+env+" down once: it stops every domain, then applies, in order: "+steps.join("; ")+
+    ". Each server is backed up before its patch. If any step fails, the rest are skipped. All domains are started again at the end and status is checked.";
+  var go=function(typed){
+    var body={environment:env}; if(typed) body.confirm=typed; if(crId) body.change_request=crId;
+    api("/api/patch-apply-all",{method:"POST",body:body}).then(function(j){
+      watch(j.job,{action:"apply all ("+j.steps+" steps)",environment:env},function(){ loadLevels() });
+    }).catch(function(j){
+      if(j.need_credentials) return openSsh(function(){go(typed)});
+      alert(j.error||"Couldn't start the apply."); if(j.need_approval) loadLevels();
+    });
+  };
+  var cr=crId&&crFor("all"); if(cr) text+=" Approved under "+cr.jira_key+(cr.approver?" by "+cr.approver:"")+"; the result is posted back to the ticket.";
+  confirmBox("Apply all outstanding updates to "+env+"?",text,isPrd(envObj.tier)?env:null,go);
+}
+/* ---------- change approval ---------- */
+var reqScope=null;
+function requestApproval(scope){
+  var env=$("plEnv").value, NM={jdk:"JDK",weblogic:"WebLogic",dbclient:"Oracle Database Client",tuxedo:"Tuxedo"}, by={}, order=[];
+  ((pat.levels||{}).hosts||[]).forEach(function(host){ (host.items||[]).forEach(function(it){
+    if(it.status!=="needed"||!it.key) return;
+    if(scope!=="all"&&it.component+"~"+it.key!==scope) return;
+    if(!by[it.component]){ by[it.component]={label:it.latest_label||it.target,hosts:[]}; order.push(it.component) }
+    by[it.component].hosts.push(host.host) }) });
+  reqScope=scope;
+  $("reqTitle").textContent="Request approval to patch "+env;
+  $("reqText").textContent="Raises a Jira ticket for: "+order.map(function(c){return NM[c]+" "+by[c].label+" on "+by[c].hosts.join(", ")}).join("; ")+
+    ". The ticket describes the outage and backout. Nothing is changed until it's approved and you click Apply.";
+  var dt=new Date(); dt.setDate(dt.getDate()+((6-dt.getDay()+7)%7||7)); dt.setHours(20,0,0,0);   // next Saturday 8 PM
+  var local=function(d){ var p=function(n){return String(n).padStart(2,"0")}; return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+"T"+p(d.getHours())+":"+p(d.getMinutes()) };
+  $("reqStart").value=local(dt); dt.setHours(23); $("reqEnd").value=local(dt);
+  var ct=(pat.jira&&pat.jira.change_type)||"Normal", sel=$("reqType");
+  if(![].some.call(sel.options,function(o){return o.value===ct})) sel.add(new Option(ct));
+  sel.value=ct; $("reqNotes").value=""; msg("reqMsg",""); $("reqDlg").showModal(); $("reqStart").focus();
+}
+$("reqCancel").addEventListener("click",function(){ reqScope=null; $("reqDlg").close() });
+$("reqForm").addEventListener("submit",function(e){
+  e.preventDefault(); var b=$("reqGo"); b.disabled=true; b.textContent="Raising ticket…"; msg("reqMsg","");
+  var jt=function(v){ if(!v) return ""; var d=new Date(v), p=function(n){return String(Math.abs(n)).padStart(2,"0")}, o=-d.getTimezoneOffset();
+    return v+":00.000"+(o>=0?"+":"-")+p(Math.floor(Math.abs(o)/60))+p(Math.abs(o)%60) };   // Jira datetime with this browser's offset
+  if($("reqStart").value&&$("reqEnd").value&&$("reqEnd").value<=$("reqStart").value){ msg("reqMsg","The planned end must be after the planned start."); b.disabled=false; b.textContent="Raise Jira ticket"; return }
+  api("/api/change-requests",{method:"POST",body:{environment:$("plEnv").value,scope:reqScope,notes:$("reqNotes").value,
+      change_type:$("reqType").value,window:{start:jt($("reqStart").value),end:jt($("reqEnd").value)}}})
+    .then(function(j){ $("reqDlg").close(); if(j.note) alert(j.note); loadLevels() })
+    .catch(function(j){ msg("reqMsg",j.error||"Couldn't raise the ticket."); if(j.request) loadLevels() })
+    .finally(function(){ b.disabled=false; b.textContent="Raise Jira ticket" });
+});
+
+/* Jira settings */
+function loadJira(){
+  api("/api/jira").then(function(j){
+    var c=j.config;
+    $("jrEnabled").checked=!!c.enabled; $("jrRequire").value=c.require; $("jrDeploy").value=c.deployment; $("jrUrl").value=c.url;
+    $("jrUser").value=c.user; $("jrProject").value=c.project; $("jrType").value=c.issue_type; pat.jira=c;
+    $("jrChType").value=c.change_type||""; $("jrRisk").value=c.change_risk||""; $("jrImpact").value=c.impact||""; $("jrUrgency").value=c.urgency||""; $("jrSubmit").value=c.submit_transition||"";
+    $("jrApproved").value=(c.approved_statuses||[]).join(", "); $("jrRejected").value=(c.rejected_statuses||[]).join(", ");
+    $("jrStart").value=c.start_transition; $("jrDone").value=c.done_transition; $("jrSelf").checked=c.block_self_approval!==false;
+    $("jrExtra").value=c.extra_fields&&Object.keys(c.extra_fields).length?JSON.stringify(c.extra_fields):"";
+    $("jrToken").value=""; $("jrToken").placeholder=j.has_token?"saved (leave blank to keep)":"";
+    $("jrTokNote").textContent=j.token_from_env?"The token comes from the PSDASH_JIRA_TOKEN environment variable.":
+      j.has_token?"A token is saved"+(j.secure_store?" in the operating system's credential store.":" in memory until Pegasus restarts."):"No token saved.";
+    $("jrForget").hidden=!j.has_token||j.token_from_env; jiraDeployUi();
+  });
+}
+function jiraDeployUi(){ var cloud=$("jrDeploy").value==="cloud"; $("jrUserL").hidden=!cloud; $("jrTokL").textContent=cloud?"API token":"Personal access token" }
+$("jrDeploy").addEventListener("change",jiraDeployUi);
+$("jrSave").addEventListener("click",function(){
+  msg("jrMsg","");
+  var body={enabled:$("jrEnabled").checked,require:$("jrRequire").value,deployment:$("jrDeploy").value,url:$("jrUrl").value,user:$("jrUser").value,
+    project:$("jrProject").value,issue_type:$("jrType").value,change_type:$("jrChType").value,change_risk:$("jrRisk").value,
+    impact:$("jrImpact").value,urgency:$("jrUrgency").value,submit_transition:$("jrSubmit").value,approved_statuses:$("jrApproved").value,rejected_statuses:$("jrRejected").value,
+    start_transition:$("jrStart").value,done_transition:$("jrDone").value,extra_fields:$("jrExtra").value,block_self_approval:$("jrSelf").checked};
+  if($("jrToken").value) body.token=$("jrToken").value;
+  api("/api/jira",{method:"PUT",body:body}).then(function(j){ msg("jrMsg",j.note||"Approval settings saved.","ok"); loadJira(); loadLevels() })
+    .catch(function(j){ msg("jrMsg",j.error||"Couldn't save.") });
+});
+$("jrTest").addEventListener("click",function(){
+  msg("jrMsg","Testing…","ok");
+  api("/api/jira/test",{method:"POST",body:{}}).then(function(j){
+    msg("jrMsg","Connected as "+j.user+" to project "+j.project+"."+(j.filled&&j.filled.length?" Pegasus fills in: "+j.filled.join(", ")+".":"")+(j.warning?" "+j.warning:""),j.warning?"err":"ok") })
+    .catch(function(j){ msg("jrMsg",(j.error||"Couldn't connect.")+" Save the settings first if you just changed them.") });
+});
+$("jrForget").addEventListener("click",function(){
+  api("/api/jira/token",{method:"DELETE"}).then(function(){ msg("jrMsg","Token forgotten.","ok"); loadJira() });
+});
+
+function startStage(items){
+  var env=$("plEnv").value; if(!items.length) return;
+  if(state.job&&state.job.status==="running"){ alert("Another action is still running. Wait for it to finish."); return }
+  var hosts=items.map(function(i){return i.host}).filter(function(v,i,a){return a.indexOf(v)===i});
+  var go=function(){
+    api("/api/patch-stage",{method:"POST",body:{environment:env,items:items}}).then(function(j){
+      watch(j.job,{action:"download",environment:env},function(){ loadLevels() });
+    }).catch(function(j){
+      if(j.need_mos) return openMos(go);
+      if(j.need_credentials) return openSsh(go);
+      alert(j.error||"Couldn't start the download.");
+    });
+  };
+  confirmBox("Download "+items.length+" update"+(items.length===1?"":"s")+"?","Files are downloaded once and copied to "+$("stageRoot").value+" on "+hosts.join(", ")+". Nothing is installed or restarted.",null,go);
+}
+$("stageGo").addEventListener("click",function(){ startStage(selectedItems()) });
+
+/* ---------- access (SSH keys) ---------- */
+var acc={key:null,timer:null,sel:{}};
+function accServers(){ var n=0,hs={}; state.envs.forEach(function(e){ if(acc.sel[e.name]) e.servers.forEach(function(s){ hs[s.ip||s.host]=1 }) }); for(var k in hs) n++; return n }
+function renderAccEnvs(){
+  if(!state.envs.length){ $("accEnvs").innerHTML='<div class="empty">No environments yet. Add them on Import.</div>'; return accButtons() }
+  var h="", last=null;
+  state.envs.forEach(function(e){
+    if(e.client!==last){ h+='<div class="grp">'+esc(e.client||"No client")+'</div>'; last=e.client }
+    var n={}; e.servers.forEach(function(s){ n[s.ip||s.host]=1 }); var c=Object.keys(n).length;
+    h+='<label><input type="checkbox" data-accenv="'+esc(e.name)+'"'+(acc.sel[e.name]?" checked":"")+'><span class="mono" style="font-size:13.5px">'+esc(e.name)+'</span> <span class="tag'+(isPrd(e.tier)?" prd":"")+'">'+esc(e.tier||"no tier")+'</span><span class="det">'+c+' server'+(c===1?"":"s")+'</span></label>';
+  });
+  $("accEnvs").innerHTML=h; accButtons();
+}
+function accButtons(){
+  var envs=Object.keys(acc.sel).filter(function(k){return acc.sel[k]}), ok=!!acc.key&&envs.length>0;
+  ["accAdd","accCheck","accRemove"].forEach(function(id){ $(id).disabled=!ok });
+  var n=accServers(); $("accSel").textContent=envs.length?envs.length+" environment"+(envs.length===1?"":"s")+", "+n+" server"+(n===1?"":"s"):"";
+}
+$("accEnvs").addEventListener("change",function(e){ var b=e.target.closest("[data-accenv]"); if(b){ acc.sel[b.dataset.accenv]=b.checked; accButtons() } });
+$("accAll").addEventListener("click",function(){ state.envs.forEach(function(e){acc.sel[e.name]=true}); renderAccEnvs() });
+$("accNone").addEventListener("click",function(){ acc.sel={}; renderAccEnvs() });
+function parseAccKey(){
+  var v=$("accKey").value.trim(); acc.key=null; accButtons();
+  if(!v){ $("accKeyInfo").innerHTML=""; return }
+  api("/api/access/parse",{method:"POST",body:{key:v}}).then(function(j){
+    if($("accKey").value.trim()!==v) return;
+    acc.key=j;
+    var known=(j.known||[]).map(function(k){return "already on "+k.servers+" server"+(k.servers===1?"":"s")+" for "+(k.account||"the SSH user")}).join("; ");
+    $("accKeyInfo").innerHTML='<div class="keycard"><span><b>'+esc(j.comment||"No name in the key")+'</b> &middot; '+esc(j.type.replace("ssh-",""))+(j.bits?" "+j.bits+"-bit":"")+'</span><span class="mono">'+esc(j.fingerprint)+'</span>'+(known?'<span class="det">'+esc(known)+'</span>':'')+'</div>';
+    accButtons();
+  }).catch(function(j){ if($("accKey").value.trim()!==v) return; $("accKeyInfo").innerHTML='<div class="keycard bad">'+esc(j.error||"That key isn't valid.")+'</div>' });
+}
+$("accKey").addEventListener("input",function(){ clearTimeout(acc.timer); acc.timer=setTimeout(parseAccKey,250) });
+function readKeyFile(f){ if(!f) return; if(f.size>20000){ $("accKeyInfo").innerHTML='<div class="keycard bad">That file is too big to be a public key.</div>'; return }
+  var r=new FileReader(); r.onload=function(){ $("accKey").value=String(r.result).trim(); parseAccKey() }; r.readAsText(f) }
+$("accFileBtn").addEventListener("click",function(){ $("accFile").click() });
+$("accFile").addEventListener("change",function(){ readKeyFile(this.files[0]); this.value="" });
+["dragenter","dragover"].forEach(function(ev){ $("accKey").addEventListener(ev,function(e){ e.preventDefault(); this.classList.add("drag") }) });
+["dragleave","drop"].forEach(function(ev){ $("accKey").addEventListener(ev,function(e){ e.preventDefault(); this.classList.remove("drag") }) });
+$("accKey").addEventListener("drop",function(e){ readKeyFile(e.dataTransfer.files[0]) });
+function accRun(action,body,label,onDone){
+  if(state.job&&state.job.status==="running"){ alert("Another action is still running. Wait for it to finish."); return }
+  var go=function(typed){
+    var b=Object.assign({action:action},body); if(typed) b.confirm=typed;
+    api("/api/access/run",{method:"POST",body:b}).then(function(j){
+      watch(j.job,{action:label,environment:j.environments.join(", ")},function(){ loadAccess(); if(onDone) onDone() });
+    }).catch(function(j){
+      if(j.need_credentials) return openSsh(function(){go(typed)});
+      if(j.need_confirm) return confirmBox(label+"?","This includes production: "+j.prd.join(", ")+".",j.expected,go);
+      msg("accMsg",j.error||"Couldn't start.");
+    });
+  };
+  go(null);
+}
+function accFromForm(action){
+  msg("accMsg","");
+  var envs=Object.keys(acc.sel).filter(function(k){return acc.sel[k]&&state.envs.some(function(e){return e.name===k})});
+  var who=acc.key.comment||acc.key.fingerprint.slice(0,20), acct=$("accAccount").value.trim(), n=accServers();
+  var body={key:$("accKey").value,environments:envs,account:acct,note:$("accNote").value};
+  var where=n+" server"+(n===1?"":"s")+" in "+envs.join(", ");
+  if(action==="check") return accRun("check",body,"check SSH key "+who);
+  var title=(action==="add"?"Add ":"Remove ")+who+(action==="add"?" to ":" from ")+(acct||"the SSH user")+"?";
+  var text=action==="add"?"Adds this key to "+(acct||"the SSH user's")+(acct?"'s":"")+" authorized_keys on "+where+". The person can then sign in to those servers"+(acct?" as "+acct:"")+" with their private key."
+    :"Removes this key from "+(acct||"the SSH user's")+(acct?"'s":"")+" authorized_keys on "+where+". Other keys aren't touched.";
+  confirmBox(title,text,null,function(){ accRun(action,body,action+" SSH key "+who) });
+}
+$("accAdd").addEventListener("click",function(){ accFromForm("add") });
+$("accCheck").addEventListener("click",function(){ accFromForm("check") });
+$("accRemove").addEventListener("click",function(){ accFromForm("remove") });
+function loadAccess(){
+  renderAccEnvs();
+  api("/api/access").then(function(j){
+    acc.list=j.keys;
+    if(!j.keys.length){ $("accList").innerHTML='<div class="empty">No keys added yet.</div>'; return }
+    var h='<table><thead><tr><th>Key</th><th>Account</th><th>Where</th><th>Added</th></tr></thead><tbody>';
+    j.keys.forEach(function(k,i){
+      h+='<tr><td class="keycol"><b>'+esc(k.comment||"No name")+'</b><span class="mono">'+esc(k.fingerprint)+'</span>'+(k.note?'<span class="det">'+esc(k.note)+'</span>':'')+
+          '<span class="acts"><button type="button" class="link sm" data-acccheck="'+i+'">Check</button><button type="button" class="link sm danger" data-accrm="'+i+'">Remove</button></span></td>'+
+        '<td class="mono">'+esc(k.account||"SSH user")+'</td>'+
+        '<td title="'+esc(k.servers.join(", "))+'">'+esc(k.environments.join(", "))+'<br><span class="det">'+k.servers.length+' server'+(k.servers.length===1?'':'s')+'</span></td>'+
+        '<td>'+esc(k.added_by)+'<br><span class="det">'+esc(new Date(k.added_at).toLocaleDateString())+'</span></td></tr>';
+    });
+    $("accList").innerHTML=h+'</tbody></table>';
+  });
+}
+$("accList").addEventListener("click",function(e){
+  var c=e.target.closest("[data-acccheck]"), r=e.target.closest("[data-accrm]"), b=c||r; if(!b) return;
+  var k=acc.list[+(c?c.dataset.acccheck:r.dataset.accrm)], who=k.comment||k.fingerprint.slice(0,20);
+  if(c) return accRun("check",{record:k.id},"check SSH key "+who);
+  confirmBox("Remove "+who+" from "+(k.account||"the SSH user")+"?","Takes this key off "+k.servers.length+" server"+(k.servers.length===1?"":"s")+" ("+k.servers.join(", ")+"). Other keys aren't touched.",null,
+    function(){ accRun("remove",{record:k.id},"remove SSH key "+who) });
+});
+
+/* ---------- activity ---------- */
+function loadActivity(){
+  api("/api/activity").then(function(j){
+    if(!j.entries.length){ $("actList").innerHTML='<div class="empty">No activity yet.</div>'; return }
+    var h='<table><thead><tr><th>Time</th><th>Who</th><th>What</th><th>Environment</th><th>Result</th><th></th></tr></thead><tbody>';
+    j.entries.forEach(function(e){
+      var what=e.action?e.action+" "+(e.target||""):e.event==="import"?"import ("+e.servers+" servers)":e.event.replace(/_/g," ");
+      var env=e.environment||(e.environments||e.targets||[]).join(", ")||e.target||"";
+      h+='<tr><td class="mono">'+esc(e.time)+'</td><td>'+esc(e.who)+'</td><td>'+esc(what)+'</td><td class="mono">'+esc(env)+'</td><td>'+(e.result?'<span class="state '+(e.result==="succeeded"?"up":"down")+'">'+esc(e.result)+'</span>':'')+'</td><td>'+(e.job?'<a href="/api/jobs/'+encodeURIComponent(e.job)+'/log" target="_blank">Log</a>':'')+'</td></tr>' });
+    $("actList").innerHTML=h+'</tbody></table>';
+  });
+}
+$("actRefresh").addEventListener("click",loadActivity);
+
+/* ---------- tabs ---------- */
+document.querySelectorAll("nav.tabs button").forEach(function(b){
+  b.addEventListener("click",function(){
+    document.querySelectorAll("nav.tabs button").forEach(function(x){x.setAttribute("aria-selected",x===b)});
+    document.querySelectorAll("[data-panel]").forEach(function(p){p.hidden=p.dataset.panel!==b.dataset.tab});
+    if(b.dataset.tab==="activity") loadActivity();
+    if(b.dataset.tab==="patching") loadPatching();
+    if(b.dataset.tab==="envs") loadEnvs();
+    if(b.dataset.tab==="access") loadAccess();
+    try{ localStorage.setItem("pegasus.tab",b.dataset.tab) }catch(e){}
+  });
+});
+/* arrow keys move between sections, as in any vertical tab list */
+$("appShell").querySelector("nav.tabs").addEventListener("keydown",function(e){
+  var bs=[].slice.call(this.querySelectorAll("button")), i=bs.indexOf(document.activeElement); if(i<0) return;
+  var n={ArrowDown:1,ArrowRight:1,ArrowUp:-1,ArrowLeft:-1}[e.key]; if(!n) return;
+  e.preventDefault(); var t=bs[(i+n+bs.length)%bs.length]; t.focus(); t.click();
+});
+function setNarrow(on){ $("appShell").classList.toggle("narrow",on); var t=$("sideToggle");
+  t.setAttribute("aria-label",on?"Expand the menu":"Collapse the menu"); t.title=t.getAttribute("aria-label");
+  try{ localStorage.setItem("pegasus.narrow",on?"1":"") }catch(e){} }
+$("sideToggle").addEventListener("click",function(){ setNarrow(!$("appShell").classList.contains("narrow")) });
+try{ if(localStorage.getItem("pegasus.narrow")) setNarrow(true) }catch(e){}
+
+boot();
+})();
+</script>
+</body>
+</html>

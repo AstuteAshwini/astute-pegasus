@@ -1,0 +1,4 @@
+flask>=3.0
+paramiko>=3.4
+requests>=2.31
+keyring>=24

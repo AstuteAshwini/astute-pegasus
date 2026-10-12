@@ -1,0 +1,11 @@
+# runtime data: inventories, saved settings, credentials, patch downloads, logs
+data/
+logs/
+**/data/
+**/logs/
+.venv/
+__pycache__/
+*.pyc
+.env
+*.pem
+*.key
