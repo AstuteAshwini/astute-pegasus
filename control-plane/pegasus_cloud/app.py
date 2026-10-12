@@ -30,6 +30,10 @@ DB_PATH = DATA_DIR / "pegasus.db"
 KEY_PATH = DATA_DIR / "signing_key.pem"
 ADMIN_PASSWORD = os.environ.get("PEGASUS_ADMIN_PASSWORD", "")
 PUBLIC_URL = os.environ.get("PEGASUS_PUBLIC_URL", "")
+# true: the web page and admin API answer only requests made on this machine directly; anything arriving through a
+# tunnel or proxy (which adds forwarding headers) can reach the connector API only.
+ADMIN_LOCAL_ONLY = os.environ.get("PEGASUS_ADMIN_LOCAL_ONLY", "false").lower() == "true"
+FORWARD_HEADERS = ("X-Forwarded-For", "Cf-Connecting-Ip", "X-Real-Ip", "Forwarded", "Cf-Ray")
 TOKEN_TTL = 24 * 3600          # registration tokens
 QUEUE_TTL = 15 * 60            # a queued job nobody picks up within this expires
 SIGNED_TTL = 10 * 60           # a connector must receive a signed job within this window
@@ -128,11 +132,17 @@ def row(r):
 
 
 # ---------------------------------------------------------------- admin auth (milestone 2: per-user SSO + roles)
+def is_local_request():
+    return request.remote_addr in ("127.0.0.1", "::1") and not any(h in request.headers for h in FORWARD_HEADERS)
+
+
 @app.before_request
 def guard():
     p = request.path
     if p.startswith("/api/connector/"):
         return None
+    if ADMIN_LOCAL_ONLY and not is_local_request():
+        return jsonify(error="Not found."), 404
     if p.startswith("/api/") and p not in ("/api/login", "/api/session"):
         if not session.get("auth"):
             return jsonify(error="Sign in first."), 401

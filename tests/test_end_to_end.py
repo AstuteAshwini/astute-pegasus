@@ -233,3 +233,16 @@ def test_admin_api_needs_sign_in(env):
     assert requests.get(env["url"] + "/api/clients").status_code == 401
     assert requests.get(env["url"] + "/api/connector/v1/jobs/next",
                         headers={"Authorization": "Bearer k_x.y"}).status_code == 401
+
+
+def test_admin_local_only_blocks_tunnelled_requests(env):
+    cp.ADMIN_LOCAL_ONLY = True
+    try:
+        via_tunnel = {"Cf-Connecting-Ip": "203.0.113.9", "X-Forwarded-For": "203.0.113.9"}
+        assert requests.get(env["url"] + "/", headers=via_tunnel).status_code == 404
+        assert requests.post(env["url"] + "/api/login", json={"password": "pw"}, headers=via_tunnel).status_code == 404
+        r = requests.get(env["url"] + "/api/connector/v1/jobs/next", headers=dict(via_tunnel, Authorization="Bearer k_x.y"))
+        assert r.status_code == 401                                   # connector API still reachable, still needs a secret
+        assert env["admin"].get(env["url"] + "/api/session").ok           # direct local use still works
+    finally:
+        cp.ADMIN_LOCAL_ONLY = False
