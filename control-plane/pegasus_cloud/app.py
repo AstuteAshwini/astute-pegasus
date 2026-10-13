@@ -47,6 +47,8 @@ LOST_AFTER = 10 * 60           # a running job whose connector has been silent t
 SESSION_HOURS = 12             # sign in again after this
 LOCK_AFTER, LOCK_MINUTES = 5, 15
 DEFAULT_STAGING = "/u01/app/oracle/staging/cpu"
+# Pegasus checks every domain's status by itself this often (seconds); 0 turns automatic checks off.
+STATUS_EVERY = int(os.environ.get("PEGASUS_STATUS_EVERY", "600"))
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 SAFE_PATH = re.compile(r"^[A-Za-z0-9_./~\-]{1,255}$")
@@ -103,6 +105,9 @@ CREATE TABLE IF NOT EXISTS change_requests (id TEXT PRIMARY KEY, client_id TEXT 
   hosts TEXT, notes TEXT, requested_by TEXT, window TEXT, change_type TEXT, requested_at REAL NOT NULL,
   status TEXT NOT NULL, approval TEXT, jira_status TEXT, approver TEXT, checked_at REAL, job_id TEXT,
   finished_at REAL);
+CREATE TABLE IF NOT EXISTS domain_states (client_id TEXT NOT NULL, environment TEXT NOT NULL, host_key TEXT NOT NULL,
+  role TEXT NOT NULL, domain TEXT NOT NULL, state TEXT NOT NULL, at REAL NOT NULL, job_id TEXT,
+  PRIMARY KEY (client_id, environment, host_key, role, domain));
 CREATE TABLE IF NOT EXISTS access_keys (client_id TEXT NOT NULL, rid TEXT NOT NULL, fingerprint TEXT NOT NULL,
   type TEXT, comment TEXT, line TEXT NOT NULL, account TEXT, added_by TEXT, added_at REAL, note TEXT,
   servers TEXT NOT NULL DEFAULT '{}', updated_at REAL, PRIMARY KEY (client_id, rid));
@@ -809,6 +814,7 @@ def delete_environment(cid, env):
     r = db().execute("DELETE FROM servers WHERE client_id=? AND environment=?", (cid, env))
     if not r.rowcount:
         return jsonify(error="No such environment."), 404
+    db().execute("DELETE FROM domain_states WHERE client_id=? AND environment=?", (cid, env))
     audit("environment_removed", cid, environment=env, servers=r.rowcount)
     return jsonify(ok=True)
 
@@ -1066,7 +1072,8 @@ def job_view(j, with_steps=False):
 
 def recent_jobs(cid, limit=25):
     return [job_view(j) for j in db().execute(
-        "SELECT * FROM jobs WHERE client_id=? ORDER BY created_at DESC LIMIT ?", (cid, limit))]
+        "SELECT * FROM jobs WHERE client_id=? AND COALESCE(kind,'')<>'status_auto' ORDER BY created_at DESC LIMIT ?",
+        (cid, limit))]
 
 
 @app.get("/api/jobs/<jid>")
@@ -1143,10 +1150,95 @@ def queue_catalog(cid, created_by="pegasus", refresh=False):
         return None
 
 
+def record_states(j, pairs):
+    """Remember each domain's last known state from status, start, stop, restart and patch runs."""
+    for st, r in pairs:
+        if not r or not str(st.get("op", "")).startswith("domain."):
+            continue
+        t = st.get("target") or {}
+        env = st.get("environment") or j["environment"]
+        state = "unreachable" if r.get("exit_code") is None else \
+            domain_state(t.get("role"), st["op"], r.get("output"), r.get("exit_code"))
+        if not env or not state:
+            continue
+        db().execute("INSERT INTO domain_states (client_id, environment, host_key, role, domain, state, at, job_id) "
+                     "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(client_id, environment, host_key, role, domain) DO UPDATE "
+                     "SET state=excluded.state, at=excluded.at, job_id=excluded.job_id",
+                     (j["client_id"], env, t.get("ip") or t.get("host"), t.get("role"), t.get("domain"), state,
+                      time.time(), j["id"]))
+
+
+def connector_online(cid):
+    return bool(db().execute("SELECT 1 FROM connectors WHERE client_id=? AND revoked=0 AND last_seen>?",
+                             (cid, time.time() - ONLINE_WINDOW)).fetchone())
+
+
+def maybe_auto_status(cid, force=False):
+    """Queue one status check of every domain of the client, unless one ran recently or is already waiting."""
+    if not STATUS_EVERY and not force:
+        return None
+    if not connector_online(cid):
+        return None
+    if db().execute("SELECT 1 FROM jobs WHERE client_id=? AND kind='status_auto' AND status IN ('queued','running')",
+                    (cid,)).fetchone():
+        return None
+    last = db().execute("SELECT MAX(created_at) t FROM jobs WHERE client_id=? AND kind='status_auto'",
+                        (cid,)).fetchone()["t"] or 0
+    if not force and time.time() - last < STATUS_EVERY:
+        return None
+    servers = [row(s) for s in db().execute("SELECT * FROM servers WHERE client_id=? ORDER BY environment, id", (cid,))]
+    steps = []
+    for env in dict.fromkeys(s["environment"] for s in servers):
+        steps += domain_steps([s for s in servers if s["environment"] == env], "status", environment=env,
+                              independent=True)
+    if not steps:
+        return None
+    try:
+        return queue_job(cid, None, "status_auto", "automatic status check", steps, created_by="Pegasus (automatic)")
+    except JobRefused:
+        return None
+
+
+def auto_status_loop():
+    while True:
+        time.sleep(30)
+        try:
+            with app.app_context():
+                for c in db().execute("SELECT id FROM clients").fetchall():
+                    maybe_auto_status(c["id"])
+                expire_stale()
+        except Exception as e:                       # keep checking even if one round fails
+            app.logger.warning("automatic status check failed: %s", e)
+
+
+@app.get("/api/clients/<cid>/states")
+@need("viewer")
+def client_states(cid):
+    get_client(cid)
+    expire_stale(cid)
+    if request.args.get("now") and can_operate():
+        maybe_auto_status(cid, force=True)
+    else:
+        maybe_auto_status(cid)
+    states = {f"{r['environment']}|{r['host_key']}|{r['role']}|{r['domain']}": {"state": r["state"], "at": iso(r["at"])}
+              for r in db().execute("SELECT * FROM domain_states WHERE client_id=?", (cid,))}
+    auto = db().execute("SELECT * FROM jobs WHERE client_id=? AND kind='status_auto' ORDER BY created_at DESC LIMIT 1",
+                        (cid,)).fetchone()
+    return jsonify(states=states, checking=bool(auto and auto["status"] in ("queued", "running")),
+                   last_auto=iso(auto["finished_at"]) if auto else None, every=STATUS_EVERY,
+                   online=connector_online(cid))
+
+
+def can_operate():
+    u = current_user()
+    return bool(u and auth.ROLE_RANK[u["role"]] >= auth.ROLE_RANK["operator"])
+
+
 def finalize(j):
     cid, env, kind = j["client_id"], j["environment"], j["kind"]
     meta = jload(j["meta"], {}) or {}
     pairs = step_results(j)
+    record_states(j, pairs)
     if kind in ("levels", "apply"):
         for st, r in pairs:
             if st["op"] == "levels" and r:
@@ -2062,6 +2154,9 @@ def main():
     if not users:
         print("No accounts yet: open the page to create the first admin"
               + (" (you'll need PEGASUS_ADMIN_PASSWORD)." if ADMIN_PASSWORD else " (from this machine)."))
+    if STATUS_EVERY:
+        threading.Thread(target=auto_status_loop, daemon=True).start()
+        print(f"Checking every domain's status every {STATUS_EVERY // 60} minutes (PEGASUS_STATUS_EVERY=0 turns it off)")
     app.run(host=host, port=port, threaded=True)
 
 

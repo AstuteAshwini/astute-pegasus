@@ -8,7 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TMP = tempfile.mkdtemp()
 os.environ.update(PEGASUS_DATA=TMP + "/cp", PEGASUS_ADMIN_PASSWORD="setup-pw", PEGASUS_COOKIE_SECURE="false",
-                  PEGASUS_CACHE=TMP + "/cache", PEGASUS_APPLY_POLL="0")
+                  PEGASUS_CACHE=TMP + "/cache", PEGASUS_APPLY_POLL="0",
+                  PEGASUS_STATUS_EVERY="0")
 sys.path[:0] = [str(ROOT / "control-plane"), str(ROOT / "connector"), str(ROOT / "tests")]
 
 import pytest  # noqa: E402

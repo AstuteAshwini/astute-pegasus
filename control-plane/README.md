@@ -39,6 +39,7 @@ python3 -m pegasus_cloud                  # http://127.0.0.1:8443
 | `PEGASUS_ADMIN_PASSWORD` | (none) | Setup password for creating the first admin account; not used after that |
 | `PEGASUS_DATA` | `control-plane/data` | Database, signing key, session key and the key that encrypts Jira tokens |
 | `PEGASUS_HOST` / `PEGASUS_PORT` | `127.0.0.1` / `8443` | Address and port |
+| `PEGASUS_STATUS_EVERY` | `600` | Seconds between automatic status checks of every domain; `0` turns them off |
 | `PEGASUS_PUBLIC_URL` | request URL | URL connectors use, shown in the register command |
 | `PEGASUS_SECRET` | `PEGASUS_DATA/session.key` | Session signing key |
 | `PEGASUS_SECRET_KEY` | `PEGASUS_DATA/secret.key` | Fernet key that encrypts stored secrets (Jira tokens); OCI Vault in production |
@@ -46,6 +47,17 @@ python3 -m pegasus_cloud                  # http://127.0.0.1:8443
 The job-signing key is created on first start in `PEGASUS_DATA/signing_key.pem`. Keep it safe and backed up:
 connectors trust only that key, so replacing it means registering every connector again. Back up `secret.key` with
 the database too: without it, saved Jira tokens can't be read and have to be entered again.
+
+## Domain status
+
+The Overview tab shows every domain as Running, Stopped, Unreachable or Unknown, with when it was last checked, and a
+summary per environment. The state comes from the latest status check, start, stop, restart or patch run, so it's
+always the last thing Pegasus actually saw.
+
+Pegasus also checks every domain by itself: every 10 minutes (`PEGASUS_STATUS_EVERY`, in seconds; `0` turns it off)
+and when someone opens a client whose last check is older than that. **Check all now** asks straight away. These
+automatic checks are read-only, run beside anything else the connector is doing, don't block start/stop or patching,
+and are left out of Recent jobs. They need the client's connector to be online.
 
 ## Adding servers
 
