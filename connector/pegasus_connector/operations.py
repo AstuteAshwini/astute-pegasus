@@ -82,9 +82,11 @@ OPERATIONS = {
     "access.check": "Check for a person's SSH public key in an account",
     "access.add": "Add a person's SSH public key to an account",
     "access.remove": "Remove a person's SSH public key from an account",
+    "discover": "Find PeopleSoft domains on a server (read-only)",
+    "hostkey.trust": "Trust a server's SSH host key after an operator compared its fingerprint",
 }
 # allowed when local policy is read_only: nothing here changes a server
-READ_ONLY_OPERATIONS = {"ping", "domain.status", "levels", "catalog", "host.idle", "access.check"}
+READ_ONLY_OPERATIONS = {"ping", "domain.status", "levels", "catalog", "host.idle", "access.check", "discover"}
 
 
 class OperationError(Exception):
@@ -193,12 +195,78 @@ def build(op, params, ssh_user):
     raise OperationError("unhandled operation")
 
 
+def host_entry(address, port):
+    return address if port == 22 else f"[{address}]:{port}"
+
+
+def key_fingerprint(key):
+    import base64
+    import hashlib
+    return "SHA256:" + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
+
+
 class SSHRunner:
     """Runs a command on a server over SSH with the connector's own key (which never leaves this machine)."""
 
     def __init__(self, user, key_path, passphrase=None, strict_host_keys=True, known_hosts=None):
         self.user, self.key_path, self.passphrase = user, key_path, passphrase
         self.strict, self.known_hosts = strict_host_keys, known_hosts
+
+    def known_hosts_files(self):
+        import os
+        files = [os.path.expanduser("~/.ssh/known_hosts")]
+        if self.known_hosts:
+            files.append(self.known_hosts)
+        return files
+
+    def remote_key(self, target):
+        t = paramiko.Transport((target["address"], target["ssh_port"]))
+        try:
+            t.banner_timeout = CONNECT_TIMEOUT
+            t.start_client(timeout=CONNECT_TIMEOUT)
+            return t.get_remote_server_key()
+        finally:
+            t.close()
+
+    def host_key_status(self, target):
+        """known / unknown / changed, with the server's key type and fingerprint."""
+        import os
+        key = self.remote_key(target)
+        out = {"key_type": key.get_name(), "fingerprint": key_fingerprint(key)}
+        if not self.strict:
+            return dict(out, state="known")
+        hk = paramiko.HostKeys()
+        for f in self.known_hosts_files():
+            if os.path.exists(f):
+                try:
+                    hk.load(f)
+                except (OSError, paramiko.SSHException):
+                    pass
+        known = hk.lookup(host_entry(target["address"], target["ssh_port"]))
+        if known is None or key.get_name() not in known:
+            return dict(out, state="unknown")
+        return dict(out, state="known" if known[key.get_name()] == key else "changed")
+
+    def trust_host_key(self, target, fingerprint):
+        """Add the server's key to ~/.ssh/known_hosts, only if it still has the fingerprint the operator approved."""
+        import os
+        key = self.remote_key(target)
+        if key_fingerprint(key) != fingerprint:
+            raise RuntimeError("The server's host key isn't the one you approved (it changed since the scan). "
+                               "Scan again and compare.")
+        if self.host_key_status(target)["state"] == "changed":
+            raise RuntimeError("A different key is already trusted for this server. Check with its owner and "
+                               "remove the old entry from known_hosts on the connector first.")
+        path = os.path.expanduser("~/.ssh/known_hosts")
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        tail = b""
+        if os.path.exists(path) and os.path.getsize(path):
+            with open(path, "rb") as f:
+                f.seek(-1, os.SEEK_END)
+                tail = f.read(1)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(("\n" if tail and tail != b"\n" else "")
+                    + f"{host_entry(target['address'], target['ssh_port'])} {key.get_name()} {key.get_base64()}\n")
 
     def run(self, target, command, stdin=None, on_output=None, timeout=900, stdin_path=None):
         """Run one command. stdin: text to send; stdin_path: a local file to stream (patch staging)."""

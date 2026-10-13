@@ -700,6 +700,30 @@ def revoke_connector(con_id):
 
 
 # ---------------------------------------------------------------- inventory
+def check_server(r, where):
+    """A clean inventory row, and its problems."""
+    s = {c: str(r.get(c) if r.get(c) is not None else "").strip() for c in SERVER_COLS}
+    s["role"] = s["role"].lower()
+    problems = []
+    if not SAFE_NAME.match(s["environment"]):
+        problems.append(f"{where}: environment name has unexpected characters.")
+    if not SAFE_HOST.match(s["host"]) or (s["ip"] and not SAFE_HOST.match(s["ip"])):
+        problems.append(f"{where}: host or IP has unexpected characters.")
+    if s["role"] not in ROLES:
+        problems.append(f"{where}: role must be app, prcs or web.")
+    for k, rx in (("os_user", SAFE_NAME), ("domain", SAFE_NAME), ("env_script", SAFE_PATH), ("tier", SAFE_NAME)):
+        if s[k] and not rx.match(s[k]):
+            problems.append(f"{where}: {k} has unexpected characters.")
+    if not s["domain"]:
+        problems.append(f"{where}: domain is empty.")
+    try:
+        s["ssh_port"] = int(s["ssh_port"] or 22)
+        assert 0 < s["ssh_port"] < 65536
+    except (ValueError, AssertionError):
+        problems.append(f"{where}: ssh_port must be a port number.")
+    return s, problems
+
+
 def parse_inventory(text):
     rows, problems = [], []
     reader = csv.DictReader(io.StringIO(text.strip()))
@@ -713,23 +737,8 @@ def parse_inventory(text):
         r = {k.strip().lower(): (v or "").strip() for k, v in r.items() if k}
         if not any(r.values()):
             continue
-        s = {c: r.get(c, "") for c in SERVER_COLS}
-        s["role"] = s["role"].lower()
-        if not SAFE_NAME.match(s["environment"]):
-            problems.append(f"Line {n}: environment name has unexpected characters.")
-        if not SAFE_HOST.match(s["host"]) or (s["ip"] and not SAFE_HOST.match(s["ip"])):
-            problems.append(f"Line {n}: host or IP has unexpected characters.")
-        if s["role"] not in ROLES:
-            problems.append(f"Line {n}: role must be app, prcs or web.")
-        for k, rx in (("os_user", SAFE_NAME), ("domain", SAFE_NAME), ("env_script", SAFE_PATH), ("tier", SAFE_NAME)):
-            if s[k] and not rx.match(s[k]):
-                problems.append(f"Line {n}: {k} has unexpected characters.")
-        if not s["domain"]:
-            problems.append(f"Line {n}: domain is empty.")
-        try:
-            s["ssh_port"] = int(s["ssh_port"] or 22)
-        except ValueError:
-            problems.append(f"Line {n}: ssh_port must be a number.")
+        s, p = check_server(r, f"Line {n}")
+        problems += p
         rows.append(s)
     if not rows and not problems:
         problems.append("No servers in that CSV.")
@@ -752,6 +761,142 @@ def put_inventory(cid):
     c.execute("COMMIT")
     audit("inventory_imported", cid, servers=len(rows))
     return jsonify(ok=True, servers=len(rows))
+
+
+@app.post("/api/clients/<cid>/inventory/add")
+@need("admin")
+def add_inventory(cid):
+    """Add domains (usually found by a scan) to one environment, keeping the rest of the inventory. A domain that's
+    already there (same environment, server, role and domain) is updated rather than added twice."""
+    get_client(cid)
+    body = request.get_json(silent=True) or {}
+    env, tier = str(body.get("environment") or "").strip(), str(body.get("tier") or "").strip()
+    rows, problems = [], []
+    for i, r in enumerate(body.get("rows") or [], start=1):
+        s, p = check_server(dict(r, environment=env, tier=tier), f"Row {i}")
+        problems += p
+        rows.append(s)
+    if not env:
+        problems.insert(0, "Give the environment a name.")
+    if not rows:
+        problems.append("Choose at least one domain.")
+    if problems:
+        return jsonify(error=" ".join(dict.fromkeys(problems[:8]))), 400
+    c = db()
+    c.execute("BEGIN")
+    added = 0
+    for s in rows:
+        hit = c.execute("SELECT id FROM servers WHERE client_id=? AND environment=? AND (host=? OR ip=?) AND role=? "
+                        "AND domain=?", (cid, env, s["host"], s["ip"] or s["host"], s["role"], s["domain"])).fetchone()
+        if hit:
+            c.execute("UPDATE servers SET tier=?, host=?, ip=?, os_user=?, env_script=?, ssh_port=? WHERE id=?",
+                      (tier, s["host"], s["ip"], s["os_user"], s["env_script"], s["ssh_port"], hit["id"]))
+        else:
+            c.execute("INSERT INTO servers (client_id, environment, tier, host, ip, role, os_user, domain, env_script, "
+                      "ssh_port) VALUES (?,?,?,?,?,?,?,?,?,?)", (cid, *[s[k] for k in SERVER_COLS]))
+            added += 1
+    if tier:
+        c.execute("UPDATE servers SET tier=? WHERE client_id=? AND environment=?", (tier, cid, env))
+    c.execute("COMMIT")
+    audit("inventory_added", cid, environment=env, added=added, updated=len(rows) - added)
+    return jsonify(ok=True, added=added, updated=len(rows) - added)
+
+
+@app.delete("/api/clients/<cid>/environments/<env>")
+@need("admin")
+def delete_environment(cid, env):
+    get_client(cid)
+    r = db().execute("DELETE FROM servers WHERE client_id=? AND environment=?", (cid, env))
+    if not r.rowcount:
+        return jsonify(error="No such environment."), 404
+    audit("environment_removed", cid, environment=env, servers=r.rowcount)
+    return jsonify(ok=True)
+
+
+def parse_target(text):
+    text = text.strip()
+    port = 22
+    m = re.match(r"^\[?([^\]]+?)\]?:(\d{1,5})$", text)
+    if m:
+        text, port = m.group(1), int(m.group(2))
+    if not SAFE_HOST.match(text) or not 0 < port < 65536:
+        raise ValueError(f"'{text[:60]}' isn't an IP address or host name.")
+    return {"host": text, "ip": text, "ssh_port": port}
+
+
+@app.post("/api/clients/<cid>/discover")
+@need("admin")
+def discover(cid):
+    """Scan servers for PeopleSoft domains, through the client's connector. Read-only on the servers."""
+    get_client(cid)
+    body = request.get_json(silent=True) or {}
+    texts = [t for t in re.split(r"[\s,;]+", str(body.get("targets") or "")) if t]
+    users = [u for u in re.split(r"[\s,;]+", str(body.get("users") or "")) if u]
+    if not texts:
+        return jsonify(error="Enter at least one IP address."), 400
+    if len(texts) > 20:
+        return jsonify(error="Scan up to 20 servers at a time."), 400
+    bad = [u for u in users if not SAFE_NAME.match(u) or u == "root"]
+    if bad or len(users) > 5:
+        return jsonify(error="OS users: up to 5 names, letters, digits, . _ and - only, not root."), 400
+    try:
+        targets = list({(t["ip"], t["ssh_port"]): t for t in map(parse_target, texts)}.values())
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    steps = [{"op": "discover", "target": t, "users": users, "independent": True,
+              "label": "Scan for PeopleSoft domains"} for t in targets]
+    try:
+        jid = queue_job(cid, None, "discover", f"scan {', '.join(t['ip'] for t in targets)}", steps,
+                        stop_on_failure=True)
+    except JobRefused as e:
+        return jsonify(error=str(e)), e.status
+    audit("job_queued", cid, job=jid, title="scan servers", targets=[t["ip"] for t in targets])
+    return jsonify(job=jid, servers=len(targets))
+
+
+@app.post("/api/clients/<cid>/trust-host")
+@need("admin")
+def trust_host(cid):
+    """Have the connector trust a server's SSH host key, after the operator compared the fingerprint."""
+    get_client(cid)
+    body = request.get_json(silent=True) or {}
+    try:
+        t = parse_target(str(body.get("target") or ""))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    fp = str(body.get("fingerprint") or "")
+    if not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", fp):
+        return jsonify(error="That isn't a host key fingerprint."), 400
+    try:
+        jid = queue_job(cid, None, "hostkey", f"trust host key of {t['ip']}",
+                        [{"op": "hostkey.trust", "target": t, "fingerprint": fp, "label": "Trust host key"}])
+    except JobRefused as e:
+        return jsonify(error=str(e)), e.status
+    audit("host_key_trusted", cid, target=t["ip"], fingerprint=fp)
+    return jsonify(job=jid)
+
+
+@app.get("/api/jobs/<jid>/discovery")
+@need("viewer")
+def discovery_results(jid):
+    j = db().execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+    if not j or j["kind"] != "discover":
+        return jsonify(error="No such scan."), 404
+    get_client(j["client_id"])
+    out = []
+    for st, r in step_results(j):
+        t = st["target"]
+        target = t["ip"] if int(t.get("ssh_port") or 22) == 22 else f"{t['ip']}:{t['ssh_port']}"
+        if not r:
+            out.append({"target": target, "error": "Not scanned (the job ended first)."})
+            continue
+        data = r.get("data") if isinstance(r.get("data"), dict) else None
+        if data is None:
+            tail = [l for l in str(r.get("output") or "").splitlines() if l.strip()]
+            out.append({"target": target, "error": tail[-1][:300] if tail else "No answer from the server."})
+            continue
+        out.append(dict(data, target=target))
+    return jsonify(status=j["status"], results=out)
 
 
 def env_servers(cid, env):

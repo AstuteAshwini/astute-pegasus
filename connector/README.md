@@ -7,7 +7,8 @@ Nothing connects to it, and the SSH key it uses never leaves the machine it runs
 ## What it will and won't do
 
 * It runs only **named operations**, listed in `operations.py`: connection test, psadmin status/start/stop,
-  patch levels, the latest-release lookup (`catalog`), patch download and staging, a check that no WebLogic or
+  patch levels, finding PeopleSoft domains on a server (`discover`) and trusting a server's host key after an operator
+  compared its fingerprint (`hostkey.trust`), the latest-release lookup (`catalog`), patch download and staging, a check that no WebLogic or
   Tuxedo process is running, patch apply, and SSH key check/add/remove. Commands and scripts (including the apply
   scripts, in `patching.py`) are built here from fixed templates; every value is validated and shell-quoted.
   Nothing sent by the control plane is ever run as a shell command.
@@ -20,8 +21,8 @@ Nothing connects to it, and the SSH key it uses never leaves the machine it runs
 { "read_only": true, "blocked_hosts": ["hrprddb01"], "allowed_hosts": [], "paused": false }
 ```
 
-`read_only` allows only checks (ping, status, patch levels, latest-release lookup, the process check and SSH key
-checks). `paused` refuses everything (a kill switch that keeps the connector online). `allowed_operations` limits it
+`read_only` allows only checks (ping, status, patch levels, scanning for domains, latest-release lookup, the process
+check and SSH key checks). `paused` refuses everything (a kill switch that keeps the connector online). `allowed_operations` limits it
 to a list. Stopping the service cuts Pegasus off completely.
 
 ## Oracle Support account (for patching)

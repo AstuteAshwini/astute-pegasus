@@ -71,6 +71,9 @@ tr.sub td{border-bottom:none;padding-top:0}
 .apply-row{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r);margin-bottom:8px;background:var(--sunk)}
 .apply-row>span:first-child{flex:1;min-width:240px}.apply-row .cr{display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center}
 .apply-all{border-color:var(--accent)}
+.disc-host{border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;margin:12px 0}.disc-host h3{margin:0 0 8px;font-size:15px}
+.trust{background:var(--warn-bg);color:var(--ink);border-radius:var(--r);padding:10px 12px;font-size:13.5px;margin:8px 0}
+details summary{cursor:pointer;margin:6px 0}
 .codes{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;font-family:var(--mono);font-size:14px;background:var(--sunk);padding:12px;border-radius:var(--r);margin:10px 0}
 .envpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:4px 12px;margin:6px 0 12px}
 #qr{display:inline-block;padding:10px;background:#fff;border-radius:var(--r);margin:6px 0}
@@ -198,7 +201,7 @@ dialog::backdrop{background:#0b0f2680}.row{display:flex;gap:8px;justify-content:
 (function(){
 "use strict";
 var $=function(id){return document.getElementById(id)};
-var S={me:null,clients:[],cid:null,detail:null,tab:"overview",job:null,penv:null,pat:null,jira:null,acc:{key:null,sel:{}},users:null,view:"client"};
+var S={me:null,clients:[],cid:null,detail:null,tab:"overview",job:null,penv:null,pat:null,jira:null,acc:{key:null,sel:{}},users:null,view:"client",disc:{}};
 var NM={jdk:"JDK",weblogic:"WebLogic",dbclient:"Oracle Database Client",tuxedo:"Tuxedo"};
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 function api(path,opt){opt=opt||{};var o={method:opt.method||"GET",headers:{"X-Requested-With":"pegasus"},credentials:"same-origin"};
@@ -282,7 +285,7 @@ $("clientList").addEventListener("click",function(e){var b=e.target.closest("[da
 $("addClient").addEventListener("click",function(){var n=prompt("Client name");if(!n)return;
   api("/api/clients",{method:"POST",body:{name:n}}).then(function(c){S.cid=c.id;S.view="client";loadClients().then(function(){openClient(c.id)})}).catch(function(j){alert(j.error)})});
 
-function openClient(cid){if(cid!==S.cid){S.penv=null;S.pat=null;S.acc={key:null,sel:{}}}S.cid=cid;renderClientList();
+function openClient(cid){if(cid!==S.cid){S.penv=null;S.pat=null;S.acc={key:null,sel:{}};S.disc={}}S.cid=cid;renderClientList();
   return api("/api/clients/"+cid).then(function(d){S.detail=d;if(!S.penv&&d.environments.length)S.penv=d.environments[0].name;render()})}
 function refresh(){if(S.cid&&S.view==="client") api("/api/clients/"+S.cid).then(function(d){S.detail=d;if(S.tab==="overview")render()});loadClientsQuiet()}
 function loadClientsQuiet(){api("/api/clients").then(function(j){S.clients=j.clients;renderClientList()})}
@@ -293,7 +296,7 @@ function render(){var d=S.detail;
   $("main").innerHTML=h;
   ({overview:renderOverview,patching:renderPatching,access:renderAccess,settings:renderSettings,activity:renderActivity})[S.tab]()}
 
-function renderOverview(){var d=S.detail,h='<div class="grid2"><div class="panel"><h2>Connectors</h2>';
+function renderOverview(){var d=S.detail,h='<div><div class="panel"><h2>Connectors</h2>';
   h+='<p class="help">Each connector runs inside the client\'s network and only connects out to Pegasus.</p>';
   if(!d.connectors.length) h+='<div class="empty">No connector yet.</div>';
   else{h+='<table><thead><tr><th>Name</th><th>Status</th><th>Version</th><th></th></tr></thead><tbody>';
@@ -301,20 +304,71 @@ function renderOverview(){var d=S.detail,h='<div class="grid2"><div class="panel
     h+='</tbody></table>'}
   if(can("admin")) h+='<div class="toolbar" style="margin-top:12px"><button type="button" class="primary" id="newTok">Add connector</button></div>';
   h+='</div>';
-  if(can("admin")) h+='<div class="panel"><h2>Inventory</h2><p class="help">One row per server and domain. Columns: environment, tier, host, ip, role (app, prcs or web), os_user, domain, env_script. Importing replaces this client\'s inventory.</p>'+
-    '<textarea id="invCsv" spellcheck="false" placeholder="environment,tier,host,ip,role,os_user,domain,env_script"></textarea><div id="invMsg"></div><div class="toolbar" style="margin-top:10px"><button type="button" id="invSave">Import</button></div></div>';
+  if(can("admin")) h+='<div class="panel"><h2>Add servers</h2><p class="help">Enter IP addresses. The connector signs in to each server, finds its web, app server and process scheduler domains, and you choose which to add. Nothing on the servers changes.</p>'+
+    '<label>IP addresses<input id="dTargets" class="mono" placeholder="10.0.1.21, 10.0.1.11" value="'+esc(S.disc.targets||"")+'"></label>'+
+    '<label>OS users (optional)<input id="dUsers" class="mono" placeholder="blank: whoever runs PeopleSoft, else psadm1, psadm2, psadm3" value="'+esc(S.disc.users||"")+'"></label>'+
+    '<div class="toolbar"><button type="button" class="primary" id="dGo">Scan servers</button></div><div id="dOut"></div>'+
+    '<details style="margin-top:14px"><summary class="det">Or import a CSV (replaces this client\'s whole inventory)</summary><p class="help">One row per server and domain. Columns: environment, tier, host, ip, role (app, prcs or web), os_user, domain, env_script.</p>'+
+    '<textarea id="invCsv" spellcheck="false" placeholder="environment,tier,host,ip,role,os_user,domain,env_script"></textarea><div id="invMsg"></div><div class="toolbar" style="margin-top:10px"><button type="button" id="invSave">Import CSV</button></div></details></div>';
   h+='</div><div class="panel"><h2>Environments</h2>';
   if(!d.environments.length) h+='<div class="empty">'+(can("admin")?"Import an inventory to see environments.":"No environments yet.")+'</div>';
   d.environments.forEach(function(e){var cnt=e.servers.length;
     h+='<div class="env"><div class="env-head"><h3>'+esc(e.name)+'</h3><span class="tag'+(isPrd(e.tier)?' prd':'')+'">'+esc(e.tier||'no tier')+'</span><span class="det">'+cnt+' domain'+(cnt===1?'':'s')+'</span>'+
-      (can("operator")?'<span class="acts"><button class="sm" data-run="status" data-env="'+esc(e.name)+'">Check status</button><button class="sm go" data-run="start" data-env="'+esc(e.name)+'">Start all</button><button class="sm halt" data-run="stop" data-env="'+esc(e.name)+'">Stop all</button><button class="sm" data-run="restart" data-env="'+esc(e.name)+'">Restart</button><button class="sm" data-run="ping" data-env="'+esc(e.name)+'">Test connection</button></span>':'')+'</div>'+
+      (can("operator")?'<span class="acts"><button class="sm" data-run="status" data-env="'+esc(e.name)+'">Check status</button><button class="sm go" data-run="start" data-env="'+esc(e.name)+'">Start all</button><button class="sm halt" data-run="stop" data-env="'+esc(e.name)+'">Stop all</button><button class="sm" data-run="restart" data-env="'+esc(e.name)+'">Restart</button><button class="sm" data-run="ping" data-env="'+esc(e.name)+'">Test connection</button>'+(can("admin")?'<button class="sm danger" data-rmenv="'+esc(e.name)+'">Remove</button>':'')+'</span>':'')+'</div>'+
       '<div class="scroll"><table><thead><tr><th>Host</th><th>Role</th><th>Domain</th><th>OS user</th></tr></thead><tbody>'+
       e.servers.map(function(s){return '<tr><td class="mono">'+esc(s.host)+' <span class="det">'+esc(s.ip)+'</span></td><td>'+esc(s.role)+'</td><td class="mono">'+esc(s.domain)+'</td><td class="mono">'+esc(s.os_user)+'</td></tr>'}).join("")+'</tbody></table></div></div>'});
   h+='</div><div class="panel"><h2>Recent jobs</h2>';
   if(!d.jobs.length) h+='<div class="empty">No jobs yet.</div>';
   else h+='<div class="scroll"><table><thead><tr><th>When</th><th>What</th><th>By</th><th>Result</th></tr></thead><tbody>'+d.jobs.map(function(j){
     return '<tr><td class="det">'+esc(when(j.created_at))+'</td><td><button class="link" data-job="'+esc(j.id)+'">'+esc(j.title)+'</button>'+(j.note?'<br><span class="det">'+esc(j.note)+'</span>':'')+'</td><td>'+esc(j.created_by)+'</td><td><span class="st '+esc(j.status)+'">'+esc(j.status)+'</span></td></tr>'}).join("")+'</tbody></table></div>';
-  $("tabBody").innerHTML=h+'</div>'}
+  $("tabBody").innerHTML=h+'</div>';
+  if($("dOut")) renderDisc()}
+
+/* ---------- add servers by scanning ---------- */
+function renderDisc(){var d=S.disc,h="",any=false;if(!$("dOut"))return;
+  (d.results||[]).forEach(function(r,ri){
+    h+='<div class="disc-host"><h3 class="mono">'+esc(r.host?r.host+"  ("+r.target+")":r.target)+'</h3>';
+    if(r.error) h+='<div class="msg">'+esc(r.error)+'</div>';
+    if(r.needs_trust) h+='<div class="trust">The connector hasn\'t connected to this server before. Its '+esc(r.key_type)+' host key fingerprint is<br><b class="mono">'+esc(r.fingerprint)+'</b><br>Compare it with the server (on it, run <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code>). If it matches, trust it and Pegasus scans again.<div style="margin-top:8px"><button type="button" class="primary sm" data-dtrust="'+ri+'">Trust key and scan</button></div></div>';
+    (r.notes||[]).forEach(function(n){h+='<p class="det" style="margin:4px 0">'+esc(n)+'</p>'});
+    if(r.rows&&r.rows.length){any=true;
+      h+='<div class="scroll"><table><thead><tr><th></th><th>Role</th><th>Domain</th><th>Owner</th><th>Folder</th><th></th></tr></thead><tbody>'+r.rows.map(function(x,xi){
+        return '<tr><td><input type="checkbox" data-dr="'+ri+'" data-dx="'+xi+'"'+(x.use?' checked':'')+' aria-label="Add '+esc(x.role+' '+x.domain)+'"></td><td>'+esc(x.role)+'</td><td class="mono">'+esc(x.domain)+'</td><td class="mono">'+esc(x.owner)+'</td><td class="mono det">'+esc(x.path)+'</td><td class="det">'+esc(x.note)+'</td></tr>'}).join("")+'</tbody></table></div>'}
+    h+='</div>'});
+  if(any){var names=(S.detail.environments||[]).map(function(e){return '<option value="'+esc(e.name)+'">'}).join("");
+    h+='<div class="grid2"><label>Environment<input id="dEnv" class="mono" list="dEnvs" placeholder="new name, or an existing one to add to" value="'+esc(d.env||"")+'"><datalist id="dEnvs">'+names+'</datalist></label>'+
+      '<label>Tier<input id="dTier" placeholder="DEV, TST, PRD..." value="'+esc(d.tier||"")+'"></label></div><div id="dMsg"></div><div class="toolbar"><button type="button" class="primary" id="dAdd">Add ticked domains</button><button type="button" id="dClear">Clear results</button></div>'}
+  $("dOut").innerHTML=h}
+function scanServers(targets,merge){var users=$("dUsers")?$("dUsers").value.trim():S.disc.users||"";
+  if(!merge){S.disc.targets=targets;S.disc.users=users}
+  api("/api/clients/"+S.cid+"/discover",{method:"POST",body:{targets:targets,users:users}}).then(function(j){
+    watch(j.job,"scan "+targets,function(){api("/api/jobs/"+j.job+"/discovery").then(function(r){
+      if(merge) S.disc.results=(S.disc.results||[]).map(function(x){return r.results.filter(function(y){return y.target===x.target})[0]||x});
+      else S.disc.results=r.results;
+      renderDisc();if($("dOut"))$("dOut").scrollIntoView({behavior:"smooth",block:"start"})})})})
+  .catch(function(j){if($("dOut"))$("dOut").innerHTML='<div class="msg">'+esc(j.error||"Couldn't start the scan.")+'</div>'})}
+
+$("main").addEventListener("input",function(e){if(e.target.id==="dEnv")S.disc.env=e.target.value;if(e.target.id==="dTier")S.disc.tier=e.target.value});
+$("main").addEventListener("change",function(e){var c=e.target.closest("[data-dr]");if(c)S.disc.results[+c.dataset.dr].rows[+c.dataset.dx].use=c.checked});
+$("main").addEventListener("keydown",function(e){if(e.key==="Enter"&&(e.target.id==="dTargets"||e.target.id==="dUsers")){e.preventDefault();$("dGo").click()}});
+
+$("main").addEventListener("click",function(e){var t=e.target;
+  if(t.id==="dGo"){var v=$("dTargets").value.trim();if(!v){$("dOut").innerHTML='<div class="msg">Enter at least one IP address.</div>';return}
+    $("dOut").innerHTML='<p class="det">Scanning '+esc(v)+'…</p>';return scanServers(v,false)}
+  var tr=t.closest("[data-dtrust]");if(tr){var r=S.disc.results[+tr.dataset.dtrust];tr.disabled=true;
+    return api("/api/clients/"+S.cid+"/trust-host",{method:"POST",body:{target:r.target,fingerprint:r.fingerprint}}).then(function(j){
+      watch(j.job,"trust host key of "+r.target,function(res){if(res.status==="succeeded")scanServers(r.target,true);else{tr.disabled=false}})})
+      .catch(function(j){tr.disabled=false;alert(j.error||"Couldn't trust the key.")})}
+  if(t.id==="dClear"){S.disc={};return renderOverview()}
+  if(t.id==="dAdd"){var rows=[];(S.disc.results||[]).forEach(function(r){(r.rows||[]).forEach(function(x){if(x.use)rows.push(x)})});
+    var env=$("dEnv").value.trim();if(!env)return msg("dMsg","Give the environment a name.");if(!rows.length)return msg("dMsg","Tick at least one domain.");
+    return api("/api/clients/"+S.cid+"/inventory/add",{method:"POST",body:{environment:env,tier:$("dTier").value.trim(),rows:rows}}).then(function(j){
+      S.disc={};S.penv=S.penv||env;openClient(S.cid);loadClientsQuiet();
+      setTimeout(function(){alert("Added "+j.added+" domain"+(j.added===1?"":"s")+" to "+env+(j.updated?" ("+j.updated+" already there, updated)":"")+".")},50)})
+    .catch(function(j){msg("dMsg",j.error||"Couldn't add them.")})}
+  var rm=t.closest("[data-rmenv]");if(rm) return confirmBox("Remove "+rm.dataset.rmenv+" from the inventory?","Pegasus forgets its servers and domains. Nothing on the servers changes, and you can scan and add it again.",rm.dataset.rmenv,function(){
+    api("/api/clients/"+S.cid+"/environments/"+encodeURIComponent(rm.dataset.rmenv),{method:"DELETE"}).then(function(){if(S.penv===rm.dataset.rmenv)S.penv=null;openClient(S.cid);loadClientsQuiet()}).catch(function(j){alert(j.error)})},"Remove")
+});
 
 $("main").addEventListener("click",function(e){var t=e.target;
   var tb=t.closest("[data-tab]"); if(tb){S.tab=tb.dataset.tab;return render()}

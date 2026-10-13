@@ -47,6 +47,22 @@ The job-signing key is created on first start in `PEGASUS_DATA/signing_key.pem`.
 connectors trust only that key, so replacing it means registering every connector again. Back up `secret.key` with
 the database too: without it, saved Jira tokens can't be read and have to be entered again.
 
+## Adding servers
+
+On a client's **Overview** tab (admins), **Add servers**: enter IP addresses (`10.0.1.21`, or `10.0.1.21:2222` for
+another SSH port) and click **Scan servers**. The connector signs in to each one, finds who runs PeopleSoft (from
+running processes, else psadm1/psadm2/psadm3, or the OS users you enter), and lists their web, app server and process
+scheduler domains. Domains that look like leftovers (no `config.xml` / `PSTUXCFG`) start unticked. Name the
+environment (a new one, or an existing one to add to), set its tier, and click **Add ticked domains**. Adding merges
+into the inventory: other environments are kept and a domain that's already there is updated, not duplicated.
+
+A server the connector has never connected to isn't scanned until you trust its SSH host key: Pegasus shows the
+fingerprint; compare it on the server with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, then click **Trust key
+and scan**. The connector re-reads the key and saves it to its own `known_hosts` only if it still matches.
+
+The CSV import is still there (under the Add servers panel) and replaces the client's whole inventory. **Remove** on
+an environment drops it from the inventory without touching the servers.
+
 ## CPU patching
 
 On a client's **Patching** tab, per environment:

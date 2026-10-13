@@ -23,6 +23,8 @@ class FakeServers:
         self.fail_apply = False
         self.running = []        # process lines host.idle should report
         self.keys = {}           # (host, account) -> set of key bodies
+        self.trusted = {"10.0.1.11", "10.0.1.21", "10.0.9.21"}   # host keys already in known_hosts
+        self.host_fp = "SHA256:" + "A" * 43
 
     def run(self, target, command, stdin=None, on_output=None, timeout=900, stdin_path=None):
         self.calls.append((target["host"], command))
@@ -53,6 +55,13 @@ class FakeServers:
             out += "/dev/sda1 100000000 1000 99999000 1% /u01\n"
         elif "ps -u" in command:
             out = "".join(f"{l}\n" for l in self.running)
+        elif command.startswith("INNER="):
+            out = ("PSH|fsdev01\nPSN|running processes owned by: psadm2\n"
+                   "PSD|psadm2|env|/u01/pt/ps_home8.62.12|/u01/cfg|/u01/pt/jdk|\n"
+                   "PSD|psadm2|web|peoplesoft||psadm2|yes|/u01/cfg/webserv/peoplesoft\n"
+                   "PSD|psadm2|app|FSDEV||psadm2|yes|/u01/cfg/appserv/FSDEV\n"
+                   "PSD|psadm2|prcs|PRCSDOM||psadm2|yes|/u01/cfg/appserv/prcs/PRCSDOM\n"
+                   "PSD|psadm2|app|FSCOPY||psadm2|no|/u01/cfg/appserv/FSCOPY\n")
         elif "MODE=" in stdin:
             out = self.access(host, command, stdin)
         elif "PSA|started" in stdin:
@@ -73,6 +82,15 @@ class FakeServers:
         if on_output:
             on_output(out)
         return code
+
+    def host_key_status(self, target):
+        state = "known" if target["address"] in self.trusted else "unknown"
+        return {"state": state, "key_type": "ssh-ed25519", "fingerprint": self.host_fp}
+
+    def trust_host_key(self, target, fingerprint):
+        if fingerprint != self.host_fp:
+            raise RuntimeError("The server's host key isn't the one you approved.")
+        self.trusted.add(target["address"])
 
     def access(self, host, command, stdin):
         m = re.search(r"sudo -n -iu (\S+)", command)

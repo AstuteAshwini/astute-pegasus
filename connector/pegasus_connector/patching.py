@@ -22,7 +22,7 @@ from pathlib import Path
 
 import paramiko
 
-from . import oracle
+from . import discovery, oracle
 from .operations import SAFE_ABS_PATH, SAFE_NAME, OperationError, check_target
 
 SAFE_FILE = re.compile(r"^[A-Za-z0-9_.+\-]{1,200}$")
@@ -34,7 +34,7 @@ COMPONENTS = ("jdk", "weblogic", "dbclient", "tuxedo")
 PROTECTED_DIRS = {"/", "/u01", "/u01/app", "/u01/app/oracle", "/u01/app/oracle/product", "/home", "/root", "/etc",
                   "/usr", "/var", "/opt", "/tmp", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/dev", "/proc", "/sys"}
 HANDLED = ("catalog", "patch.download", "patch.stage", "patch.apply", "host.idle",
-           "access.check", "access.add", "access.remove")
+           "access.check", "access.add", "access.remove", "discover", "hostkey.trust")
 
 
 def q(v):
@@ -88,6 +88,8 @@ def validate(op, step, ssh_user):
                 or not all(JDK_VERSION.match(v) for v in versions):
             raise OperationError("JDK versions have unexpected characters")
         return {"majors": majors, "versions": versions, "refresh": bool(step.get("refresh"))}
+    if op in ("discover", "hostkey.trust"):
+        return discovery.validate(op, step)
     if op == "patch.download":
         keys = [patch_key(k) for k in step.get("keys") or []]
         if not keys or len(keys) > 20:
@@ -179,6 +181,8 @@ def run(op, c, ctx, out):
             elif v.get("ru"):
                 out(f"{title}: RU 19.{v['ru']} (patch {v['patch']})\n")
         return 0, data
+    if op in ("discover", "hostkey.trust"):
+        return discovery.run(op, c, ctx, out)
     if op == "patch.download":
         return download(c, ctx, out)
     if op == "patch.stage":
