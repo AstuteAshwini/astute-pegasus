@@ -51,3 +51,25 @@ def test_interval_is_respected(env):
         assert not states(env)["checking"]                      # one just ran, so no new one yet
     finally:
         cp.STATUS_EVERY = old
+
+
+def test_one_domain_only(env):
+    env["fake"].calls.clear()
+    r = env["admin"].post(env["url"] + f"/api/clients/{env['cid']}/run",
+                          json={"environment": "HRDEV", "action": "stop", "host": "10.0.1.21", "role": "prcs",
+                                "domain": "PRCSDOM"})
+    assert r.ok and r.json()["steps"] == 1, r.text
+    drain(env)
+    j = wait_job(env, r.json()["job"])
+    assert j["status"] == "succeeded" and j["title"] == "stop HRDEV / 10.0.1.21 prcs PRCSDOM"
+    assert len(env["fake"].calls) == 1 and "-p stop" in env["fake"].calls[0][1]
+    s = states(env)["states"]
+    assert s["HRDEV|10.0.1.21|prcs|PRCSDOM"]["state"] == "stopped"
+    assert s["HRDEV|10.0.1.21|app|HRDEV"]["state"] == "running"            # the app domain on the same host untouched
+    r = env["admin"].post(env["url"] + f"/api/clients/{env['cid']}/run",
+                          json={"environment": "HRDEV", "action": "start", "domain": "NOPE"})
+    assert r.status_code == 404
+    r = env["admin"].post(env["url"] + f"/api/clients/{env['cid']}/run",
+                          json={"environment": "HRDEV", "action": "start", "role": "prcs", "domain": "PRCSDOM"})
+    drain(env)
+    wait_job(env, r.json()["job"])

@@ -995,16 +995,18 @@ def run(cid):
     servers = env_servers(cid, env)
     if not servers:
         return jsonify(error="That environment has no servers."), 404
-    if host:
-        servers = [s for s in servers if host in (s["host"], s["ip"])]
+    role, domain = str(body.get("role") or ""), str(body.get("domain") or "")
+    if host or role or domain:
+        servers = [s for s in servers if (not host or host in (s["host"], s["ip"])) and (not role or s["role"] == role)
+                   and (not domain or s["domain"] == domain)]
         if not servers:
-            return jsonify(error="That server isn't in the environment."), 404
+            return jsonify(error="That server or domain isn't in the environment."), 404
     tier = env_tier(servers)
     if action in ("start", "stop", "restart") and is_prd(tier) and str(body.get("confirm") or "").upper() != env.upper():
         return jsonify(error=f"Type {env} to confirm.", need_confirm=True), 409
     try:
         steps, stop_on_failure = plan_steps(servers, action)
-        title = f"{action} {env}" + (f" / {host}" if host else "")
+        title = f"{action} {env}" + (f" / {host}" if host else "") + (f" {role} {domain}" if domain else "")
         jid = queue_job(cid, env, action, title, steps, stop_on_failure)
     except ValueError as e:
         return jsonify(error=str(e)), 400

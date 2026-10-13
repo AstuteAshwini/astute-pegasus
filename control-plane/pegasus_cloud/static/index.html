@@ -26,6 +26,7 @@ button:hover{background:var(--sunk)}button:disabled{opacity:.45;cursor:not-allow
 button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
 button.go{color:var(--run)}button.halt,button.danger{color:var(--stop)}
 button.link{border:none;background:none;color:var(--accent);padding:4px 2px}button.sm{padding:4px 10px;font-size:12.5px}
+button.link.danger{color:var(--stop)}
 input,textarea,select{font:inherit;font-size:14px;padding:8px 11px;border:1px solid var(--line-strong);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);width:100%}
 input[type=checkbox]{width:auto;margin:0 6px 0 0;vertical-align:-2px}
 textarea{font-family:var(--mono);font-size:12.5px;min-height:150px}
@@ -317,8 +318,10 @@ function renderOverview(){var d=S.detail,h='<div><div class="panel"><h2>Connecto
   d.environments.forEach(function(e){var cnt=e.servers.length;
     h+='<div class="env"><div class="env-head"><h3>'+esc(e.name)+'</h3><span class="tag'+(isPrd(e.tier)?' prd':'')+'">'+esc(e.tier||'no tier')+'</span><span class="det">'+cnt+' domain'+(cnt===1?'':'s')+'</span><span data-ssum="'+esc(e.name)+'"></span>'+
       (can("operator")?'<span class="acts"><button class="sm" data-run="status" data-env="'+esc(e.name)+'">Check status</button><button class="sm go" data-run="start" data-env="'+esc(e.name)+'">Start all</button><button class="sm halt" data-run="stop" data-env="'+esc(e.name)+'">Stop all</button><button class="sm" data-run="restart" data-env="'+esc(e.name)+'">Restart</button><button class="sm" data-run="ping" data-env="'+esc(e.name)+'">Test connection</button>'+(can("admin")?'<button class="sm danger" data-rmenv="'+esc(e.name)+'">Remove</button>':'')+'</span>':'')+'</div>'+
-      '<div class="scroll"><table><thead><tr><th>Host</th><th>Role</th><th>Domain</th><th>OS user</th><th>Status</th></tr></thead><tbody>'+
-      e.servers.map(function(s){return '<tr><td class="mono">'+esc(s.host)+' <span class="det">'+esc(s.ip)+'</span></td><td>'+esc(s.role)+'</td><td class="mono">'+esc(s.domain)+'</td><td class="mono">'+esc(s.os_user)+'</td><td data-skey="'+esc(e.name+"|"+(s.ip||s.host)+"|"+s.role+"|"+s.domain)+'" data-senv="'+esc(e.name)+'"><span class="st queued">Not checked</span></td></tr>'}).join("")+'</tbody></table></div></div>'});
+      '<div class="scroll"><table><thead><tr><th>Host</th><th>Role</th><th>Domain</th><th>OS user</th><th>Status</th>'+(can("operator")?'<th></th>':'')+'</tr></thead><tbody>'+
+      e.servers.map(function(s){return '<tr><td class="mono">'+esc(s.host)+' <span class="det">'+esc(s.ip)+'</span></td><td>'+esc(s.role)+'</td><td class="mono">'+esc(s.domain)+'</td><td class="mono">'+esc(s.os_user)+'</td><td data-skey="'+esc(e.name+"|"+(s.ip||s.host)+"|"+s.role+"|"+s.domain)+'" data-senv="'+esc(e.name)+'"><span class="st queued">Not checked</span></td>'+
+        (can("operator")?'<td style="white-space:nowrap">'+["start","stop","restart"].map(function(a){var dd=' data-env="'+esc(e.name)+'" data-host="'+esc(s.ip||s.host)+'" data-role="'+esc(s.role)+'" data-dom="'+esc(s.domain)+'"';
+          return '<button type="button" class="link sm'+(a==="stop"?' danger':'')+'" data-one="'+a+'"'+dd+'>'+a.charAt(0).toUpperCase()+a.slice(1)+'</button>'}).join(" ")+'</td>':'')+'</tr>'}).join("")+'</tbody></table></div></div>'});
   h+='</div><div class="panel"><h2>Recent jobs</h2>';
   if(!d.jobs.length) h+='<div class="empty">No jobs yet.</div>';
   else h+='<div class="scroll"><table><thead><tr><th>When</th><th>What</th><th>By</th><th>Result</th></tr></thead><tbody>'+d.jobs.map(function(j){
@@ -373,6 +376,10 @@ $("main").addEventListener("change",function(e){var c=e.target.closest("[data-dr
 $("main").addEventListener("keydown",function(e){if(e.key==="Enter"&&(e.target.id==="dTargets"||e.target.id==="dUsers")){e.preventDefault();$("dGo").click()}});
 
 $("main").addEventListener("click",function(e){var t=e.target;
+  var one=t.closest("[data-one]");if(one){var a=one.dataset.one,en=one.dataset.env,e1=envOf(en),label=one.dataset.role+" "+one.dataset.dom;
+    var go1=function(typed){api("/api/clients/"+S.cid+"/run",{method:"POST",body:{environment:en,action:a,host:one.dataset.host,role:one.dataset.role,domain:one.dataset.dom,confirm:typed}})
+      .then(function(j){watch(j.job,a+" "+label+" ("+en+")");refresh()}).catch(function(j){alert(j.error||"Couldn't start.")})};
+    return confirmBox(a.charAt(0).toUpperCase()+a.slice(1)+" "+label+" in "+en+"?","Only this domain on "+one.dataset.host+" is "+(a==="restart"?"stopped and started again":a==="stop"?"stopped":"started")+". The rest of "+en+" isn't touched.",isPrd(e1.tier)?en:null,go1)}
   if(t.id==="stNow"){t.disabled=true;return loadStates(true).then(function(){t.disabled=false})}
   if(t.id==="dGo"){var v=$("dTargets").value.trim();if(!v){$("dOut").innerHTML='<div class="msg">Enter at least one IP address.</div>';return}
     $("dOut").innerHTML='<p class="det">Scanning '+esc(v)+'…</p>';return scanServers(v,false)}

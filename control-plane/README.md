@@ -55,7 +55,8 @@ summary per environment. The state comes from the latest status check, start, st
 always the last thing Pegasus actually saw.
 
 Pegasus also checks every domain by itself: every 10 minutes (`PEGASUS_STATUS_EVERY`, in seconds; `0` turns it off)
-and when someone opens a client whose last check is older than that. **Check all now** asks straight away. These
+and when someone opens a client whose last check is older than that. **Check all now** asks straight away. Each domain row also has **Start**, **Stop** and **Restart**, which act on
+that one domain only; the environment's **Start all** / **Stop all** keep the safe order across every domain. These
 automatic checks are read-only, run beside anything else the connector is doing, don't block start/stop or patching,
 and are left out of Recent jobs. They need the client's connector to be online.
 
