@@ -9,4 +9,5 @@ To change keys, add the new public key here, release a version carrying both key
 the new key.
 """
 RELEASE_KEYS = [
+    "+bgqf3S7jupq/oQUWQnTnzhzgKZBLoIl5NgX22LEjo8=",
 ]
