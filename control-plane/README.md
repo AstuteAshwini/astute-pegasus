@@ -43,10 +43,45 @@ python3 -m pegasus_cloud                  # http://127.0.0.1:8443
 | `PEGASUS_PUBLIC_URL` | request URL | URL connectors use, shown in the register command |
 | `PEGASUS_SECRET` | `PEGASUS_DATA/session.key` | Session signing key |
 | `PEGASUS_SECRET_KEY` | `PEGASUS_DATA/secret.key` | Fernet key that encrypts stored secrets (Jira tokens); OCI Vault in production |
+| `PEGASUS_RELEASE_KEYS` | (any) | Comma-separated release public keys to offer connector releases from |
 
 The job-signing key is created on first start in `PEGASUS_DATA/signing_key.pem`. Keep it safe and backed up:
-connectors trust only that key, so replacing it means registering every connector again. Back up `secret.key` with
+connectors trust only that key (for jobs and for their certificates), so replacing it means registering every
+connector again. Back up `secret.key` with
 the database too: without it, saved Jira tokens can't be read and have to be entered again.
+
+## Connector certificates
+
+Each connector holds its own Ed25519 key; this control plane issues it a 90-day certificate (signed with the same key
+that signs jobs) at registration, and the connector renews it with a fresh key about monthly. Every connector request
+is signed (method, path, time, a nonce and the body's hash) and checked against the connector's current key; nonces
+are kept for ten minutes, so a captured request can't be sent again. During a renewal the previous key is accepted
+for ten more minutes, for requests already on their way.
+
+The Overview tab shows each connector's certificate and when it expires. **Remove** revokes it immediately.
+Connectors registered with a shared secret before certificates get one the next time they start, after which the
+secret is refused.
+
+## Connector releases and updates
+
+Releases are built and signed on the machine that holds Astute's release key, never on the control plane:
+
+```bash
+python scripts/connector_release.py keygen            # once; adds the public key to connector/.../release_keys.py
+python scripts/connector_release.py build --notes "what changed"
+```
+
+`build` signs the current `connector/pegasus_connector` code as the version in its `__init__.py` and writes it to
+`PEGASUS_DATA/releases/<version>/` (by default `control-plane/data/releases/`). Pegasus picks it up without a
+restart and shows it on each client's Overview tab, with the release key's fingerprint.
+
+Per client (admins): **Connector updates: Manual** (default; each connector shows **Update to x.y.z**) or
+**Automatic** (every connector takes a new release as soon as it's out). Each connector reports what happened:
+updating, updated, failed (with the reason) or refused by its local policy, and every step is in Activity. A failed
+release isn't offered again until an admin clicks Update.
+
+Set `PEGASUS_RELEASE_KEYS` to list the release keys Pegasus will offer releases from; by default it checks each
+release against the key it was built with. Either way, connectors check against the keys built into their own code.
 
 ## Domain status
 

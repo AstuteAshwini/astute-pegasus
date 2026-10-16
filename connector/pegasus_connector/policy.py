@@ -7,7 +7,8 @@ policy.json sits next to config.json. Every field is optional:
   "allowed_operations": [...],              # default: every operation in operations.OPERATIONS
   "allowed_hosts": [],                      # empty means any host; otherwise names or IPs
   "blocked_hosts": ["hrprddb01"],
-  "paused": false                           # true: accept nothing at all (a kill switch that keeps the connector online)
+  "paused": false,                          # true: accept nothing at all (a kill switch that keeps the connector online)
+  "auto_update": true                       # false: refuse every connector update Pegasus offers
 }
 """
 import json
@@ -16,7 +17,7 @@ from pathlib import Path
 from .operations import OPERATIONS, READ_ONLY_OPERATIONS
 
 DEFAULT = {"read_only": False, "allowed_operations": sorted(OPERATIONS), "allowed_hosts": [], "blocked_hosts": [],
-           "paused": False}
+           "paused": False, "auto_update": True}
 
 
 def load(path):

@@ -8,6 +8,10 @@ Hosted web app and job queue. Clients' connectors call in over HTTPS; this servi
   register live in a SQLite database for now (a managed database comes with hosting).
 * Every job handed to a connector is signed with this service's Ed25519 key (protocol.py). Connectors run only the
   operations they know, built from their own templates; nothing here is ever executed as a shell command.
+* Each connector holds its own key and a certificate this service issued for it; it signs every request, and
+  certificates are renewed automatically. Removing a connector revokes its certificate.
+* Connector updates are signed with Astute's release key (kept offline). This service only stores and offers them;
+  connectors verify them against the key built into their own code.
 """
 import csv
 import datetime as dt
@@ -25,13 +29,16 @@ import time
 import uuid
 from pathlib import Path
 
-from flask import Flask, abort, g, jsonify, request, send_from_directory, session
+from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory, session
 
 from . import __version__, auth, evaluate as ev, jira as jiramod, protocol, sshkeys
 
 DATA_DIR = Path(os.environ.get("PEGASUS_DATA", Path(__file__).resolve().parent.parent / "data"))
 DB_PATH = DATA_DIR / "pegasus.db"
 KEY_PATH = DATA_DIR / "signing_key.pem"
+RELEASES_DIR = DATA_DIR / "releases"
+# Optional: only offer releases signed by these release keys (comma-separated base64 public keys).
+RELEASE_KEYS = [k.strip() for k in os.environ.get("PEGASUS_RELEASE_KEYS", "").split(",") if k.strip()]
 # Only needed to create the first admin account. Once someone has signed in it's no longer used.
 ADMIN_PASSWORD = os.environ.get("PEGASUS_ADMIN_PASSWORD", "")
 PUBLIC_URL = os.environ.get("PEGASUS_PUBLIC_URL", "")
@@ -108,11 +115,18 @@ CREATE TABLE IF NOT EXISTS change_requests (id TEXT PRIMARY KEY, client_id TEXT 
 CREATE TABLE IF NOT EXISTS domain_states (client_id TEXT NOT NULL, environment TEXT NOT NULL, host_key TEXT NOT NULL,
   role TEXT NOT NULL, domain TEXT NOT NULL, state TEXT NOT NULL, at REAL NOT NULL, job_id TEXT,
   PRIMARY KEY (client_id, environment, host_key, role, domain));
+CREATE TABLE IF NOT EXISTS nonces (connector_id TEXT NOT NULL, nonce TEXT NOT NULL, at REAL NOT NULL,
+  PRIMARY KEY (connector_id, nonce));
 CREATE TABLE IF NOT EXISTS access_keys (client_id TEXT NOT NULL, rid TEXT NOT NULL, fingerprint TEXT NOT NULL,
   type TEXT, comment TEXT, line TEXT NOT NULL, account TEXT, added_by TEXT, added_at REAL, note TEXT,
   servers TEXT NOT NULL DEFAULT '{}', updated_at REAL, PRIMARY KEY (client_id, rid));
 """
-MIGRATIONS = {"jobs": [("kind", "TEXT"), ("meta", "TEXT"), ("finalized", "INTEGER NOT NULL DEFAULT 0")]}
+MIGRATIONS = {"jobs": [("kind", "TEXT"), ("meta", "TEXT"), ("finalized", "INTEGER NOT NULL DEFAULT 0")],
+              "connectors": [("public_key", "TEXT"), ("cert_serial", "TEXT"), ("cert_not_after", "REAL"),
+                             ("cert_issued_at", "REAL"), ("prev_public_key", "TEXT"), ("prev_until", "REAL"),
+                             ("update_to", "TEXT"), ("update_state", "TEXT"), ("update_version", "TEXT"),
+                             ("update_detail", "TEXT"), ("update_at", "REAL"), ("can_update", "INTEGER"),
+                             ("update_requested_at", "REAL")]}
 
 
 # ---------------------------------------------------------------- storage
@@ -619,9 +633,17 @@ def audit_log():
 def connector_view(c, now=None):
     now = now or time.time()
     online = bool(c["last_seen"] and now - c["last_seen"] < ONLINE_WINDOW and not c["revoked"])
+    rel = latest_release()
     return {"id": c["id"], "name": c["name"], "hostname": c["hostname"], "version": c["version"],
             "platform": c["platform"], "last_seen": iso(c["last_seen"]), "online": online,
-            "revoked": bool(c["revoked"]), "created_at": iso(c["created_at"])}
+            "revoked": bool(c["revoked"]), "created_at": iso(c["created_at"]),
+            "auth": "certificate" if c["public_key"] else "secret",
+            "certificate": {"serial": c["cert_serial"], "valid_until": iso(c["cert_not_after"]),
+                            "issued_at": iso(c["cert_issued_at"])} if c["public_key"] else None,
+            "update": {"state": c["update_state"], "version": c["update_version"], "detail": c["update_detail"],
+                       "at": iso(c["update_at"])} if c["update_state"] else None,
+            "update_to": c["update_to"], "can_update": c["can_update"] == 1,
+            "update_available": rel["version"] if rel and is_newer(rel["version"], c["version"]) else None}
 
 
 @app.get("/api/clients")
@@ -669,8 +691,10 @@ def client_detail(cid):
         e = envs.setdefault(s["environment"], {"name": s["environment"], "tier": s["tier"] or "", "servers": []})
         e["tier"] = e["tier"] or s["tier"] or ""
         e["servers"].append(s)
+    rel = latest_release()
     return jsonify(id=c["id"], name=c["name"], connectors=cons, environments=list(envs.values()),
-                   jobs=recent_jobs(cid))
+                   jobs=recent_jobs(cid), connector_updates=get_setting(cid, "connector_updates", "manual"),
+                   latest_release=release_view(rel) if rel else None)
 
 
 @app.post("/api/clients/<cid>/tokens")
@@ -696,10 +720,11 @@ def revoke_connector(con_id):
     if not c:
         return jsonify(error="No such connector."), 404
     get_client(c["client_id"])
-    db().execute("UPDATE connectors SET revoked=1 WHERE id=?", (con_id,))
+    db().execute("UPDATE connectors SET revoked=1, prev_public_key=NULL, prev_until=NULL WHERE id=?", (con_id,))
     db().execute("UPDATE jobs SET status='failed', finished_at=?, note='connector removed' "
                  "WHERE connector_id=? AND status='running'", (time.time(), con_id))
-    audit("connector_removed", c["client_id"], connector=con_id, name=c["name"])
+    audit("connector_removed", c["client_id"], connector=con_id, name=c["name"],
+          certificate=c["cert_serial"] or "", note="certificate revoked" if c["public_key"] else "")
     finalize_pending()
     return jsonify(ok=True)
 
@@ -2015,17 +2040,84 @@ def access_run(cid):
 
 
 # ---------------------------------------------------------------- connector API (called by connectors only)
+def denied(why):
+    g.auth_error = why
+    return None
+
+
+def unauthorized():
+    return jsonify(error=g.get("auth_error") or "Unknown connector."), 401
+
+
 def connector_auth():
-    h = request.headers.get("Authorization", "")
-    if not h.startswith("Bearer ") or "." not in h:
-        return None
-    cid, _, secret = h[7:].partition(".")
-    c = db().execute("SELECT * FROM connectors WHERE id=? AND revoked=0", (cid,)).fetchone()
-    if not c or not hmac.compare_digest(c["secret_hash"], sha(secret)):
-        return None
+    """The calling connector, from a signed request (certificate) or, for one registered before certificates, its
+    shared secret. Sets g.auth_kind. None (and g.auth_error) if it isn't accepted."""
+    now = time.time()
+    sig = request.headers.get("X-Pegasus-Signature")
+    if sig:
+        cid = request.headers.get("X-Pegasus-Connector", "")
+        c = db().execute("SELECT * FROM connectors WHERE id=?", (cid,)).fetchone()
+        if not c or c["revoked"]:
+            return denied("This connector has been removed in Pegasus.")
+        if not c["public_key"]:
+            return denied("This connector has no certificate yet.")
+        if (c["cert_not_after"] or 0) < now:
+            return denied("This connector's certificate has expired.")
+        path = request.path + ("?" + request.query_string.decode("ascii", "replace") if request.query_string else "")
+        body = request.get_data(cache=True)
+        ts, nonce = request.headers.get("X-Pegasus-Timestamp"), request.headers.get("X-Pegasus-Nonce", "")
+        keys = [c["public_key"]]
+        if c["prev_public_key"] and (c["prev_until"] or 0) > now:
+            keys.append(c["prev_public_key"])       # requests already on their way when the key was renewed
+        problem = None
+        for k in keys:
+            try:
+                protocol.verify_request(k, request.method, path, body, ts, nonce, sig, now)
+                problem = None
+                break
+            except ValueError as e:
+                problem = str(e)
+        if problem:
+            return denied(f"The request didn't check out: {problem}.")
+        try:
+            db().execute("INSERT INTO nonces (connector_id, nonce, at) VALUES (?,?,?)", (cid, nonce, now))
+        except sqlite3.IntegrityError:
+            return denied("That request was already received once.")
+        if secrets.randbelow(200) == 0:
+            db().execute("DELETE FROM nonces WHERE at<?", (now - 2 * protocol.REQUEST_SKEW - 60,))
+        g.auth_kind = "certificate"
+    else:
+        h = request.headers.get("Authorization", "")
+        if not h.startswith("Bearer ") or "." not in h:
+            return denied("Unknown connector.")
+        cid, _, secret = h[7:].partition(".")
+        c = db().execute("SELECT * FROM connectors WHERE id=? AND revoked=0", (cid,)).fetchone()
+        if not c or not hmac.compare_digest(c["secret_hash"], sha(secret)):
+            return denied("Unknown connector.")
+        if c["public_key"]:
+            return denied("This connector signs in with its certificate now; its old secret is no longer accepted.")
+        g.auth_kind = "secret"
     db().execute("UPDATE connectors SET last_seen=?, version=? WHERE id=?",
-                 (time.time(), request.headers.get("X-Connector-Version", c["version"])[:20], cid))
-    return c
+                 (now, request.headers.get("X-Connector-Version", c["version"] or "")[:20], c["id"]))
+    return db().execute("SELECT * FROM connectors WHERE id=?", (c["id"],)).fetchone()
+
+
+def issue_certificate(c, con_id, client_id, public_key, previous=None):
+    """Issue a certificate for public_key and record it. previous: the key it replaces, accepted 10 more minutes."""
+    now = time.time()
+    serial = "s_" + uuid.uuid4().hex[:16]
+    cert, sig = protocol.issue_cert(signing_key(), con_id, client_id, public_key, serial, now)
+    c.execute("UPDATE connectors SET public_key=?, cert_serial=?, cert_not_after=?, cert_issued_at=?, "
+              "prev_public_key=?, prev_until=?, secret_hash='!' WHERE id=?",
+              (cert["public_key"], serial, cert["not_after"], now, previous, now + 600 if previous else None, con_id))
+    return {"certificate": cert, "certificate_signature": sig}
+
+
+def body_public_key(body):
+    try:
+        return protocol.check_public_key(body.get("public_key"))
+    except ValueError:
+        return None
 
 
 @app.post("/api/connector/v1/register")
@@ -2041,24 +2133,226 @@ def connector_register():
         time.sleep(1)
         return jsonify(error="That registration token isn't valid. It may have expired or already been used."), 401
     con_id, secret = "k_" + uuid.uuid4().hex[:12], secrets.token_urlsafe(32)
+    pub = body_public_key(body) if body.get("public_key") else None
+    if body.get("public_key") and not pub:
+        c.execute("ROLLBACK")
+        return jsonify(error="The connector's public key isn't a valid Ed25519 key."), 400
     clean = lambda k, n: re.sub(r"[^\x20-\x7e]", "", str(body.get(k) or ""))[:n]
     c.execute("INSERT INTO connectors (id, client_id, name, hostname, version, platform, secret_hash, created_at, "
               "last_seen) VALUES (?,?,?,?,?,?,?,?,?)",
               (con_id, t["client_id"], clean("name", 80), clean("hostname", 120), clean("version", 20),
-               clean("platform", 120), sha(secret), now, now))
+               clean("platform", 120), "!" if pub else sha(secret), now, now))
+    issued = issue_certificate(c, con_id, t["client_id"], pub) if pub else {}
     c.execute("UPDATE reg_tokens SET used_at=?, connector_id=? WHERE token_hash=?", (now, con_id, t["token_hash"]))
     c.execute("COMMIT")
     client = c.execute("SELECT name FROM clients WHERE id=?", (t["client_id"],)).fetchone()
-    audit("connector_registered", t["client_id"], actor="connector", connector=con_id, name=clean("name", 80))
-    return jsonify(connector_id=con_id, secret=secret, tenant=t["client_id"], client_name=client["name"],
-                   signing_public_key=protocol.public_key_b64(signing_key()))
+    audit("connector_registered", t["client_id"], actor="connector", connector=con_id, name=clean("name", 80),
+          certificate=issued["certificate"]["serial"] if issued else "none (shared secret)")
+    out = dict(connector_id=con_id, tenant=t["client_id"], client_name=client["name"],
+               signing_public_key=protocol.public_key_b64(signing_key()), **issued)
+    if not pub:
+        out["secret"] = secret                  # a connector from before certificates; it enrolls when it starts
+    return jsonify(out)
+
+
+@app.post("/api/connector/v1/certificate/enroll")
+def connector_enroll():
+    """A connector that registered with a shared secret trades it for a certificate on its own key."""
+    con = connector_auth()
+    if not con:
+        return unauthorized()
+    if g.auth_kind != "secret":
+        return jsonify(error="This connector already has a certificate; renew it instead."), 409
+    pub = body_public_key(request.get_json(silent=True) or {})
+    if not pub:
+        return jsonify(error="Send the connector's new Ed25519 public key."), 400
+    out = issue_certificate(db(), con["id"], con["client_id"], pub)
+    audit("connector_certificate_issued", con["client_id"], actor="connector", connector=con["id"], name=con["name"],
+          certificate=out["certificate"]["serial"], note="replaced its shared secret")
+    return jsonify(out)
+
+
+@app.post("/api/connector/v1/certificate/renew")
+def connector_renew():
+    """A new certificate on a new key, asked for with the current key."""
+    con = connector_auth()
+    if not con:
+        return unauthorized()
+    if g.auth_kind != "certificate":
+        return jsonify(error="Get a certificate first."), 409
+    pub = body_public_key(request.get_json(silent=True) or {})
+    if not pub or pub == con["public_key"]:
+        return jsonify(error="Send a new Ed25519 public key."), 400
+    if time.time() - (con["cert_issued_at"] or 0) < 60:
+        return jsonify(error="This connector's certificate was renewed less than a minute ago."), 429
+    out = issue_certificate(db(), con["id"], con["client_id"], pub, previous=con["public_key"])
+    audit("connector_certificate_renewed", con["client_id"], actor="connector", connector=con["id"],
+          name=con["name"], certificate=out["certificate"]["serial"], replaces=con["cert_serial"])
+    return jsonify(out)
+
+
+UPDATE_STATES = ("installing", "restarting", "failed", "refused")
 
 
 @app.post("/api/connector/v1/heartbeat")
 def connector_heartbeat():
+    con = connector_auth()
+    if not con:
+        return unauthorized()
+    body = request.get_json(silent=True) or {}
+    now = time.time()
+    up = body.get("update") if isinstance(body.get("update"), dict) else None
+    can = 1 if body.get("can_update") else 0 if "can_update" in body else None
+    db().execute("UPDATE connectors SET can_update=COALESCE(?, can_update) WHERE id=?", (can, con["id"]))
+    if up and up.get("state") in UPDATE_STATES:
+        state, version = up["state"], str(up.get("version") or "")[:20]
+        detail = re.sub(r"[^\x20-\x7e]", "", str(up.get("detail") or ""))[:300]
+        if (state, version) != (con["update_state"], con["update_version"]) and state in ("failed", "refused"):
+            audit("connector_update_" + state, con["client_id"], actor="connector", connector=con["id"],
+                  name=con["name"], version=version, reason=detail)
+        db().execute("UPDATE connectors SET update_state=?, update_version=?, update_detail=?, update_at=? WHERE id=?",
+                     (state, version, detail, now, con["id"]))
+    if con["update_version"] and con["version"] == con["update_version"] and con["update_state"] != "updated":
+        db().execute("UPDATE connectors SET update_state='updated', update_detail='', update_at=?, update_to=NULL "
+                     "WHERE id=?", (now, con["id"]))
+        audit("connector_updated", con["client_id"], actor="connector", connector=con["id"], name=con["name"],
+              version=con["version"])
+    elif con["update_to"] and con["version"] and not is_newer(con["update_to"], con["version"]):
+        db().execute("UPDATE connectors SET update_to=NULL WHERE id=?", (con["id"],))
+    con = db().execute("SELECT * FROM connectors WHERE id=?", (con["id"],)).fetchone()
+    return jsonify(ok=True, update=update_offer(con))
+
+
+# ---------------------------------------------------------------- connector releases
+_releases = {"stamp": None, "list": []}
+
+
+def is_newer(a, b):
+    try:
+        return protocol.version_tuple(a) > protocol.version_tuple(b or "0")
+    except ValueError:
+        return False
+
+
+def load_release(d):
+    """A release folder's description, if it's complete and correctly signed. (Connectors check again themselves.)"""
+    env = json.loads((d / "release.json").read_text(encoding="utf-8"))
+    m, sig, key = env.get("manifest") or {}, env.get("signature"), env.get("key")
+    if m.get("product") != "pegasus-connector" or m.get("version") != d.name:
+        raise ValueError("the description doesn't match its folder")
+    protocol.verify_release(m, sig, RELEASE_KEYS or [key])
+    bundle = d / "bundle.zip"
+    if hashlib.sha256(bundle.read_bytes()).hexdigest() != m.get("bundle_sha256"):
+        raise ValueError("bundle.zip doesn't match the signed checksum")
+    return {"version": m["version"], "created_at": m.get("created_at"), "notes": m.get("notes") or "",
+            "key_fingerprint": protocol.fingerprint(key), "size": bundle.stat().st_size, "dir": d,
+            "files": len(m.get("files") or {})}
+
+
+def releases():
+    """Every valid release in PEGASUS_DATA/releases, newest first (re-read when the folder changes)."""
+    if not RELEASES_DIR.is_dir():
+        return []
+    dirs = [d for d in RELEASES_DIR.iterdir() if d.is_dir() and not d.name.startswith(".")]
+    stamp = tuple(sorted((d.name, (d / "release.json").stat().st_mtime if (d / "release.json").exists() else 0,
+                          (d / "bundle.zip").stat().st_mtime if (d / "bundle.zip").exists() else 0) for d in dirs))
+    if stamp != _releases["stamp"]:
+        out = []
+        for d in dirs:
+            try:
+                protocol.version_tuple(d.name)
+                out.append(load_release(d))
+            except (OSError, ValueError, KeyError, TypeError) as e:
+                print(f"Ignoring connector release {d.name}: {e}")
+        _releases.update(stamp=stamp, list=sorted(out, key=lambda r: protocol.version_tuple(r["version"]), reverse=True))
+    return _releases["list"]
+
+
+def latest_release():
+    rs = releases()
+    return rs[0] if rs else None
+
+
+def release_view(r):
+    return {k: r[k] for k in ("version", "created_at", "notes", "key_fingerprint", "size", "files")}
+
+
+def find_release(version):
+    for r in releases():
+        if r["version"] == version:
+            return r
+    return None
+
+
+def update_offer(con):
+    """The update to offer this connector now, if any."""
+    rel = latest_release()
+    if not rel or not is_newer(rel["version"], con["version"]):
+        return None
+    if con["update_state"] in ("failed", "refused") and con["update_version"] == rel["version"] \
+            and con["update_to"] != rel["version"]:
+        return None                       # it said no to this one; an admin can ask again with Update now
+    if con["update_to"] == rel["version"]:          # someone clicked Update now; each click is a new request
+        return {"version": rel["version"], "request": f"r{int(con['update_requested_at'] or 0)}"}
+    if get_setting(con["client_id"], "connector_updates", "manual") == "auto":
+        return {"version": rel["version"], "request": "auto"}
+    return None
+
+
+@app.get("/api/connector/v1/releases/<version>/release")
+def connector_release(version):
     if not connector_auth():
-        return jsonify(error="Unknown connector."), 401
-    return jsonify(ok=True)
+        return unauthorized()
+    r = find_release(version)
+    if not r:
+        return jsonify(error="No such release."), 404
+    return send_file(r["dir"] / "release.json", mimetype="application/json")
+
+
+@app.get("/api/connector/v1/releases/<version>/bundle")
+def connector_bundle(version):
+    if not connector_auth():
+        return unauthorized()
+    r = find_release(version)
+    if not r:
+        return jsonify(error="No such release."), 404
+    return send_file(r["dir"] / "bundle.zip", mimetype="application/zip")
+
+
+@app.get("/api/releases")
+@need("viewer")
+def list_releases():
+    if not staff():
+        return jsonify(error="Only Astute staff see connector releases."), 403
+    return jsonify(releases=[release_view(r) for r in releases()])
+
+
+@app.post("/api/connectors/<con_id>/update")
+@need("admin")
+def request_connector_update(con_id):
+    c = db().execute("SELECT * FROM connectors WHERE id=? AND revoked=0", (con_id,)).fetchone()
+    if not c:
+        return jsonify(error="No such connector."), 404
+    get_client(c["client_id"])
+    rel = latest_release()
+    if not rel or not is_newer(rel["version"], c["version"]):
+        return jsonify(error="This connector already runs the newest release."), 409
+    db().execute("UPDATE connectors SET update_to=?, update_requested_at=?, update_state=NULL, update_version=NULL, "
+                 "update_detail=NULL WHERE id=?", (rel["version"], time.time(), con_id))
+    audit("connector_update_requested", c["client_id"], connector=con_id, name=c["name"], version=rel["version"])
+    return jsonify(ok=True, version=rel["version"])
+
+
+@app.put("/api/clients/<cid>/connector-updates")
+@need("admin")
+def put_connector_updates(cid):
+    get_client(cid)
+    mode = (request.get_json(silent=True) or {}).get("mode")
+    if mode not in ("manual", "auto"):
+        return jsonify(error="Choose manual or automatic updates."), 400
+    put_setting(cid, "connector_updates", mode)
+    audit("connector_updates_changed", cid, mode=mode)
+    return jsonify(mode=mode)
 
 
 def claim(con):
@@ -2082,7 +2376,7 @@ def claim(con):
 def connector_next():
     con = connector_auth()
     if not con:
-        return jsonify(error="Unknown connector."), 401
+        return unauthorized()
     try:
         wait = max(0.0, min(float(request.args.get("wait", 25)), 30.0))
     except ValueError:
@@ -2101,7 +2395,7 @@ def connector_next():
 def connector_events(jid):
     con = connector_auth()
     if not con:
-        return jsonify(error="Unknown connector."), 401
+        return unauthorized()
     j = db().execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
     if not j or j["connector_id"] != con["id"]:
         return jsonify(error="That job wasn't given to this connector."), 404

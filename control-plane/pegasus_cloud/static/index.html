@@ -158,7 +158,7 @@ dialog::backdrop{background:#0b0f2680}.row{display:flex;gap:8px;justify-content:
 <dialog id="tokDlg"><h2>Add a connector</h2>
   <p class="help">Run this on the client's jump host (or a small VM that can reach their PeopleSoft servers over SSH). The token works once and expires in 24 hours. Replace the SSH user and key path with the ones the connector should use.</p>
   <div class="cmd" id="tokCmd"></div>
-  <p class="help">The connector prints the control plane's signing key when it registers. Check it matches: <b class="mono" id="tokFp"></b>. Then start it with <code>python -m pegasus_connector run</code>.</p>
+  <p class="help">The connector creates its own key and gets a certificate from Pegasus; it prints the control plane's signing key when it registers. Check it matches: <b class="mono" id="tokFp"></b>. Then start it with <code>python -m pegasus_connector run</code>.</p>
   <p class="help">For patching, also save the client's Oracle Support account on the connector (it never leaves their network): <code>python -m pegasus_connector oracle-login --user name@client.com</code></p>
   <div class="row"><button type="button" id="tokCopy">Copy command</button><button type="button" class="primary" id="tokClose">Done</button></div>
 </dialog>
@@ -298,13 +298,32 @@ function render(){var d=S.detail;
   $("main").innerHTML=h;
   ({overview:renderOverview,patching:renderPatching,access:renderAccess,settings:renderSettings,activity:renderActivity})[S.tab]()}
 
+function conAuth(c){
+  if(c.auth==="certificate"&&c.certificate) return '<span class="st ok">Certificate</span><br><span class="det">valid until '+esc(day(c.certificate.valid_until))+', renews by itself</span>';
+  return '<span class="st pending">Shared secret</span><br><span class="det">switches to a certificate the next time the connector starts</span>'}
+function conUpdate(c){var u=c.update||{};
+  if(c.update_to&&!u.state) return '<span class="det">Update to '+esc(c.update_to)+' requested; waiting for the connector</span>';
+  if(u.state==="installing"||u.state==="restarting") return '<span class="st busy">Updating to '+esc(u.version)+'</span>';
+  if(u.state==="failed") return '<span class="st failed">Update '+esc(u.version)+' failed</span><br><span class="det">'+esc(u.detail)+'</span>';
+  if(u.state==="refused") return '<span class="st stale">Refused '+esc(u.version)+'</span><br><span class="det">'+esc(u.detail)+'</span>';
+  if(c.update_available&&!c.can_update) return '<span class="det">'+esc(c.update_available)+' is out; this connector can\'t update itself until it\'s updated by hand once</span>';
+  if(c.update_available) return '<span class="det">'+esc(c.update_available)+' available</span>';
+  if(u.state==="updated") return '<span class="det">updated '+esc(ago(u.at))+'</span>';
+  return '<span class="det">up to date</span>'}
+function day(isoText){if(!isoText)return "";var t=new Date(isoText);return t.toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"})}
 function renderOverview(){var d=S.detail,h='<div><div class="panel"><h2>Connectors</h2>';
   h+='<p class="help">Each connector runs inside the client\'s network and only connects out to Pegasus.</p>';
   if(!d.connectors.length) h+='<div class="empty">No connector yet.</div>';
-  else{h+='<table><thead><tr><th>Name</th><th>Status</th><th>Version</th><th></th></tr></thead><tbody>';
-    d.connectors.forEach(function(c){h+='<tr><td><b>'+esc(c.name)+'</b><br><span class="det">'+esc(c.hostname)+'</span></td><td><span class="st '+(c.online?'up':'down')+'">'+(c.online?'Online':'Offline')+'</span><br><span class="det">'+esc(ago(c.last_seen))+'</span></td><td class="mono">'+esc(c.version)+'</td><td>'+(can("admin")?'<button class="link sm" style="color:var(--stop)" data-revoke="'+esc(c.id)+'">Remove</button>':'')+'</td></tr>'});
-    h+='</tbody></table>'}
-  if(can("admin")) h+='<div class="toolbar" style="margin-top:12px"><button type="button" class="primary" id="newTok">Add connector</button></div>';
+  else{h+='<div class="scroll"><table><thead><tr><th>Name</th><th>Status</th><th>Version</th><th>Signs in with</th><th></th></tr></thead><tbody>';
+    d.connectors.forEach(function(c){h+='<tr><td><b>'+esc(c.name)+'</b><br><span class="det">'+esc(c.hostname)+'</span></td><td><span class="st '+(c.online?'up':'down')+'">'+(c.online?'Online':'Offline')+'</span><br><span class="det">'+esc(ago(c.last_seen))+'</span></td><td><span class="mono">'+esc(c.version)+'</span><br>'+conUpdate(c)+'</td><td>'+conAuth(c)+'</td><td>'+
+      (can("admin")&&c.update_available&&c.can_update&&c.update_to!==c.update_available&&!(c.update&&/installing|restarting/.test(c.update.state))?'<button class="link sm" data-cupd="'+esc(c.id)+'" data-ver="'+esc(c.update_available)+'">Update to '+esc(c.update_available)+'</button><br>':'')+
+      (can("admin")?'<button class="link sm" style="color:var(--stop)" data-revoke="'+esc(c.id)+'">Remove</button>':'')+'</td></tr>'});
+    h+='</tbody></table></div>'}
+  if(can("admin")) h+='<div class="toolbar" style="margin-top:12px"><button type="button" class="primary" id="newTok">Add connector</button>'+
+    '<label class="inline" style="margin:0 0 0 auto">Connector updates&nbsp;<select id="cUpdMode" style="width:auto"><option value="manual">Manual: an admin clicks Update</option><option value="auto">Automatic: as soon as a release is out</option></select></label></div>'+
+    '<p class="help" style="margin-top:8px">'+(d.latest_release?'Newest connector release: <b class="mono">'+esc(d.latest_release.version)+'</b>'+(d.latest_release.notes?' ('+esc(d.latest_release.notes)+')':'')+', signed with '+esc(d.latest_release.key_fingerprint)+'. ':'No connector release has been published yet. ')+
+    'A connector installs only releases signed with Astute\'s release key, waits until no job is running, and goes back to its previous version if the new one doesn\'t start. The client can refuse updates in the connector\'s local policy.</p>';
+  else if(d.latest_release) h+='<p class="help" style="margin-top:8px">Connector updates: '+(d.connector_updates==="auto"?"automatic":"manual")+'.</p>';
   h+='</div>';
   if(can("admin")) h+='<div class="panel"><h2>Add servers</h2><p class="help">Enter IP addresses. The connector signs in to each server, finds its web, app server and process scheduler domains, and you choose which to add. Nothing on the servers changes.</p>'+
     '<label>IP addresses<input id="dTargets" class="mono" placeholder="10.0.1.21, 10.0.1.11" value="'+esc(S.disc.targets||"")+'"></label>'+
@@ -327,6 +346,7 @@ function renderOverview(){var d=S.detail,h='<div><div class="panel"><h2>Connecto
   else h+='<div class="scroll"><table><thead><tr><th>When</th><th>What</th><th>By</th><th>Result</th></tr></thead><tbody>'+d.jobs.map(function(j){
     return '<tr><td class="det">'+esc(when(j.created_at))+'</td><td><button class="link" data-job="'+esc(j.id)+'">'+esc(j.title)+'</button>'+(j.note?'<br><span class="det">'+esc(j.note)+'</span>':'')+'</td><td>'+esc(j.created_by)+'</td><td><span class="st '+esc(j.status)+'">'+esc(j.status)+'</span></td></tr>'}).join("")+'</tbody></table></div>';
   $("tabBody").innerHTML=h+'</div>';
+  if($("cUpdMode")) $("cUpdMode").value=d.connector_updates||"manual";
   if($("dOut")) renderDisc();
   if(S.states) paintStates(); loadStates()}
 
@@ -372,7 +392,10 @@ function scanServers(targets,merge){var users=$("dUsers")?$("dUsers").value.trim
   .catch(function(j){if($("dOut"))$("dOut").innerHTML='<div class="msg">'+esc(j.error||"Couldn't start the scan.")+'</div>'})}
 
 $("main").addEventListener("input",function(e){if(e.target.id==="dEnv")S.disc.env=e.target.value;if(e.target.id==="dTier")S.disc.tier=e.target.value});
-$("main").addEventListener("change",function(e){var c=e.target.closest("[data-dr]");if(c)S.disc.results[+c.dataset.dr].rows[+c.dataset.dx].use=c.checked});
+$("main").addEventListener("change",function(e){var c=e.target.closest("[data-dr]");if(c)S.disc.results[+c.dataset.dr].rows[+c.dataset.dx].use=c.checked;
+  if(e.target.id==="cUpdMode"){var m=e.target.value;
+    if(m==="auto"&&!confirm("Update this client's connectors automatically? Each one installs a new signed release as soon as it's published, once no job is running.")){e.target.value="manual";return}
+    api("/api/clients/"+S.cid+"/connector-updates",{method:"PUT",body:{mode:m}}).then(refresh).catch(function(j){alert(j.error);refresh()})}});
 $("main").addEventListener("keydown",function(e){if(e.key==="Enter"&&(e.target.id==="dTargets"||e.target.id==="dUsers")){e.preventDefault();$("dGo").click()}});
 
 $("main").addEventListener("click",function(e){var t=e.target;
@@ -402,7 +425,8 @@ $("main").addEventListener("click",function(e){var t=e.target;
   var tb=t.closest("[data-tab]"); if(tb){S.tab=tb.dataset.tab;return render()}
   if(t.id==="newTok") return api("/api/clients/"+S.cid+"/tokens",{method:"POST",body:{}}).then(function(j){$("tokCmd").textContent=j.command;$("tokFp").textContent=j.fingerprint;$("tokDlg").showModal()});
   if(t.id==="invSave") return api("/api/clients/"+S.cid+"/inventory",{method:"PUT",body:{csv:$("invCsv").value}}).then(function(){S.penv=null;openClient(S.cid);loadClientsQuiet()}).catch(function(j){msg("invMsg",j.error)});
-  var r=t.closest("[data-revoke]"); if(r){ if(confirm("Remove this connector? It stops working immediately and has to be registered again.")) api("/api/connectors/"+r.dataset.revoke,{method:"DELETE"}).then(refresh); return }
+  var cu=t.closest("[data-cupd]"); if(cu){ if(confirm("Update this connector to "+cu.dataset.ver+"? It installs the signed release once no job is running, then restarts itself. If the new version doesn't start, it goes back to the current one.")) api("/api/connectors/"+cu.dataset.cupd+"/update",{method:"POST",body:{}}).then(refresh).catch(function(j){alert(j.error)}); return }
+  var r=t.closest("[data-revoke]"); if(r){ if(confirm("Remove this connector? Its certificate is revoked, it stops working immediately, and it has to be registered again.")) api("/api/connectors/"+r.dataset.revoke,{method:"DELETE"}).then(refresh); return }
   var jb=t.closest("[data-job]"); if(jb) return watch(jb.dataset.job,jb.textContent);
   var b=t.closest("[data-run]"); if(b) return runAction(b.dataset.env,b.dataset.run);
 });
@@ -646,7 +670,9 @@ $("main").addEventListener("click",function(e){if(S.tab!=="settings")return;var 
 var EVT={signed_in:"Signed in",sign_in_failed:"Sign-in failed",mfa_failed:"Wrong MFA code",mfa_enrolled:"Set up MFA",job_queued:"Started a job",apply_queued:"Started patching",
   patches_applied:"Patching finished",patches_staged:"Download finished",change_request_raised:"Raised a Jira ticket",change_request_withdrawn:"Withdrew a Jira ticket",
   jira_settings_updated:"Changed Jira settings",jira_token_removed:"Removed the Jira token",jira_update_failed:"Couldn't update Jira",inventory_imported:"Imported inventory",
-  connector_token_created:"Created a connector token",connector_registered:"A connector registered",connector_removed:"Removed a connector",client_created:"Added the client",
+  connector_token_created:"Created a connector token",connector_registered:"A connector registered",connector_removed:"Removed a connector",
+  connector_certificate_issued:"A connector got a certificate",connector_certificate_renewed:"A connector renewed its certificate",connector_update_requested:"Asked a connector to update",
+  connector_updated:"A connector updated itself",connector_update_failed:"A connector update failed",connector_update_refused:"A connector refused an update",connector_updates_changed:"Changed connector updates",client_created:"Added the client",
   patch_settings_updated:"Changed patch settings",user_created:"Added a person",user_updated:"Changed a person",password_reset:"Reset a password",mfa_reset:"Reset MFA",
   ssh_key_add:"Added an SSH key",ssh_key_remove:"Removed an SSH key",ssh_key_check:"Checked an SSH key",password_changed:"Changed their password",recovery_code_used:"Used a recovery code"};
 function auditTable(events){if(!events.length)return '<div class="empty">Nothing yet.</div>';
