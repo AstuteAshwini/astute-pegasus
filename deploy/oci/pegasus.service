@@ -1,0 +1,22 @@
+[Unit]
+Description=Pegasus control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=pegasus
+Group=pegasus
+EnvironmentFile=/etc/pegasus/pegasus.env
+WorkingDirectory=/opt/pegasus/app/control-plane
+ExecStart=/opt/pegasus/venv/bin/python -m pegasus_cloud
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pegasus
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

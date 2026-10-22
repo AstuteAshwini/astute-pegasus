@@ -54,6 +54,10 @@ LOST_AFTER = 10 * 60           # a running job whose connector has been silent t
 SESSION_HOURS = 12             # sign in again after this
 LOCK_AFTER, LOCK_MINUTES = 5, 15
 DEFAULT_STAGING = "/u01/app/oracle/staging/cpu"
+# true when Pegasus sits behind a reverse proxy on the same machine (Caddy, nginx, an OCI load balancer): take the
+# client's address and https from the proxy's X-Forwarded-* headers, from one proxy hop only.
+TRUST_PROXY = os.environ.get("PEGASUS_TRUST_PROXY", "false").lower() == "true"
+THREADS = int(os.environ.get("PEGASUS_THREADS", "48"))      # connectors hold one each for their 25-second long-poll
 # Pegasus checks every domain's status by itself this often (seconds); 0 turns automatic checks off.
 STATUS_EVERY = int(os.environ.get("PEGASUS_STATUS_EVERY", "600"))
 
@@ -2453,11 +2457,20 @@ def main():
     if STATUS_EVERY:
         threading.Thread(target=auto_status_loop, daemon=True).start()
         print(f"Checking every domain's status every {STATUS_EVERY // 60} minutes (PEGASUS_STATUS_EVERY=0 turns it off)")
-    app.run(host=host, port=port, threaded=True)
+    try:
+        from waitress import serve
+    except ImportError:
+        print("waitress isn't installed, so this runs on Flask's development server (fine on a laptop).")
+        app.run(host=host, port=port, threaded=True)
+        return
+    serve(app, host=host, port=port, threads=THREADS, channel_timeout=120, ident="Pegasus")
 
 
 init_db()
 app.secret_key = session_secret()
+if TRUST_PROXY:
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 if __name__ == "__main__":
     main()

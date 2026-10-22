@@ -159,6 +159,12 @@ managed.
 5. When the job finishes, Pegasus records what it learned (patch levels, staged files, SSH keys), closes any Jira
    change request, and writes the audit log (the client's **Activity** tab).
 
+## Hosting it
+
+To run Pegasus at a permanent HTTPS address on an OCI VM (as a service, with backups), follow
+`deploy/oci/README.md`. In production it runs on waitress behind Caddy, with `PEGASUS_TRUST_PROXY=true` so it takes
+the client's address and https from the proxy.
+
 ## Trying it with real clients before it's hosted (temporary public address)
 
 Run the control plane on a machine you control (your laptop or an Astute server, not a client's VM) and give it a

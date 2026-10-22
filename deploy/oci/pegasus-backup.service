@@ -1,0 +1,6 @@
+[Unit]
+Description=Back up the Pegasus control plane
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/pegasus-backup
