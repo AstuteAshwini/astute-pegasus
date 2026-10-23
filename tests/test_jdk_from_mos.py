@@ -98,3 +98,46 @@ def test_a_patch_given_by_hand_and_a_failed_search(cfg, tmp_path, monkeypatch):
         oracle.download_jdk(cfg, tmp_path / "c", "21.0.13", print, mos=mos)
     assert not mos.urls                                                   # the saved patch number was used
     assert not list((tmp_path / "c" / "jdk-21.0.13").iterdir())
+
+
+class SearchMOS(FakeMOS):
+    """Oracle Support that only finds JDK patches when the search names the Java SE product."""
+
+    def __init__(self, form="", patch_page=""):
+        super().__init__([{"patch": "40186074", "desc": "Oracle JDK Update 21.0.13.0.2 (Patch)", "date": "21-OCT-2026"}])
+        self.form, self.patch_page = form, patch_page
+
+    def get(self, url, timeout=60, stream=False):
+        self.urls.append(url)
+        if "metadata" in url:
+            return Resp("")
+        if "search_type=patch" in url:
+            return Resp(self.patch_page)
+        if "AdvancedSearch" in url and "description" not in url:
+            return Resp(self.form)
+        if "product=10120" in url:
+            return Resp("".join(ROW.format(**r) for r in self.rows))
+        return Resp("")
+
+
+def test_learns_the_java_product_from_the_search_form(cfg):
+    mos = SearchMOS(form='<select name="product"><option value="9480">Oracle Database</option>'
+                         '<option value="10120">Java SE JDK and JRE</option></select>')
+    patch, tried = oracle.find_jdk_patch(mos, "21.0.13.0.2", cfg)
+    assert patch == "40186074"
+    assert oracle.load_jdk_patches(cfg)["_java_product"] == "10120"
+    mos.urls.clear()                                                     # remembered: no second discovery
+    assert oracle.find_jdk_patch(mos, "21.0.13.0.2", cfg)[0] == "40186074"
+    assert not any("metadata" in u or "description" not in u for u in mos.urls)
+
+
+def test_learns_the_java_product_from_a_known_jdk_patch(cfg):
+    oracle.save_jdk_patch(cfg, "21.0.13.0.2", "40186074")
+    mos = SearchMOS(patch_page='<a href="/Orion/PatchDetails/process_form?patch_num=40186074&product=10120&release=1">x</a>')
+    assert oracle.find_jdk_patch(mos, "21.0.13.0.2", cfg)[0] == "40186074"
+    assert oracle.load_jdk_patches(cfg)["_java_product"] == "10120"
+
+
+def test_nothing_found_says_what_was_tried(cfg):
+    patch, tried = oracle.find_jdk_patch(SearchMOS(), "21.0.14", cfg)
+    assert patch is None and any("product list: nothing" in t for t in tried)

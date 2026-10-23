@@ -437,25 +437,81 @@ def jdk_row_matches(desc, version):
     return bool(re.search(r"(?<![\d.])" + re.escape(version) + r"(?!\.?\d)", desc))
 
 
-def find_jdk_patch(mos, version):
-    """The Oracle Support patch number for an Oracle JDK release, by searching patch descriptions."""
-    tried = []
-    for product in JAVA_PRODUCTS or [""]:
-        for desc in (f"%{version}%", version, f"JDK {version}", f"*{version}*"):
+JAVA_PRODUCT_NAME = re.compile(r"java se jdk and jre", re.I)
+
+
+def _product_ids_near_name(page):
+    """Product ids printed next to "Java SE JDK and JRE" in an Oracle Support page (form options, XML, links)."""
+    idre = re.compile(r"""(?:value|id|product(?:_id)?)\s*=\s*["']?(\d{3,7})\b""", re.I)
+    ids = []
+    for m in JAVA_PRODUCT_NAME.finditer(page):
+        before = idre.findall(page[max(0, m.start() - 300):m.start()])
+        after = idre.findall(page[m.end():m.end() + 200])
+        if before:
+            ids.append(before[-1])            # the id written just before the name (<option value="..">name)
+        elif after:
+            ids.append(after[0])              # or just after it (<product>name</product><id>..</id>)
+    return list(dict.fromkeys(ids))
+
+
+def discover_java_product(mos, config_path=None, log=None):
+    """Oracle Support's product id for "Java SE JDK and JRE", which its patch search needs. Learned once, from
+    Oracle Support itself, then remembered on the connector. Returns (product id or None, what was tried)."""
+    saved = load_jdk_patches(config_path).get("_java_product") if config_path else None
+    if saved:
+        return saved, []
+    tried, found = [], []
+    sources = [("product list", mos.BASE + "/Orion/Services/metadata?table=aru_products"),
+               ("search form", mos.BASE + "/Orion/AdvancedSearch/process_form")]
+    # a JDK patch we already know (e.g. given with jdk-patch) names its product on its search result page
+    for v, patch in sorted(load_jdk_patches(config_path).items() if config_path else []):
+        if not v.startswith("_"):
+            sources.append((f"patch {patch}", mos.BASE + "/Orion/SimpleSearch/process_form?" + urlencode(
+                {"search_type": "patch", "patch_number": patch, "plat_lang": JDK_PLATFORM})))
+    for label, url in sources:
+        try:
+            r = mos.get(url, timeout=120)
+            page = r.text if r.status_code == 200 else ""
+        except requests.RequestException as e:
+            tried.append(f"{label}: {e}")
+            continue
+        ids = _product_ids_near_name(page)
+        if label.startswith("patch") and not ids:
+            ids = re.findall(r"[?&;]product=(\d{3,7})\b", page)
+        tried.append(f"{label}: {', '.join(ids) or 'nothing'}")
+        found += ids
+        if found:
+            break
+    pid = found[0] if found else None
+    if pid and config_path:
+        save_jdk_patch(config_path, "_java_product", pid)
+    if pid and log:
+        log(f"  Oracle Support's product id for Java SE JDK and JRE: {pid}\n")
+    return pid, tried
+
+
+def find_jdk_patch(mos, version, config_path=None, log=None):
+    """The Oracle Support patch number for an Oracle JDK release, by searching patch descriptions under the
+    "Java SE JDK and JRE" product. Returns (patch or None, what was tried)."""
+    product, tried = discover_java_product(mos, config_path, log)
+    products = [product] if product else []
+    products += [p for p in JAVA_PRODUCTS if p not in products]
+    for prod in products + [""]:
+        for desc in (f"%{version}%", version, f"Oracle JDK Update {version}", f"*{version}*"):
             params = {"plat_lang": JDK_PLATFORM, "description": desc}
-            if product:
-                params["product"] = product
+            if prod:
+                params["product"] = prod
             try:
                 r = mos.get(mos.BASE + "/Orion/AdvancedSearch/process_form?" + urlencode(params), timeout=180)
                 rows = parse_aru_rows(r.text) if r.status_code == 200 else []
             except requests.RequestException as e:
-                tried.append(f"{desc}: {e}")
+                tried.append(f"product {prod or 'any'}, {desc}: {e}")
                 continue
             hits = [row for row in rows if jdk_row_matches(row["desc"], version)]
             if hits:
-                return max(hits, key=lambda row: (row["updated"], row["patch"]))["patch"]
-            tried.append(f"{desc}: {len(rows)} rows")
-    return None
+                return max(hits, key=lambda row: (row["updated"], row["patch"]))["patch"], tried
+            tried.append(f"product {prod or 'any'}, '{desc}': {len(rows)} rows")
+    return None, tried
 
 
 def extract_jdk_tarball(zips, dest_dir, version, log):
@@ -512,13 +568,13 @@ def download_jdk(config_path, cache_dir, version, log, mos=None):
         log(f"JDK {version}: Oracle Support patch {patch}\n")
     else:
         log(f"JDK {version}: searching Oracle Support for its patch\n")
-        patch = find_jdk_patch(mos, version)
+        patch, tried = find_jdk_patch(mos, version, config_path, log)
         if not patch:
             raise MOSError(
-                f"Couldn't find Oracle JDK {version} for Linux x86-64 by searching Oracle Support. Look up its patch "
-                f"number once on support.oracle.com (Patches & Updates, search for JDK {version}), then on the "
-                f"connector run: python -m pegasus_connector jdk-patch {version} <patch number>  "
-                f"(or put the JDK tarball in {dest_dir}).")
+                f"Couldn't find Oracle JDK {version} for Linux x86-64 by searching Oracle Support (tried: "
+                f"{'; '.join(tried[:12])}). Look up its patch number on support.oracle.com (product Java SE JDK and "
+                f"JRE, description 'Oracle JDK Update {version}'), then on the connector run: python -m "
+                f"pegasus_connector jdk-patch {version} <patch number>  (or put the JDK tarball in {dest_dir}).")
         log(f"  Found patch {patch}\n")
         save_jdk_patch(config_path, version, patch)
     zips, _ = download_patch(config_path, cache_dir, patch, JDK_PLATFORM, "", log, mos)

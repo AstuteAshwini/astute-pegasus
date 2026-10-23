@@ -69,6 +69,7 @@ account, saved only on this machine (`oracle.json` next to `config.json`, readab
 
 ```bash
 python3 -m pegasus_connector oracle-login --user name@client.com          # asks for the password
+python3 -m pegasus_connector jdk-find 21.0.13.0.2                        # check the JDK search, no download
 python3 -m pegasus_connector jdk-patch 21.0.13 <patch number>           # only if the JDK search on Oracle Support fails
 python3 -m pegasus_connector oracle-login --forget
 ```

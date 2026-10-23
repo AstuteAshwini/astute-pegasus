@@ -5,6 +5,7 @@
   python -m pegasus_connector run
   python -m pegasus_connector status
   python -m pegasus_connector oracle-login --user you@example.com
+  python -m pegasus_connector jdk-find 21.0.13.0.2               (check the JDK search on Oracle Support)
   python -m pegasus_connector jdk-patch 21.0.13 <patch number>   (only if the JDK search on Oracle Support fails)
 """
 import argparse
@@ -40,6 +41,8 @@ def main(argv=None):
     j = sub.add_parser("jdk-patch", help="tell the connector which Oracle Support patch holds a JDK release")
     j.add_argument("version", help="the JDK release exactly as Pegasus shows it, e.g. 21.0.13")
     j.add_argument("patch", help="its patch number on Oracle Support (Linux x86-64)")
+    jf = sub.add_parser("jdk-find", help="search Oracle Support for a JDK release's patch (no download)")
+    jf.add_argument("version", help="e.g. 21.0.13.0.2")
     a = p.parse_args(argv)
 
     if a.cmd == "register":
@@ -64,6 +67,23 @@ def main(argv=None):
         return 1
     if a.cmd == "oracle-login":
         return oracle_login(a)
+    if a.cmd == "jdk-find":
+        try:
+            mos = oracle.mos_client(a.config)
+        except oracle.MOSError as e:
+            print(e, file=sys.stderr)
+            return 1
+        if not mos:
+            print("No Oracle Support account is set. Run oracle-login first.", file=sys.stderr)
+            return 1
+        patch, tried = oracle.find_jdk_patch(mos, a.version, a.config, lambda t: print(t, end=""))
+        for t in tried:
+            print("  tried " + t)
+        if not patch:
+            print(f"Not found. Give it by hand with: jdk-patch {a.version} <patch number>")
+            return 1
+        print(f"JDK {a.version}: Oracle Support patch {patch}")
+        return 0
     if a.cmd == "jdk-patch":
         if not a.patch.isdigit() or not re.match(r"^\d+(\.\d+){1,5}$", a.version):
             print("Give the JDK version (e.g. 21.0.13) and a numeric patch number.", file=sys.stderr)
