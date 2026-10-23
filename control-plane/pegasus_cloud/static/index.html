@@ -5,25 +5,28 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pegasus Cloud</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Overpass:wght@500;600;700;800&family=Roboto:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#EEF1F6;--surface:#fff;--sunk:#F6F8FB;--ink:#151B2E;--muted:#5D6678;--line:#DCE1EA;--line-strong:#C3CAD7;
-  --night:#1B2046;--night-2:#262C5C;--night-ink:#E9EBFA;--night-muted:#A6ACD6;--accent:#3D46B8;--accent-ink:#fff;--soft:#E9EBF9;
-  --run:#0E8A5E;--run-bg:#E2F4EC;--stop:#C2393B;--stop-bg:#FBE8E8;--warn:#A8620A;--warn-bg:#FCEFD9;--unk:#8A93A6;--unk-bg:#EEF0F4;
-  --console:#12152B;--console-ink:#D9DCF0;--sans:"Archivo","Segoe UI",system-ui,sans-serif;--mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
-  --r-sm:5px;--r:8px;--r-lg:12px;--side:248px}
-@media (prefers-color-scheme:dark){:root{--bg:#0E1222;--surface:#161B30;--sunk:#12172A;--ink:#E6E9F3;--muted:#9AA2B8;--line:#272E48;--line-strong:#353D5C;
-  --night:#0A0D1C;--night-2:#161B36;--accent:#8C95F2;--accent-ink:#0E1222;--soft:#20264A;--run:#4CCB95;--run-bg:#11302A;--stop:#F07A7A;--stop-bg:#3A1A20;
-  --warn:#E9B158;--warn-bg:#382A12;--unk:#7E88A3;--unk-bg:#1E2338;--console:#080A16}}
+:root{/* Astute brand (beastute.com): navy #003C51, teal #0B89A1, cyan #01C7FF, orange #FA9137; Overpass + Roboto */
+  --bg:#EFF5F6;--surface:#fff;--sunk:#F5F9FA;--ink:#0F2A35;--muted:#5B6B73;--line:#D9E4E7;--line-strong:#BCCCD1;
+  --night:#003C51;--night-2:#0A5069;--night-ink:#EAF6F9;--night-muted:#9CC3CF;--night-line:#ffffff1f;
+  --accent:#0B89A1;--accent-hover:#08778C;--accent-ink:#fff;--soft:#E3F3F6;--spark:#FA9137;--spark-ink:#9A4E0C;--spark-bg:#FEF0E3;--cyan:#01C7FF;
+  --run:#12805A;--run-bg:#E1F3EB;--stop:#C0392B;--stop-bg:#FBE9E6;--warn:#A35A07;--warn-bg:#FDF0DD;--unk:#7D8B92;--unk-bg:#EDF2F3;
+  --console:#00222F;--console-ink:#D3E7EC;--console-line:#0E3B4C;
+  --sans:"Roboto","Segoe UI",system-ui,sans-serif;--display:"Overpass","Roboto",system-ui,sans-serif;--mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  --r-sm:6px;--r:8px;--r-lg:12px;--side:252px}
+@media (prefers-color-scheme:dark){:root{--bg:#04161E;--surface:#0A2530;--sunk:#071D26;--ink:#E3F0F3;--muted:#93ABB4;--line:#173A47;--line-strong:#24505F;
+  --night:#00202C;--night-2:#0B3646;--accent:#35B7CE;--accent-hover:#5CC8DB;--accent-ink:#002330;--soft:#0D3846;--spark:#FFA65A;--spark-ink:#FFB877;--spark-bg:#3A2410;
+  --run:#4CCB95;--run-bg:#0E3326;--stop:#F28474;--stop-bg:#3B1A16;--warn:#EDB15E;--warn-bg:#36260E;--unk:#7F97A0;--unk-bg:#12303B;--console:#00141C;--console-line:#103545}}
 *{box-sizing:border-box}[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans)}
-h1,h2,h3{font-weight:650;letter-spacing:-.012em;line-height:1.2}
+h1,h2,h3{font-family:var(--display);font-weight:700;letter-spacing:-.01em;line-height:1.2}
 a{color:var(--accent)}
 .mono{font-family:var(--mono);font-size:12.5px}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 button{font:inherit;font-size:13.5px;font-weight:550;border-radius:var(--r-sm);padding:7px 13px;cursor:pointer;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink)}
 button:hover{background:var(--sunk)}button:disabled{opacity:.45;cursor:not-allowed}
-button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}button.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
 button.go{color:var(--run)}button.halt,button.danger{color:var(--stop)}
 button.link{border:none;background:none;color:var(--accent);padding:4px 2px}button.sm{padding:4px 10px;font-size:12.5px}
 button.link.danger{color:var(--stop)}
@@ -33,14 +36,17 @@ textarea{font-family:var(--mono);font-size:12.5px;min-height:150px}
 label{display:block;font-size:13px;color:var(--muted);margin-bottom:12px;font-weight:500}label input,label select,label textarea{margin-top:5px}
 label.inline{display:flex;align-items:center;color:var(--ink);font-size:14px}
 .side{position:fixed;inset:0 auto 0 0;width:var(--side);background:var(--night);color:var(--night-ink);display:flex;flex-direction:column}
-.brand{padding:20px 18px;font-size:20px;font-weight:700;color:#fff}.brand small{display:block;font-size:12px;font-weight:450;color:var(--night-muted)}
+.brand{padding:24px 20px 20px;color:#fff;border-bottom:1px solid var(--night-line);margin-bottom:10px}
+.brand .logo{display:block;width:104px;height:auto;color:#fff}.brand .logo .mark{color:var(--cyan);fill:var(--cyan)}
+.brand b{display:block;font-family:var(--display);font-size:22px;font-weight:800;letter-spacing:-.01em;margin-top:14px}
+.brand small{display:block;font-size:12.5px;color:var(--night-muted);margin-top:2px}
 .side h3{font-size:12px;color:var(--night-muted);font-weight:600;margin:10px 18px 6px}
 #clientList{flex:1;overflow:auto;padding:0 10px}
 #clientList button,.side-nav button{display:block;width:100%;text-align:left;border:none;background:none;color:var(--night-ink);padding:9px 12px;border-radius:var(--r)}
 #clientList button small{display:block;color:var(--night-muted);font-size:12px;font-weight:400}
-#clientList button:hover,.side-nav button:hover{background:#ffffff10}#clientList button[aria-current=true],.side-nav button[aria-current=true]{background:var(--night-2);box-shadow:inset 3px 0 0 #C9CEFF}
+#clientList button:hover,.side-nav button:hover{background:#ffffff12}#clientList button[aria-current=true],.side-nav button[aria-current=true]{background:var(--night-2);box-shadow:inset 3px 0 0 var(--spark)}
 .side-nav{padding:0 10px 6px}
-.side-foot{border-top:1px solid #ffffff1c;padding:14px 18px;display:grid;gap:8px;font-size:12.5px;color:var(--night-muted)}
+.side-foot{border-top:1px solid var(--night-line);padding:14px 18px;display:grid;gap:8px;font-size:12.5px;color:var(--night-muted)}
 .side-foot .mono{word-break:break-all}.side-foot button{background:transparent;color:var(--night-ink);border-color:#ffffff33}
 .side-foot .who{color:var(--night-ink);font-weight:600}
 main{margin-left:var(--side);padding:28px 28px 340px;max-width:1280px}
@@ -48,7 +54,7 @@ main{margin-left:var(--side);padding:28px 28px 340px;max-width:1280px}
 .panel h2{font-size:17px;margin:0 0 6px}.help{color:var(--muted);font-size:13.5px;margin:0 0 12px;max-width:90ch}
 .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .msg{font-size:13.5px;padding:10px 13px;border-radius:var(--r);margin:10px 0;background:var(--stop-bg);color:var(--stop)}.msg.ok{background:var(--run-bg);color:var(--run)}.msg.info{background:var(--soft);color:var(--ink)}
-.tag{display:inline-block;font-size:11.5px;font-weight:650;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--accent)}.tag.prd{background:var(--warn-bg);color:var(--warn)}
+.tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--accent)}.tag.prd{background:var(--spark-bg);color:var(--spark-ink);box-shadow:inset 0 0 0 1px var(--spark)}
 .st{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;white-space:nowrap}
 .st::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
 .st.up,.st.succeeded,.st.running,.st.ok,.st.approved,.st.applied{background:var(--run-bg);color:var(--run)}
@@ -68,8 +74,9 @@ tr.sub td{border-bottom:none;padding-top:0}
 .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 14px}@media (max-width:900px){.grid3{grid-template-columns:minmax(0,1fr)}}
 .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:0 0 18px;flex-wrap:wrap}
 .tabs button{border:none;background:none;border-radius:0;padding:10px 14px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
-.tabs button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent)}
-.head{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin:0 0 14px}.head h1{font-size:26px;margin:0}
+.tabs button{font-family:var(--display);font-weight:600}.tabs button[aria-selected=true]{color:var(--ink);border-bottom-color:var(--accent);border-bottom-width:3px}
+.head{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin:0 0 14px}.head h1{font-size:28px;font-weight:800;margin:0;color:var(--night)}
+@media (prefers-color-scheme:dark){.head h1{color:var(--ink)}}
 .apply-row{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r);margin-bottom:8px;background:var(--sunk)}
 .apply-row>span:first-child{flex:1;min-width:240px}.apply-row .cr{display:inline-flex;flex-wrap:wrap;gap:8px;align-items:center}
 .apply-all{border-color:var(--accent)}
@@ -81,18 +88,23 @@ details summary{cursor:pointer;margin:6px 0}
 #qr{display:inline-block;padding:10px;background:#fff;border-radius:var(--r);margin:6px 0}
 #console{position:fixed;left:var(--side);right:0;bottom:0;background:var(--console);color:var(--console-ink);height:300px;display:flex;flex-direction:column;z-index:5}
 #console.min{height:44px}#console.min pre{display:none}
-.con-head{display:flex;gap:10px;align-items:center;padding:10px 20px;border-bottom:1px solid #2A2F55;font-size:13px}.con-head .sp{margin-left:auto}
-.con-head button{background:transparent;color:var(--console-ink);border-color:#3A4070}
+.con-head{display:flex;gap:10px;align-items:center;padding:10px 20px;border-bottom:1px solid var(--console-line);font-size:13px}.con-head .sp{margin-left:auto}
+.con-head button{background:transparent;color:var(--console-ink);border-color:#1F5568}
 #console pre{flex:1;overflow:auto;margin:0;padding:12px 20px;font:12.5px/1.55 var(--mono);white-space:pre-wrap}
-#gate{min-height:100vh;display:grid;place-items:center;background:var(--night);padding:20px}#gate .panel{width:min(420px,94vw)}
+#gate{min-height:100vh;display:grid;place-items:center;align-content:center;gap:22px;padding:20px;color:#fff;
+  background:radial-gradient(1200px 600px at 85% 110%,#0B89A155,transparent 60%),var(--night)}
+#gate .gate-brand{display:flex;align-items:center;gap:14px}#gate .gate-brand .logo{width:120px;height:auto;color:#fff}#gate .gate-brand .logo .mark{color:var(--cyan);fill:var(--cyan)}
+#gate .gate-brand b{font-family:var(--display);font-size:24px;font-weight:800;padding-left:14px;border-left:1px solid #ffffff40}
+#gate .panel{width:min(420px,94vw);box-shadow:0 18px 50px #00141c55;border:none;color:var(--ink)}#gate .panel h2{font-size:20px}
 dialog{border:1px solid var(--line);border-radius:var(--r-lg);padding:22px 24px;background:var(--surface);color:var(--ink);width:min(560px,94vw)}
-dialog::backdrop{background:#0b0f2680}.row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+dialog::backdrop{background:#00222fa0}.row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
 .empty{padding:36px 20px;text-align:center;color:var(--muted)}
 @media (max-width:860px){.side{position:static;width:auto}main{margin-left:0;padding:18px 14px 320px}#console{left:0}}
 </style>
 </head>
 <body>
 <section id="gate" hidden>
+  <div class="gate-brand"><svg class="logo" viewBox="0 0 160 37" role="img" aria-label="Astute" fill="currentColor"><path d="M38.9281 28.8324L42.9346 26.7381C43.3166 28.2995 44.013 29.4855 45.024 30.3037C46.035 31.1219 47.3306 31.5272 48.9033 31.5272C50.3935 31.5272 51.5768 31.0618 52.453 30.1235C53.3292 29.1852 53.771 27.9316 53.771 26.3553C53.771 24.306 52.2658 22.4819 49.2552 20.8755C48.8359 20.6353 48.5138 20.4627 48.2892 20.3501C44.8892 18.4735 42.6201 16.777 41.4893 15.2607C40.3584 13.7444 39.7893 11.8903 39.7893 9.69839C39.7893 6.85344 40.643 4.54895 42.3505 2.79243C44.0579 1.02841 46.2971 0.150146 49.068 0.150146C51.3446 0.150146 53.2468 0.645574 54.782 1.63643C56.3173 2.62729 57.3732 4.05352 57.9648 5.91513L54.0406 8.2046C53.4191 7.10866 52.7451 6.30546 52.0037 5.79502C51.2697 5.28458 50.4235 5.02936 49.4649 5.02936C48.1169 5.02936 47.046 5.4272 46.2522 6.22289C45.4584 7.01858 45.0615 8.0845 45.0615 9.41315C45.0615 11.5075 46.8064 13.4666 50.2887 15.2757C50.5583 15.4183 50.768 15.5309 50.9178 15.606C53.9657 17.1974 56.0626 18.7512 57.2009 20.2675C58.3392 21.7838 58.9084 23.6755 58.9084 25.9499C58.9084 29.2528 57.9873 31.8801 56.145 33.8242C54.3027 35.7684 51.8164 36.7443 48.6786 36.7443C46.05 36.7443 43.9007 36.0612 42.2157 34.695C40.5382 33.3288 39.4373 31.3771 38.9131 28.8324"/><path d="M74.3719 5.7425V35.8135H69.3543V5.7425H61.1465V0.92334H82.5272V5.7425H74.3719Z"/><path d="M86.2422 0.92334H91.1998V22.1066C91.1998 25.2519 91.8439 27.6164 93.1245 29.1928C94.4126 30.7766 96.3297 31.5648 98.8909 31.5648C101.452 31.5648 103.347 30.7766 104.635 29.1928C105.923 27.6164 106.567 25.2519 106.567 22.1066V0.92334H111.585V22.6321C111.585 27.3462 110.529 30.8817 108.424 33.2237C106.312 35.5658 103.137 36.7368 98.8984 36.7368C94.6597 36.7368 91.4844 35.5658 89.3875 33.2312C87.2906 30.8967 86.2497 27.3612 86.2497 22.6246V0.92334H86.2422Z"/><path d="M128.465 5.7425V35.8135H123.447V5.7425H115.247V0.92334H136.628V5.7425H128.465Z"/><path d="M140.461 35.8135V0.92334H157.685V5.7425H145.478V14.4801H157.685V19.4644H145.478V30.7391H157.685V35.8135H140.461Z"/><path class="mark" d="M27.7312 36.7367L14.6855 9.81848L19.7181 0L38.3429 36.7367H27.7312Z"/><path class="mark" d="M0.884766 36.7367L19.7193 0L24.6395 9.70588L11.4965 36.7367H0.884766Z"/><path class="mark" d="M0.884766 36.7366L5.59527 27.5562H23.2765L27.8073 36.7366H0.884766Z"/></svg><b>Pegasus</b></div>
   <form class="panel" id="setupForm" hidden>
     <h2>Set up Pegasus Cloud</h2>
     <p class="help">Create the first admin account. You'll set up an authenticator app next.</p>
@@ -103,7 +115,7 @@ dialog::backdrop{background:#0b0f2680}.row{display:flex;gap:8px;justify-content:
     <div id="setupMsg"></div><button class="primary" type="submit">Create account</button>
   </form>
   <form class="panel" id="loginForm" hidden>
-    <h2>Pegasus Cloud</h2><p class="help">Sign in to manage clients and their PeopleSoft environments.</p>
+    <h2>Sign in</h2><p class="help">Manage clients and their PeopleSoft environments.</p>
     <label>Email<input id="loginEmail" type="email" autocomplete="username" required></label>
     <label>Password<input id="loginPw" type="password" autocomplete="current-password" required></label>
     <div id="loginMsg"></div><button class="primary" type="submit">Sign in</button>
@@ -137,7 +149,7 @@ dialog::backdrop{background:#0b0f2680}.row{display:flex;gap:8px;justify-content:
 
 <div id="shell" hidden>
   <aside class="side">
-    <div class="brand">Pegasus Cloud<small>PeopleSoft operations, governed by Astute</small></div>
+    <div class="brand"><svg class="logo" viewBox="0 0 160 37" role="img" aria-label="Astute" fill="currentColor"><path d="M38.9281 28.8324L42.9346 26.7381C43.3166 28.2995 44.013 29.4855 45.024 30.3037C46.035 31.1219 47.3306 31.5272 48.9033 31.5272C50.3935 31.5272 51.5768 31.0618 52.453 30.1235C53.3292 29.1852 53.771 27.9316 53.771 26.3553C53.771 24.306 52.2658 22.4819 49.2552 20.8755C48.8359 20.6353 48.5138 20.4627 48.2892 20.3501C44.8892 18.4735 42.6201 16.777 41.4893 15.2607C40.3584 13.7444 39.7893 11.8903 39.7893 9.69839C39.7893 6.85344 40.643 4.54895 42.3505 2.79243C44.0579 1.02841 46.2971 0.150146 49.068 0.150146C51.3446 0.150146 53.2468 0.645574 54.782 1.63643C56.3173 2.62729 57.3732 4.05352 57.9648 5.91513L54.0406 8.2046C53.4191 7.10866 52.7451 6.30546 52.0037 5.79502C51.2697 5.28458 50.4235 5.02936 49.4649 5.02936C48.1169 5.02936 47.046 5.4272 46.2522 6.22289C45.4584 7.01858 45.0615 8.0845 45.0615 9.41315C45.0615 11.5075 46.8064 13.4666 50.2887 15.2757C50.5583 15.4183 50.768 15.5309 50.9178 15.606C53.9657 17.1974 56.0626 18.7512 57.2009 20.2675C58.3392 21.7838 58.9084 23.6755 58.9084 25.9499C58.9084 29.2528 57.9873 31.8801 56.145 33.8242C54.3027 35.7684 51.8164 36.7443 48.6786 36.7443C46.05 36.7443 43.9007 36.0612 42.2157 34.695C40.5382 33.3288 39.4373 31.3771 38.9131 28.8324"/><path d="M74.3719 5.7425V35.8135H69.3543V5.7425H61.1465V0.92334H82.5272V5.7425H74.3719Z"/><path d="M86.2422 0.92334H91.1998V22.1066C91.1998 25.2519 91.8439 27.6164 93.1245 29.1928C94.4126 30.7766 96.3297 31.5648 98.8909 31.5648C101.452 31.5648 103.347 30.7766 104.635 29.1928C105.923 27.6164 106.567 25.2519 106.567 22.1066V0.92334H111.585V22.6321C111.585 27.3462 110.529 30.8817 108.424 33.2237C106.312 35.5658 103.137 36.7368 98.8984 36.7368C94.6597 36.7368 91.4844 35.5658 89.3875 33.2312C87.2906 30.8967 86.2497 27.3612 86.2497 22.6246V0.92334H86.2422Z"/><path d="M128.465 5.7425V35.8135H123.447V5.7425H115.247V0.92334H136.628V5.7425H128.465Z"/><path d="M140.461 35.8135V0.92334H157.685V5.7425H145.478V14.4801H157.685V19.4644H145.478V30.7391H157.685V35.8135H140.461Z"/><path class="mark" d="M27.7312 36.7367L14.6855 9.81848L19.7181 0L38.3429 36.7367H27.7312Z"/><path class="mark" d="M0.884766 36.7367L19.7193 0L24.6395 9.70588L11.4965 36.7367H0.884766Z"/><path class="mark" d="M0.884766 36.7366L5.59527 27.5562H23.2765L27.8073 36.7366H0.884766Z"/></svg><b>Pegasus</b><small>PeopleSoft operations, governed by Astute</small></div>
     <nav class="side-nav" id="adminNav" hidden><button type="button" id="navUsers">People and access</button></nav>
     <h3>Clients</h3>
     <nav id="clientList" aria-label="Clients"></nav>
