@@ -117,7 +117,7 @@ def find_question_box(page):
 # Text of an element as a person sees it, including what plain innerText leaves out: open shadow DOM (where
 # Console AI draws its cards, e.g. "OCI network path check") and embedded frames, which are left as markers
 # (\u0001<n>\u0001) for Python to fill in, since a frame's text can only be read through Playwright.
-DEEP_TEXT = r"""function deepText(root, frames) {
+DEEP_TEXT = r"""function deepText(root, frames, skip) {
   const out = [];
   const BLOCK = /^(block|flex|grid|list-item|table|table-row|table-caption|flow-root)$/;
   const walk = n => {
@@ -126,7 +126,7 @@ DEEP_TEXT = r"""function deepText(root, frames) {
     let disp = '';
     if (n.nodeType === 1) {
       const tag = n.tagName;
-      if (/^(SCRIPT|STYLE|TEMPLATE|NOSCRIPT|SVG)$/i.test(tag) || n.hidden) return;
+      if (/^(SCRIPT|STYLE|TEMPLATE|NOSCRIPT|SVG)$/i.test(tag) || n.hidden || (skip && skip.has(n))) return;
       const cs = getComputedStyle(n);
       if (cs.display === 'none' || cs.visibility === 'hidden') return;
       disp = cs.display;
@@ -161,25 +161,47 @@ READ_ANSWER = r"""(log, [q, seen]) => { """ + DEEP_TEXT + r"""
   const busy = [...panel.querySelectorAll('button')].some(b => /cancel request|stop/i.test(label(b)))
             || [...panel.querySelectorAll('[role=status]')].some(s => /thinking|working|generating/i.test(label(s)))
             || [...panel.querySelectorAll('textarea,input,[role=textbox]')].some(t => t.disabled || t.getAttribute('aria-disabled') === 'true');
+  // Leave out Console AI's working steps: the "Thinking" section (and whatever its button controls) and status lines.
+  const skip = new Set(log.querySelectorAll('[role=status]'));
+  for (const b of log.querySelectorAll('button,summary,[role=button]')) {
+    if (!/^(thinking|thought|reasoning|show (thinking|reasoning|steps)|working)/i.test(label(b).replace(/^\s+/, ''))) continue;
+    skip.add(b.closest('[role=group],details') || b.parentElement);
+    for (const id of (b.getAttribute('aria-controls') || '').split(/\s+/)) { const t = id && document.getElementById(id); if (t) skip.add(t); }
+  }
   const frames = [];
-  let text = deepText(log, frames);
+  let text = deepText(log, frames, skip);
   const low = text.toLowerCase(), ql = q.toLowerCase();
   let i = -1;
   for (let k = 0; k <= seen; k++) { i = low.indexOf(ql, i + 1); if (i < 0) return {busy, text: '', frames}; }
   text = text.slice(i + q.length);
-  // Drop the "Thinking" steps (the group holding the Thinking button), status lines and button labels.
-  const drop = [];
-  for (const b of log.querySelectorAll('button')) {
-    if (/^thinking/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()))
-      drop.push(deepText(b.closest('[role=group]') || b.parentElement, []));
-  }
-  for (const st of log.querySelectorAll('[role=status]')) drop.push(deepText(st, []));
-  for (const d of drop) if (d.trim()) text = text.split(d.trim()).join('\n');
-  const skip = new Set([...log.querySelectorAll('button')].map(b => (b.innerText || '').trim()).filter(Boolean));
-  for (const b of skip) if (b.length > 3) text = text.split(b).join('\n');
-  text = text.split('\n').map(l => l.trim()).filter(l => l && !skip.has(l) && !/^thinking$/i.test(l)).join('\n');
+  // Drop button labels ("View in Resource Explorer").
+  const labels = new Set([...log.querySelectorAll('button')].map(b => (b.innerText || '').trim()).filter(Boolean));
+  for (const b of labels) if (b.length > 3) text = text.split(b).join('\n');
+  text = text.split('\n').map(l => l.trim()).filter(l => l && !labels.has(l) && !/^thinking$/i.test(l)).join('\n');
   return {busy, text, frames};
 }"""
+
+
+# Console AI's progress steps ("Preparing remote agent run Loading request context. ..."). They're normally left out
+# with the Thinking section; this backstop strips them from the start of a line if they come through anyway.
+STEP = (r"(preparing remote agent run|loading request context\.|reviewing context and selecting the next action\.|"
+        r"preparing to call \S+|waiting for \S+ results\.?|(calling|describing) oci\.\S+|starting tool \S+|"
+        r"received \S+ results; continuing\.?|preparing the response from collected results\.?|"
+        r"searching oci sdk operations|(thinking|working)( on it)?(\.|…)*)")
+STEPS = re.compile(r"^(" + STEP + r"\s*)+", re.I)
+# Table controls and labels in Console AI's cards that aren't part of the answer.
+CHROME = re.compile(r"^(dynamic canvas|page \d+ of \d+|items per page|search)$", re.I)
+
+
+def tidy(text):
+    out = []
+    for line in text.split("\n"):
+        line = STEPS.sub("", line.strip()).strip()
+        if CHROME.match(line) or (out and line and line == out[-1]):     # controls, a title repeated
+            continue
+        if line or (out and out[-1]):
+            out.append(line)
+    return "\n".join(out).strip()
 
 
 def fill_frames(log, text, titles):
@@ -218,7 +240,7 @@ def read_answer(page, box, question, before, seen=0):
             r = log.evaluate(READ_ANSWER, [question, seen])
             if r["busy"]:
                 return ""
-            text = fill_frames(log, r["text"], r.get("frames") or [])
+            text = tidy(fill_frames(log, r["text"], r.get("frames") or []))
             return re.sub(r"\n{3,}", "\n\n", text).strip()
         except Exception:
             pass
