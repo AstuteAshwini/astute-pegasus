@@ -7,8 +7,8 @@
 # The DNS record for the name must already point at this VM's public IP (Let's Encrypt checks it), and the subnet
 # must allow TCP 80 and 443 in. Safe to run again: it updates the code and keeps the data.
 set -euo pipefail
-DOMAIN="${1:?usage: sudo bash setup.sh <domain> <email for Let's Encrypt notices>}"
-EMAIL="${2:?usage: sudo bash setup.sh <domain> <email for Let's Encrypt notices>}"
+DOMAIN="${1:?usage: sudo bash setup.sh <domain> <email for certificate notices>}"
+EMAIL="${2:?usage: sudo bash setup.sh <domain> <email for certificate notices>}"
 REPO="${PEGASUS_REPO:-https://github.com/AstuteAshwini/astute-pegasus}"
 CADDY_VERSION=2.8.4
 APP=/opt/pegasus/app VENV=/opt/pegasus/venv DATA=/var/lib/pegasus ETC=/etc/pegasus BACKUPS=/var/backups/pegasus
