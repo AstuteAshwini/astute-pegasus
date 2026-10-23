@@ -114,35 +114,86 @@ def find_question_box(page):
     return None
 
 
-COUNT_QUESTION = r"""(log, q) => (log.innerText || '').toLowerCase().split(q.toLowerCase()).length - 1"""
+# Text of an element as a person sees it, including what plain innerText leaves out: open shadow DOM (where
+# Console AI draws its cards, e.g. "OCI network path check") and embedded frames, which are left as markers
+# (\u0001<n>\u0001) for Python to fill in, since a frame's text can only be read through Playwright.
+DEEP_TEXT = r"""function deepText(root, frames) {
+  const out = [];
+  const BLOCK = /^(block|flex|grid|list-item|table|table-row|table-caption|flow-root)$/;
+  const walk = n => {
+    if (n.nodeType === 3) { out.push(n.nodeValue.replace(/\s+/g, ' ')); return; }
+    if (n.nodeType !== 1 && n.nodeType !== 11) return;
+    let disp = '';
+    if (n.nodeType === 1) {
+      const tag = n.tagName;
+      if (/^(SCRIPT|STYLE|TEMPLATE|NOSCRIPT|SVG)$/i.test(tag) || n.hidden) return;
+      const cs = getComputedStyle(n);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return;
+      disp = cs.display;
+      if (tag === 'BR') { out.push('\n'); return; }
+      if (tag === 'IFRAME' || tag === 'FRAME') {
+        n.setAttribute('data-pg-frame', frames.length); out.push('\n\u0001' + frames.length + '\u0001\n');
+        frames.push(n.getAttribute('title') || ''); return;
+      }
+      if (tag === 'SLOT') { (n.assignedNodes({flatten: true}).length ? n.assignedNodes({flatten: true}) : [...n.childNodes]).forEach(walk); return; }
+      if (BLOCK.test(disp)) out.push('\n');
+      if (disp === 'table-cell') out.push('\t');
+    }
+    const kids = n.nodeType === 1 && n.shadowRoot ? [...n.shadowRoot.childNodes] : [...n.childNodes];
+    kids.forEach(walk);
+    if (BLOCK.test(disp)) out.push('\n');
+  };
+  walk(root);
+  return out.join('').split('\n').map(l => l.replace(/[ ]+/g, ' ').replace(/^ | $/g, '')).join('\n');
+}"""
+
+COUNT_QUESTION = r"""(log, q) => { """ + DEEP_TEXT + r"""
+  return deepText(log, []).toLowerCase().split(q.toLowerCase()).length - 1 }"""
+
+FRAME_TEXT = r"""() => { """ + DEEP_TEXT + r""" return deepText(document.body, []) }"""
 
 # The reply starts after our question's own echo: occurrence number `seen` (0-based) of the question in the log,
 # counting the times it was already there before we asked. Later copies (e.g. Console AI quoting it) are answer.
-READ_ANSWER = r"""(log, [q, seen]) => {
+READ_ANSWER = r"""(log, [q, seen]) => { """ + DEEP_TEXT + r"""
   // Console AI is busy while it shows "Cancel request", a "Thinking" status, or a disabled text box.
   const panel = log.closest('[role=complementary],aside') || log.parentElement;
   const label = el => ((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || '')).trim();
   const busy = [...panel.querySelectorAll('button')].some(b => /cancel request|stop/i.test(label(b)))
             || [...panel.querySelectorAll('[role=status]')].some(s => /thinking|working|generating/i.test(label(s)))
             || [...panel.querySelectorAll('textarea,input,[role=textbox]')].some(t => t.disabled || t.getAttribute('aria-disabled') === 'true');
-  let text = log.innerText || '';
+  const frames = [];
+  let text = deepText(log, frames);
   const low = text.toLowerCase(), ql = q.toLowerCase();
   let i = -1;
-  for (let k = 0; k <= seen; k++) { i = low.indexOf(ql, i + 1); if (i < 0) return {busy, text: ''}; }
+  for (let k = 0; k <= seen; k++) { i = low.indexOf(ql, i + 1); if (i < 0) return {busy, text: '', frames}; }
   text = text.slice(i + q.length);
   // Drop the "Thinking" steps (the group holding the Thinking button), status lines and button labels.
   const drop = [];
   for (const b of log.querySelectorAll('button')) {
     if (/^thinking/i.test((b.innerText || b.getAttribute('aria-label') || '').trim()))
-      drop.push((b.closest('[role=group]') || b.parentElement).innerText || '');
+      drop.push(deepText(b.closest('[role=group]') || b.parentElement, []));
   }
-  for (const st of log.querySelectorAll('[role=status]')) drop.push(st.innerText || '');
-  for (const d of drop) if (d.trim()) text = text.split(d).join('\n');
+  for (const st of log.querySelectorAll('[role=status]')) drop.push(deepText(st, []));
+  for (const d of drop) if (d.trim()) text = text.split(d.trim()).join('\n');
   const skip = new Set([...log.querySelectorAll('button')].map(b => (b.innerText || '').trim()).filter(Boolean));
   for (const b of skip) if (b.length > 3) text = text.split(b).join('\n');
   text = text.split('\n').map(l => l.trim()).filter(l => l && !skip.has(l) && !/^thinking$/i.test(l)).join('\n');
-  return {busy, text};
+  return {busy, text, frames};
 }"""
+
+
+def fill_frames(log, text, titles):
+    """Put the text of each embedded frame (a card Console AI drew in its own frame) where it sits in the reply."""
+    def frame_text(n):
+        try:
+            frame = log.locator(f'[data-pg-frame="{n}"]').element_handle(timeout=2000).content_frame()
+            body = frame.evaluate(FRAME_TEXT) if frame else ""
+        except Exception:
+            body = ""
+        body = "\n".join(line for line in (x.strip() for x in body.split("\n")) if line)
+        title = titles[n] if n < len(titles) else ""
+        return "\n".join(x for x in (title, body) if x)
+    return re.sub("\u0001(\\d+)\u0001", lambda m: frame_text(int(m.group(1))), text)
 
 
 def console_ai_log(page):
@@ -165,7 +216,10 @@ def read_answer(page, box, question, before, seen=0):
     if log is not None:
         try:
             r = log.evaluate(READ_ANSWER, [question, seen])
-            return ("" if r["busy"] else r["text"].strip())
+            if r["busy"]:
+                return ""
+            text = fill_frames(log, r["text"], r.get("frames") or [])
+            return re.sub(r"\n{3,}", "\n\n", text).strip()
         except Exception:
             pass
     now = panel_text(box)
