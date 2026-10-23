@@ -292,11 +292,11 @@ function openClient(cid){if(cid!==S.cid){S.penv=null;S.pat=null;S.acc={key:null,
 function refresh(){if(S.cid&&S.view==="client") api("/api/clients/"+S.cid).then(function(d){S.detail=d;if(S.tab==="overview")render()});loadClientsQuiet()}
 function loadClientsQuiet(){api("/api/clients").then(function(j){S.clients=j.clients;renderClientList()})}
 
-var TABS=[["overview","Overview"],["patching","Patching"],["access","SSH access"],["settings","Settings"],["activity","Activity"]];
+var TABS=[["overview","Overview"],["schedules","Schedules"],["patching","Patching"],["access","SSH access"],["settings","Settings"],["activity","Activity"]];
 function render(){var d=S.detail;
   var h='<div class="head"><h1>'+esc(d.name)+'</h1></div><div class="tabs" role="tablist">'+TABS.map(function(t){return '<button type="button" role="tab" data-tab="'+t[0]+'" aria-selected="'+(S.tab===t[0])+'">'+t[1]+'</button>'}).join("")+'</div><div id="tabBody"></div>';
   $("main").innerHTML=h;
-  ({overview:renderOverview,patching:renderPatching,access:renderAccess,settings:renderSettings,activity:renderActivity})[S.tab]()}
+  ({overview:renderOverview,schedules:renderSchedules,patching:renderPatching,access:renderAccess,settings:renderSettings,activity:renderActivity})[S.tab]()}
 
 function conAuth(c){
   if(c.auth==="certificate"&&c.certificate) return '<span class="st ok">Certificate</span><br><span class="det">valid until '+esc(day(c.certificate.valid_until))+', renews by itself</span>';
@@ -666,13 +666,65 @@ $("main").addEventListener("click",function(e){if(S.tab!=="settings")return;var 
   var d=t.closest("[data-tdel]");if(d){S.targets=readTargets();S.targets.splice(+d.dataset.tdel,1);return renderTargets()}
   if(t.id==="tSave") return api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:{targets:readTargets()}}).then(function(j){S.targets=j.targets;renderTargets();msg("tMsg","Saved.","ok")}).catch(function(j){msg("tMsg",j.error)})});
 
+/* ---------- schedules ---------- */
+var DAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],ACT={start:"Start all",stop:"Stop all",restart:"Restart all"};
+function myTz(){try{return Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC"}catch(e){return "UTC"}}
+function tzList(){var l=[];try{l=Intl.supportedValuesOf("timeZone")}catch(e){}
+  ["America/Los_Angeles","America/Denver","America/Chicago","America/New_York","UTC","Asia/Kolkata"].forEach(function(z){if(l.indexOf(z)<0)l.push(z)});return l.sort()}
+function dayText(d){if(d.join()==="0,1,2,3,4")return "Mon–Fri";if(d.length===7)return "Every day";if(d.join()==="5,6")return "Weekends";return d.map(function(x){return DAYS[x]}).join(", ")}
+function h12(t){var p=t.split(":"),h=+p[0];return (h%12||12)+":"+p[1]+(h<12?" AM":" PM")}
+function inWhen(t){if(!t)return "";var s=Math.round((new Date(t)-Date.now())/60000);if(s<0)return "now";if(s<60)return "in "+s+" min";if(s<1440)return "in "+Math.round(s/60)+" h";return "in "+Math.round(s/1440)+" days"}
+function renderSchedules(){var d=S.detail,op=can("operator");
+  var h='<div class="panel"><h2>Schedules</h2><p class="help">Start, stop or restart an environment at set times, for example to stop non-production in the evening and at weekends. Each run is the same job as clicking Start all or Stop all, in the same safe order. A run that is more than 15 minutes late (Pegasus was down) is skipped, and so is a run while another job is busy on that environment; both show here and in Activity.</p><div id="schOut"><div class="empty">Loading…</div></div></div>';
+  if(op&&d.environments.length){
+    h+='<div class="panel"><h2>Add a schedule</h2><div class="grid3">'+
+      '<label>Environment<select id="scEnv">'+d.environments.map(function(e){return '<option value="'+esc(e.name)+'">'+esc(e.name)+(isPrd(e.tier)?' (production)':'')+'</option>'}).join("")+'</select></label>'+
+      '<label>What<select id="scAct"><option value="hours">Office hours: start, then stop</option><option value="stop">Stop all</option><option value="start">Start all</option><option value="restart">Restart all</option></select></label>'+
+      '<label>Repeat<select id="scRep"><option value="weekly">Weekly</option><option value="once">Once</option></select></label>'+
+      '<label id="scT1L"><span id="scT1N">Start at</span><input id="scT1" type="time" value="07:00"></label>'+
+      '<label id="scT2L">Stop at<input id="scT2" type="time" value="19:00"></label>'+
+      '<label id="scDateL" hidden>Date<input id="scDate" type="date"></label>'+
+      '<label>Time zone<select id="scTz">'+tzList().map(function(z){return '<option'+(z===myTz()?' selected':'')+'>'+esc(z)+'</option>'}).join("")+'</select></label>'+
+      '<label>Note (optional)<input id="scNote" placeholder="e.g. save OCI cost overnight" maxlength="200"></label></div>'+
+      '<div id="scDays" class="envpick" style="margin:6px 0 4px">'+DAYS.map(function(n,i){return '<label class="inline"><input type="checkbox" data-scday="'+i+'"'+(i<5?' checked':'')+'>'+n+'</label>'}).join("")+'</div>'+
+      '<div id="scMsg"></div><div class="toolbar"><button type="button" class="primary" id="scAdd">Add schedule</button></div></div>'}
+  $("tabBody").innerHTML=h;if(op&&d.environments.length)scForm();loadSchedules()}
+function scForm(){var a=$("scAct").value,once=$("scRep").value==="once";
+  $("scT2L").hidden=a!=="hours";$("scT1N").textContent=a==="hours"?"Start at":"At";$("scDays").hidden=once;$("scDateL").hidden=!once}
+function loadSchedules(){api("/api/clients/"+S.cid+"/schedules").then(function(j){var op=can("operator");
+  if(!j.schedules.length){$("schOut").innerHTML='<div class="empty">No schedules yet.</div>';return}
+  $("schOut").innerHTML='<div class="scroll"><table><thead><tr><th>Environment</th><th>What</th><th>When</th><th>Next run</th><th>Last run</th><th></th></tr></thead><tbody>'+j.schedules.map(function(c){
+    var last=!c.last_run?'<span class="det">not yet</span>':'<span class="st '+(c.last_status==="queued"?(c.last_job_status||"queued"):c.last_status==="missed"?"failed":"stale")+'">'+esc(c.last_status==="queued"?(c.last_job_status||"queued"):c.last_status)+'</span><br><span class="det">'+esc(when(c.last_run))+(c.last_detail?' · '+esc(c.last_detail):'')+'</span>'+(c.last_job?'<br><button class="link sm" data-job="'+esc(c.last_job)+'">Show output</button>':'');
+    var next=!c.enabled?'<span class="st stale">Paused</span>':!c.next_run?'<span class="det">done</span>':(c.skip_next?'<span class="st pending">Skipping</span> ':'')+esc(when(c.next_run))+'<br><span class="det">'+esc(inWhen(c.next_run))+'</span>';
+    return '<tr><td><b>'+esc(c.environment)+'</b> <span class="tag'+(isPrd(c.tier)?' prd':'')+'">'+esc(c.tier||'no tier')+'</span>'+(c.note?'<br><span class="det">'+esc(c.note)+'</span>':'')+'</td><td>'+ACT[c.action]+'</td>'+
+      '<td>'+(c.once_date?'Once on '+esc(c.once_date):dayText(c.days))+' at '+h12(c.time)+'<br><span class="det">'+esc(c.tz)+'</span></td><td>'+next+'</td><td>'+last+'</td><td>'+
+      (op?(c.enabled&&c.next_run?'<button class="link sm" data-scskip="'+c.id+'" data-v="'+(c.skip_next?0:1)+'">'+(c.skip_next?"Don\'t skip":"Skip next run")+'</button><br>':'')+
+        '<button class="link sm" data-scpause="'+c.id+'" data-v="'+(c.enabled?0:1)+'">'+(c.enabled?"Pause":"Resume")+'</button><br><button class="link sm danger" data-scdel="'+c.id+'">Delete</button>':'')+'</td></tr>'}).join("")+'</tbody></table></div>'})}
+function addSchedules(confirmName){var env=$("scEnv").value,a=$("scAct").value,once=$("scRep").value==="once";
+  var base={environment:env,tz:$("scTz").value,note:$("scNote").value,confirm:confirmName||""};
+  if(once){if(!$("scDate").value)return msg("scMsg","Pick the date.");base.once_date=$("scDate").value}
+  else{base.days=[].slice.call(document.querySelectorAll("[data-scday]:checked")).map(function(c){return +c.dataset.scday});if(!base.days.length)return msg("scMsg","Pick at least one day.")}
+  var list=a==="hours"?[Object.assign({},base,{action:"start",time:$("scT1").value}),Object.assign({},base,{action:"stop",time:$("scT2").value})]:[Object.assign({},base,{action:a,time:$("scT1").value})];
+  if(list.some(function(x){return !x.time}))return msg("scMsg","Enter the time.");
+  (function next(i){if(i>=list.length){msg("scMsg","Added.","ok");return loadSchedules()}
+    api("/api/clients/"+S.cid+"/schedules",{method:"POST",body:list[i]}).then(function(){next(i+1)}).catch(function(j){
+      if(j.need_confirm) return confirmBox("Schedule "+(a==="hours"?"start and stop":ACT[a].toLowerCase())+" on production "+env+"?","Pegasus will run this on "+env+" at the times you chose, without asking again. Anyone who can sign in can see and pause it.",env,function(){addSchedules(env)},"Add schedule");
+      msg("scMsg",j.error);if(i)loadSchedules()})})(0)}
+$("main").addEventListener("change",function(e){if(e.target.id==="scAct"||e.target.id==="scRep")scForm()});
+$("main").addEventListener("click",function(e){var t=e.target;
+  if(t.id==="scAdd") return addSchedules();
+  var k=t.closest("[data-scskip]");if(k) return api("/api/schedules/"+k.dataset.scskip,{method:"PATCH",body:{skip_next:k.dataset.v==="1"}}).then(loadSchedules).catch(function(j){alert(j.error)});
+  var pz=t.closest("[data-scpause]");if(pz) return api("/api/schedules/"+pz.dataset.scpause,{method:"PATCH",body:{enabled:pz.dataset.v==="1"}}).then(loadSchedules).catch(function(j){alert(j.error)});
+  var dl=t.closest("[data-scdel]");if(dl) return confirmBox("Delete this schedule?","It won't run again. Nothing on the servers changes.",null,function(){api("/api/schedules/"+dl.dataset.scdel,{method:"DELETE"}).then(loadSchedules)},"Delete")});
+
 /* ---------- activity ---------- */
 var EVT={signed_in:"Signed in",sign_in_failed:"Sign-in failed",mfa_failed:"Wrong MFA code",mfa_enrolled:"Set up MFA",job_queued:"Started a job",apply_queued:"Started patching",
   patches_applied:"Patching finished",patches_staged:"Download finished",change_request_raised:"Raised a Jira ticket",change_request_withdrawn:"Withdrew a Jira ticket",
   jira_settings_updated:"Changed Jira settings",jira_token_removed:"Removed the Jira token",jira_update_failed:"Couldn't update Jira",inventory_imported:"Imported inventory",
   connector_token_created:"Created a connector token",connector_registered:"A connector registered",connector_removed:"Removed a connector",
   connector_certificate_issued:"A connector got a certificate",connector_certificate_renewed:"A connector renewed its certificate",connector_update_requested:"Asked a connector to update",
-  connector_updated:"A connector updated itself",connector_update_failed:"A connector update failed",connector_update_refused:"A connector refused an update",connector_updates_changed:"Changed connector updates",client_created:"Added the client",
+  connector_updated:"A connector updated itself",schedule_created:"Added a schedule",schedule_changed:"Changed a schedule",schedule_deleted:"Deleted a schedule",
+  schedule_ran:"Scheduled run started",schedule_skipped:"Scheduled run skipped",schedule_missed:"Scheduled run missed",connector_update_failed:"A connector update failed",connector_update_refused:"A connector refused an update",connector_updates_changed:"Changed connector updates",client_created:"Added the client",
   patch_settings_updated:"Changed patch settings",user_created:"Added a person",user_updated:"Changed a person",password_reset:"Reset a password",mfa_reset:"Reset MFA",
   ssh_key_add:"Added an SSH key",ssh_key_remove:"Removed an SSH key",ssh_key_check:"Checked an SSH key",password_changed:"Changed their password",recovery_code_used:"Used a recovery code"};
 function auditTable(events){if(!events.length)return '<div class="empty">Nothing yet.</div>';

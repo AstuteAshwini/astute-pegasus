@@ -28,6 +28,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory, session
 
@@ -119,6 +120,11 @@ CREATE TABLE IF NOT EXISTS change_requests (id TEXT PRIMARY KEY, client_id TEXT 
 CREATE TABLE IF NOT EXISTS domain_states (client_id TEXT NOT NULL, environment TEXT NOT NULL, host_key TEXT NOT NULL,
   role TEXT NOT NULL, domain TEXT NOT NULL, state TEXT NOT NULL, at REAL NOT NULL, job_id TEXT,
   PRIMARY KEY (client_id, environment, host_key, role, domain));
+CREATE TABLE IF NOT EXISTS schedules (id TEXT PRIMARY KEY, client_id TEXT NOT NULL, environment TEXT NOT NULL,
+  action TEXT NOT NULL, days TEXT, once_date TEXT, at_time TEXT NOT NULL, tz TEXT NOT NULL, note TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1, skip_next INTEGER NOT NULL DEFAULT 0, created_by TEXT, created_at REAL NOT NULL,
+  next_run REAL, last_run REAL, last_status TEXT, last_job TEXT, last_detail TEXT);
+CREATE INDEX IF NOT EXISTS schedules_due ON schedules (enabled, next_run);
 CREATE TABLE IF NOT EXISTS nonces (connector_id TEXT NOT NULL, nonce TEXT NOT NULL, at REAL NOT NULL,
   PRIMARY KEY (connector_id, nonce));
 CREATE TABLE IF NOT EXISTS access_keys (client_id TEXT NOT NULL, rid TEXT NOT NULL, fingerprint TEXT NOT NULL,
@@ -844,7 +850,8 @@ def delete_environment(cid, env):
     if not r.rowcount:
         return jsonify(error="No such environment."), 404
     db().execute("DELETE FROM domain_states WHERE client_id=? AND environment=?", (cid, env))
-    audit("environment_removed", cid, environment=env, servers=r.rowcount)
+    n = db().execute("DELETE FROM schedules WHERE client_id=? AND environment=?", (cid, env)).rowcount
+    audit("environment_removed", cid, environment=env, servers=r.rowcount, schedules_removed=n or "")
     return jsonify(ok=True)
 
 
@@ -1043,6 +1050,204 @@ def run(cid):
         return jsonify(error=str(e)), e.status
     audit("job_queued", cid, job=jid, title=title)
     return jsonify(job=jid, steps=len(steps))
+
+
+# ---------------------------------------------------------------- schedules
+SCHEDULE_ACTIONS = ("start", "stop", "restart")
+LATE_GRACE = 15 * 60          # a run more than this late (Pegasus was down) is skipped, not started hours late
+DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def schedule_days(sch):
+    return sorted({int(d) for d in str(sch["days"] or "").split(",") if d.strip().isdigit() and 0 <= int(d) <= 6})
+
+
+def next_occurrence(sch, after):
+    """The next time (epoch seconds) strictly after `after` that this schedule fires, or None. Local wall-clock
+    time in the schedule's own time zone, so 7:00 stays 7:00 across daylight-saving changes."""
+    tz = ZoneInfo(sch["tz"])
+    hh, mm = (int(x) for x in sch["at_time"].split(":"))
+    if sch["once_date"]:
+        t = dt.datetime.combine(dt.date.fromisoformat(sch["once_date"]), dt.time(hh, mm), tzinfo=tz).timestamp()
+        return t if t > after else None
+    days = schedule_days(sch)
+    if not days:
+        return None
+    start = dt.datetime.fromtimestamp(after, tz).date()
+    for i in range(8):
+        d = start + dt.timedelta(days=i)
+        if d.weekday() in days:
+            t = dt.datetime.combine(d, dt.time(hh, mm), tzinfo=tz).timestamp()
+            if t > after:
+                return t
+    return None
+
+
+def schedule_view(sch):
+    j = db().execute("SELECT status FROM jobs WHERE id=?", (sch["last_job"],)).fetchone() if sch["last_job"] else None
+    servers = env_servers(sch["client_id"], sch["environment"])
+    return {"id": sch["id"], "environment": sch["environment"], "tier": env_tier(servers), "action": sch["action"],
+            "days": schedule_days(sch), "once_date": sch["once_date"], "time": sch["at_time"], "tz": sch["tz"],
+            "note": sch["note"] or "", "enabled": bool(sch["enabled"]), "skip_next": bool(sch["skip_next"]),
+            "created_by": sch["created_by"], "next_run": iso(sch["next_run"]), "last_run": iso(sch["last_run"]),
+            "last_status": sch["last_status"], "last_detail": sch["last_detail"] or "", "last_job": sch["last_job"],
+            "last_job_status": j["status"] if j else None}
+
+
+def get_schedule(sid):
+    sch = db().execute("SELECT * FROM schedules WHERE id=?", (sid,)).fetchone()
+    if not sch:
+        abort(404)
+    get_client(sch["client_id"])
+    return sch
+
+
+def describe_schedule(sch):
+    days = schedule_days(sch)
+    if sch["once_date"]:
+        when_ = f"on {sch['once_date']}"
+    elif days == [0, 1, 2, 3, 4]:
+        when_ = "Mon-Fri"
+    elif len(days) == 7:
+        when_ = "every day"
+    else:
+        when_ = ", ".join(DAY_NAMES[d] for d in days)
+    return f"{sch['action']} {sch['environment']} {when_} at {sch['at_time']} {sch['tz']}"
+
+
+@app.get("/api/clients/<cid>/schedules")
+@need("viewer")
+def list_schedules(cid):
+    get_client(cid)
+    rs = db().execute("SELECT * FROM schedules WHERE client_id=? ORDER BY environment COLLATE NOCASE, at_time, action",
+                      (cid,)).fetchall()
+    return jsonify(schedules=[schedule_view(r) for r in rs])
+
+
+@app.post("/api/clients/<cid>/schedules")
+@need("operator")
+def create_schedule(cid):
+    get_client(cid)
+    b = request.get_json(silent=True) or {}
+    env, action = str(b.get("environment") or ""), str(b.get("action") or "")
+    servers = env_servers(cid, env)
+    if not servers:
+        return jsonify(error="Choose an environment that has servers."), 400
+    if action not in SCHEDULE_ACTIONS:
+        return jsonify(error="Choose start, stop or restart."), 400
+    at_time = str(b.get("time") or "")
+    if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", at_time):
+        return jsonify(error="Enter the time as HH:MM (24-hour)."), 400
+    tz = str(b.get("tz") or "")
+    try:
+        ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError):
+        return jsonify(error="Choose a valid time zone."), 400
+    once, days = b.get("once_date"), ""
+    if once:
+        try:
+            dt.date.fromisoformat(str(once))
+        except ValueError:
+            return jsonify(error="Enter the date as YYYY-MM-DD."), 400
+        once = str(once)
+    else:
+        try:
+            ds = sorted({int(d) for d in b.get("days") or [] if 0 <= int(d) <= 6})
+        except (TypeError, ValueError):
+            ds = []
+        if not ds:
+            return jsonify(error="Pick at least one day."), 400
+        days = ",".join(str(d) for d in ds)
+    if is_prd(env_tier(servers)) and str(b.get("confirm") or "").upper() != env.upper():
+        return jsonify(error=f"Type {env} to confirm a schedule on production.", need_confirm=True), 409
+    sch = {"id": "s_" + uuid.uuid4().hex[:12], "client_id": cid, "environment": env, "action": action,
+           "days": days, "once_date": once or None, "at_time": at_time, "tz": tz,
+           "note": re.sub(r"[^\x20-\x7e]", "", str(b.get("note") or ""))[:200]}
+    nxt = next_occurrence(sch, time.time())
+    if nxt is None:
+        return jsonify(error="That date and time have already passed."), 400
+    db().execute("INSERT INTO schedules (id, client_id, environment, action, days, once_date, at_time, tz, note, "
+                 "created_by, created_at, next_run) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                 (sch["id"], cid, env, action, days, sch["once_date"], at_time, tz, sch["note"], who(), time.time(), nxt))
+    audit("schedule_created", cid, schedule=sch["id"], what=describe_schedule(sch), next_run=iso(nxt))
+    return jsonify(schedule_view(db().execute("SELECT * FROM schedules WHERE id=?", (sch["id"],)).fetchone()))
+
+
+@app.patch("/api/schedules/<sid>")
+@need("operator")
+def change_schedule(sid):
+    sch = get_schedule(sid)
+    b = request.get_json(silent=True) or {}
+    changes = {}
+    if "enabled" in b:
+        changes["enabled"] = 1 if b["enabled"] else 0
+        if b["enabled"]:                                  # resuming: the next run from now, not a missed one
+            changes["next_run"] = next_occurrence(sch, time.time())
+    if "skip_next" in b:
+        changes["skip_next"] = 1 if b["skip_next"] else 0
+    if not changes:
+        return jsonify(error="Nothing to change."), 400
+    db().execute(f"UPDATE schedules SET {', '.join(k + '=?' for k in changes)} WHERE id=?",
+                 (*changes.values(), sid))
+    what = ("resumed" if changes.get("enabled") else "paused") if "enabled" in changes else \
+        ("will skip its next run" if changes["skip_next"] else "won't skip its next run")
+    audit("schedule_changed", sch["client_id"], schedule=sid, what=describe_schedule(sch), change=what)
+    return jsonify(schedule_view(db().execute("SELECT * FROM schedules WHERE id=?", (sid,)).fetchone()))
+
+
+@app.delete("/api/schedules/<sid>")
+@need("operator")
+def delete_schedule(sid):
+    sch = get_schedule(sid)
+    db().execute("DELETE FROM schedules WHERE id=?", (sid,))
+    audit("schedule_deleted", sch["client_id"], schedule=sid, what=describe_schedule(sch))
+    return jsonify(ok=True)
+
+
+def run_due_schedules(now=None):
+    """Queue every schedule that is due. Called every 30 seconds by the scheduler thread."""
+    now = now or time.time()
+    due = db().execute("SELECT * FROM schedules WHERE enabled=1 AND next_run IS NOT NULL AND next_run<=? "
+                       "ORDER BY next_run", (now,)).fetchall()
+    for sch in due:
+        at = sch["next_run"]
+        nxt = next_occurrence(sch, max(now, at))
+        claimed = db().execute("UPDATE schedules SET next_run=? WHERE id=? AND next_run=?", (nxt, sch["id"], at))
+        if not claimed.rowcount:
+            continue                                       # another round already handled it
+        job, detail = None, ""
+        servers = env_servers(sch["client_id"], sch["environment"])
+        if sch["skip_next"]:
+            status, detail = "skipped", "skipped once, as requested"
+        elif now - at > LATE_GRACE:
+            status, detail = "missed", f"Pegasus wasn't running at {iso(at)}, and it's too late to run it now"
+        elif not servers:
+            status, detail = "skipped", "the environment has no servers"
+        else:
+            try:
+                steps, stop_on_failure = plan_steps(servers, sch["action"])
+                job = queue_job(sch["client_id"], sch["environment"], sch["action"],
+                                f"{sch['action']} {sch['environment']} (scheduled)", steps, stop_on_failure,
+                                meta={"schedule": sch["id"]}, created_by="schedule")
+                status = "queued"
+            except JobRefused as e:
+                status, detail = "skipped", str(e)
+        db().execute("UPDATE schedules SET last_run=?, last_status=?, last_job=?, last_detail=?, skip_next=CASE "
+                     "WHEN ?='skipped' AND skip_next=1 THEN 0 ELSE skip_next END WHERE id=?",
+                     (at, status, job, detail, status, sch["id"]))
+        audit("schedule_ran" if job else "schedule_" + status, sch["client_id"], actor="schedule",
+              schedule=sch["id"], what=describe_schedule(sch), job=job or "", reason=detail,
+              next_run=iso(nxt) or "none")
+
+
+def schedule_loop():
+    while True:
+        time.sleep(30)
+        try:
+            with app.app_context():
+                run_due_schedules()
+        except Exception as e:                       # keep going even if one round fails
+            app.logger.warning("scheduled start/stop failed: %s", e)
 
 
 def expire_stale(cid=None):
@@ -2457,6 +2662,7 @@ def main():
     if STATUS_EVERY:
         threading.Thread(target=auto_status_loop, daemon=True).start()
         print(f"Checking every domain's status every {STATUS_EVERY // 60} minutes (PEGASUS_STATUS_EVERY=0 turns it off)")
+    threading.Thread(target=schedule_loop, daemon=True).start()
     try:
         from waitress import serve
     except ImportError:

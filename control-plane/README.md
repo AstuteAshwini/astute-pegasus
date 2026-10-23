@@ -95,6 +95,19 @@ that one domain only; the environment's **Start all** / **Stop all** keep the sa
 automatic checks are read-only, run beside anything else the connector is doing, don't block start/stop or patching,
 and are left out of Recent jobs. They need the client's connector to be online.
 
+## Schedules
+
+A client's **Schedules** tab starts, stops or restarts an environment at set times: weekly on chosen days, or once
+on a date, at a time in a chosen time zone (so 7:00 stays 7:00 across daylight-saving changes). **Office hours**
+adds a start and a stop together. Each run queues the same job as **Start all** / **Stop all**, in the same safe
+order, created by "schedule". Production schedules need the environment name typed to create them.
+
+A run is skipped, and recorded with the reason, when someone asked to skip it (**Skip next run**), when another job is
+already queued or running on that environment, or when it's more than 15 minutes late because Pegasus wasn't
+running (it won't start an environment hours late). **Pause** stops a schedule without deleting it; resuming picks
+the next time from now. Operators and admins manage schedules; every change and run is in Activity. Removing an
+environment removes its schedules.
+
 ## Adding servers
 
 On a client's **Overview** tab (admins), **Add servers**: enter IP addresses (`10.0.1.21`, or `10.0.1.21:2222` for
