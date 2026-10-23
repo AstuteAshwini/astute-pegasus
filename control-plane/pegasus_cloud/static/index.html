@@ -28,7 +28,9 @@ button{font:inherit;font-size:13.5px;font-weight:550;border-radius:var(--r-sm);p
 button:hover{background:var(--sunk)}button:disabled{opacity:.45;cursor:not-allowed}
 button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}button.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
 button.go{color:var(--run)}button.halt,button.danger{color:var(--stop)}
-button.link{border:none;background:none;color:var(--accent);padding:4px 2px}button.sm{padding:4px 10px;font-size:12.5px}
+button.link{border:none;background:none;color:var(--accent);padding:4px 2px}
+a.btn{display:inline-flex;align-items:center;font-size:13.5px;font-weight:600;border-radius:var(--r-sm);padding:7px 13px;border:1px solid var(--accent);color:var(--accent);background:var(--surface);text-decoration:none}
+a.btn:hover{background:var(--soft)}.head a.btn{margin-left:auto}.head #ociSetup{margin-left:auto}button.sm{padding:4px 10px;font-size:12.5px}
 button.link.danger{color:var(--stop)}
 input,textarea,select{font:inherit;font-size:14px;padding:8px 11px;border:1px solid var(--line-strong);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);width:100%}
 input[type=checkbox]{width:auto;margin:0 6px 0 0;vertical-align:-2px}
@@ -314,7 +316,8 @@ function loadClientsQuiet(){api("/api/clients").then(function(j){S.clients=j.cli
 
 var TABS=[["overview","Environments"],["schedules","Schedules"],["patching","Patching"],["access","SSH access"],["connectors","Connectors"],["settings","Settings"],["activity","Activity"]];
 function render(){var d=S.detail;
-  var h='<div class="head"><h1>'+esc(d.name)+'</h1></div><div class="tabs" role="tablist">'+TABS.map(function(t){return '<button type="button" role="tab" data-tab="'+t[0]+'" aria-selected="'+(S.tab===t[0])+'">'+t[1]+'</button>'}).join("")+'</div><div id="tabBody"></div>';
+  var h='<div class="head"><h1>'+esc(d.name)+'</h1>'+(d.oci_console?'<a class="btn" href="'+esc(d.oci_console.url)+'" target="_blank" rel="noopener noreferrer" title="Opens '+esc(d.oci_console.tenancy)+(d.oci_console.region?' in '+esc(d.oci_console.region):'')+' in a new tab. Sign in with your own OCI account; Console AI is in the console header.">Open OCI Console</a>':
+    (can("admin")?'<button type="button" class="link sm" id="ociSetup">Add OCI Console link</button>':''))+'</div><div class="tabs" role="tablist">'+TABS.map(function(t){return '<button type="button" role="tab" data-tab="'+t[0]+'" aria-selected="'+(S.tab===t[0])+'">'+t[1]+'</button>'}).join("")+'</div><div id="tabBody"></div>';
   $("main").innerHTML=h;
   ({overview:renderOverview,connectors:renderConnectors,schedules:renderSchedules,patching:renderPatching,access:renderAccess,settings:renderSettings,activity:renderActivity})[S.tab]()}
 
@@ -447,6 +450,7 @@ $("main").addEventListener("click",function(e){var t=e.target;
 
 $("main").addEventListener("click",function(e){var t=e.target;
   var tb=t.closest("[data-tab]"); if(tb){S.tab=tb.dataset.tab;return render()}
+  if(t.id==="ociSetup"){S.tab="settings";render();var op=$("ociPanel");if(op){op.scrollIntoView({block:"start"});$("ociTen").focus()}return}
   if(t.id==="newTok") return api("/api/clients/"+S.cid+"/tokens",{method:"POST",body:{}}).then(function(j){$("tokCmd").textContent=j.command;$("tokFp").textContent=j.fingerprint;$("tokDlg").showModal()});
   if(t.id==="invSave") return api("/api/clients/"+S.cid+"/inventory",{method:"PUT",body:{csv:$("invCsv").value}}).then(function(){S.penv=null;openClient(S.cid);loadClientsQuiet()}).catch(function(j){msg("invMsg",j.error)});
   var cu=t.closest("[data-cupd]"); if(cu){ if(confirm("Update this connector to "+cu.dataset.ver+"? It installs the signed release once no job is running, then restarts itself. If the new version doesn't start, it goes back to the current one.")) api("/api/connectors/"+cu.dataset.cupd+"/update",{method:"POST",body:{}}).then(refresh).catch(function(j){alert(j.error)}); return }
@@ -646,8 +650,11 @@ $("main").addEventListener("click",function(e){if(S.tab!=="access")return;var t=
 
 /* ---------- settings ---------- */
 var TCOLS=["component","applies_to","target","patch_number","platform","file_filter","label"];
-function renderSettings(){var ro=!can("admin")?" disabled":"";
-  $("tabBody").innerHTML='<div class="panel"><h2>Change approval (Jira)</h2><p class="help">When this is on, Apply doesn\'t patch anything by itself: Pegasus raises a ticket describing exactly what will change, and Apply unlocks only after someone other than the Pegasus account approves it. The token is stored encrypted.</p>'+
+function renderSettings(){var ro=!can("admin")?" disabled":"",oc=S.detail.oci_console||{};
+  $("tabBody").innerHTML='<div class="panel" id="ociPanel"><h2>OCI Console</h2><p class="help">The client\'s OCI tenancy and home region. <b>Open OCI Console</b> at the top of this client\'s page then opens their console in a new tab, where you sign in with your own OCI account and can use Console AI. Pegasus stores no OCI credentials.</p>'+
+    '<div class="grid3"><label>Tenancy name<input id="ociTen" placeholder="e.g. miracostaoci" value="'+esc(oc.tenancy||"")+'"'+ro+'></label><label>Region<input id="ociReg" list="ociRegions" placeholder="e.g. us-phoenix-1" value="'+esc(oc.region||"")+'"'+ro+'></label></div>'+
+    '<datalist id="ociRegions">'+["us-ashburn-1","us-phoenix-1","us-chicago-1","us-sanjose-1","ca-toronto-1","ca-montreal-1","uk-london-1","eu-frankfurt-1","eu-amsterdam-1","ap-mumbai-1","ap-hyderabad-1","ap-tokyo-1","ap-osaka-1","ap-sydney-1","sa-saopaulo-1","me-riyadh-1"].map(function(r){return '<option value="'+r+'">'}).join("")+'</datalist>'+
+    '<div id="ociMsg"></div>'+(can("admin")?'<div class="toolbar"><button type="button" class="primary" id="ociSave">Save</button>'+(oc.url?'<a class="btn" href="'+esc(oc.url)+'" target="_blank" rel="noopener noreferrer">Try it</a>':'')+'</div>':'')+'</div>'+'<div class="panel"><h2>Change approval (Jira)</h2><p class="help">When this is on, Apply doesn\'t patch anything by itself: Pegasus raises a ticket describing exactly what will change, and Apply unlocks only after someone other than the Pegasus account approves it. The token is stored encrypted.</p>'+
     '<label class="inline"><input type="checkbox" id="jEnabled"'+ro+'>Require an approved Jira ticket before patching</label>'+
     '<div class="grid3"><label>Needed for<select id="jRequire"'+ro+'><option value="all">Every environment</option><option value="prd">Production only</option></select></label>'+
     '<label>Jira<select id="jDeploy"'+ro+'><option value="cloud">Jira Cloud</option><option value="datacenter">Jira Data Center</option></select></label>'+
@@ -688,6 +695,7 @@ $("main").addEventListener("click",function(e){if(S.tab!=="settings")return;var 
   if(t.id==="jTest"){msg("jMsg","Testing…","info");return api("/api/clients/"+S.cid+"/jira/test",{method:"POST",body:{}}).then(function(j){
     msg("jMsg","Connected as "+j.user+" to project "+j.project+"."+(j.filled&&j.filled.length?" Pegasus fills in: "+j.filled.join(", ")+".":"")+(j.warning?" "+j.warning:""),j.warning?"":"ok")}).catch(function(j){msg("jMsg",(j.error||"Couldn't connect.")+" Save first if you just changed the settings.")})}
   if(t.id==="jForget") return confirmBox("Remove the Jira token?","Change approval is switched off until a token is added again.",null,function(){api("/api/clients/"+S.cid+"/jira/token",{method:"DELETE"}).then(function(){renderSettings()})},"Remove");
+  if(t.id==="ociSave") return api("/api/clients/"+S.cid+"/oci-console",{method:"PUT",body:{tenancy:$("ociTen").value,region:$("ociReg").value}}).then(function(j){S.detail.oci_console=j.oci_console;render()}).catch(function(j){msg("ociMsg",j.error)});
   if(t.id==="sSave") return api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:{staging_root:$("sRoot").value}}).then(function(j){$("sRoot").value=j.staging_root;msg("sMsg","Saved.","ok")}).catch(function(j){msg("sMsg",j.error)});
   if(t.id==="tAdd"){S.targets=readTargets();S.targets.push({component:"jdk"});return renderTargets()}
   var d=t.closest("[data-tdel]");if(d){S.targets=readTargets();S.targets.splice(+d.dataset.tdel,1);return renderTargets()}
@@ -750,7 +758,7 @@ var EVT={signed_in:"Signed in",sign_in_failed:"Sign-in failed",mfa_failed:"Wrong
   jira_settings_updated:"Changed Jira settings",jira_token_removed:"Removed the Jira token",jira_update_failed:"Couldn't update Jira",inventory_imported:"Imported inventory",
   connector_token_created:"Created a connector token",connector_registered:"A connector registered",connector_removed:"Removed a connector",
   connector_certificate_issued:"A connector got a certificate",connector_certificate_renewed:"A connector renewed its certificate",connector_update_requested:"Asked a connector to update",
-  connector_updated:"A connector updated itself",schedule_created:"Added a schedule",schedule_changed:"Changed a schedule",schedule_deleted:"Deleted a schedule",
+  connector_updated:"A connector updated itself",oci_console_changed:"Changed the OCI Console link",schedule_created:"Added a schedule",schedule_changed:"Changed a schedule",schedule_deleted:"Deleted a schedule",
   schedule_ran:"Scheduled run started",schedule_skipped:"Scheduled run skipped",schedule_missed:"Scheduled run missed",connector_update_failed:"A connector update failed",connector_update_refused:"A connector refused an update",connector_updates_changed:"Changed connector updates",client_created:"Added the client",
   patch_settings_updated:"Changed patch settings",user_created:"Added a person",user_updated:"Changed a person",password_reset:"Reset a password",mfa_reset:"Reset MFA",
   ssh_key_add:"Added an SSH key",ssh_key_remove:"Removed an SSH key",ssh_key_check:"Checked an SSH key",password_changed:"Changed their password",recovery_code_used:"Used a recovery code"};

@@ -702,7 +702,8 @@ def client_detail(cid):
         e["tier"] = e["tier"] or s["tier"] or ""
         e["servers"].append(s)
     rel = latest_release()
-    return jsonify(id=c["id"], name=c["name"], connectors=cons, environments=list(envs.values()),
+    oci = oci_console(cid)
+    return jsonify(id=c["id"], name=c["name"], connectors=cons, environments=list(envs.values()), oci_console=oci,
                    jobs=recent_jobs(cid), connector_updates=get_setting(cid, "connector_updates", "manual"),
                    latest_release=release_view(rel) if rel else None)
 
@@ -1779,6 +1780,36 @@ def patching_stage(cid):
         return jsonify(error=str(e)), e.status
     audit("job_queued", cid, job=jid, title=f"download and stage {env}", keys=keys)
     return jsonify(job=jid, hosts=len(per_host), updates=len(keys))
+
+
+# ---------------------------------------------------------------- OCI Console link
+# Console AI lives only inside the OCI Console (no API), so Pegasus links people straight to each client's console,
+# where they sign in with their own OCI account.
+OCI_TENANCY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,99}$")
+OCI_REGION = re.compile(r"^[a-z]{2,3}-[a-z]+-\d{1,2}$")
+
+
+def oci_console(cid):
+    c = get_setting(cid, "oci_console", {}) or {}
+    if not c.get("tenancy"):
+        return None
+    url = f"https://cloud.oracle.com/?tenant={c['tenancy']}" + (f"&region={c['region']}" if c.get("region") else "")
+    return {"tenancy": c["tenancy"], "region": c.get("region") or "", "url": url}
+
+
+@app.put("/api/clients/<cid>/oci-console")
+@need("admin")
+def put_oci_console(cid):
+    get_client(cid)
+    b = request.get_json(silent=True) or {}
+    tenancy, region = str(b.get("tenancy") or "").strip(), str(b.get("region") or "").strip().lower()
+    if tenancy and not OCI_TENANCY.match(tenancy):
+        return jsonify(error="Enter the tenancy name as it appears in the OCI Console (letters, numbers, - and _)."), 400
+    if region and not OCI_REGION.match(region):
+        return jsonify(error="Enter the region identifier, e.g. us-phoenix-1."), 400
+    put_setting(cid, "oci_console", {"tenancy": tenancy, "region": region} if tenancy else {})
+    audit("oci_console_changed", cid, tenancy=tenancy or "removed", region=region)
+    return jsonify(oci_console=oci_console(cid))
 
 
 @app.get("/api/clients/<cid>/patch-settings")
