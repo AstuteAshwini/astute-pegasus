@@ -6,7 +6,7 @@ authorized_keys edits all live in this file, on the client's side.
 
 Operations
   catalog        latest JDK / WebLogic / Tuxedo / Database client levels (Oracle Java releases, Oracle Support)
-  patch.download download patches into the connector's cache (Oracle Support, Oracle Java downloads)
+  patch.download download patches into the connector's cache (all from Oracle Support)
   patch.stage    copy cached patches to a server's staging folder, checksum-verified
   host.idle      fail if WebLogic or Tuxedo processes are still running (checked before patching binaries)
   patch.apply    back up a home and apply a staged patch as the software owner, detached on the server

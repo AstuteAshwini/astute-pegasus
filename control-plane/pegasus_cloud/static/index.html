@@ -583,7 +583,7 @@ function renderPat(){var j=S.pat,h="",env=j.environment;
 function stageItems(refs){var out=[];refs.forEach(function(ref){var p=ref.split(":"),host=S.pat.hosts[+p[0]],it=host.items[+p[1]];out.push({host_key:host.host_key,key:it.key,host:host.host})});return out}
 function startStage(body,what){
   var hosts={};S.pat.hosts.forEach(function(h){(h.items||[]).forEach(function(it){if(it.status==="needed"&&it.key&&!it.staged&&(body.all||body.items.some(function(x){return x.host_key===h.host_key&&x.key===it.key})))hosts[h.host]=1})});
-  confirmBox("Download "+what+"?","The connector downloads each update once (from Oracle Support with the client's own account, or Oracle's Java downloads), then copies it to "+S.pat.settings.staging_root+" on "+Object.keys(hosts).join(", ")+" and checks the checksum. Nothing is installed or restarted.",null,function(){
+  confirmBox("Download "+what+"?","The connector downloads each update once (from Oracle Support with the client's own account), then copies it to "+S.pat.settings.staging_root+" on "+Object.keys(hosts).join(", ")+" and checks the checksum. Nothing is installed or restarted.",null,function(){
     api("/api/clients/"+S.cid+"/patching/stage",{method:"POST",body:Object.assign({environment:S.penv},body)}).then(function(j){watch(j.job,"download and stage "+S.penv,function(){loadPatching(false)})}).catch(function(j){alert(j.error||"Couldn't start the download.")})},"Download")}
 function startApply(scope,crId){
   var env=S.penv,e=envOf(env),by={},order=[];

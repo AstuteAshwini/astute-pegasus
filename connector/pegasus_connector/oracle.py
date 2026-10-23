@@ -1,5 +1,5 @@
-"""Oracle sources the connector reads on the client's behalf: My Oracle Support (latest patches and downloads) and
-Oracle's public Java releases service.
+"""Oracle sources the connector reads on the client's behalf: My Oracle Support (latest patches and every download,
+the JDK included) and Oracle's public Java releases service (which JDK release is the latest, no download).
 
 These calls run on the connector, inside the client's network, with the client's own Oracle Support account. The
 account is saved only on the connector (oracle.json next to config.json, readable by its owner only); the control
@@ -12,6 +12,7 @@ import html as htmlmod
 import json
 import os
 import re
+import tarfile
 import time
 import zipfile
 from pathlib import Path
@@ -24,6 +25,9 @@ MOS_BASE = os.environ.get("PEGASUS_MOS_BASE", "https://updates.oracle.com")
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 MON_NUM = {m.upper(): i + 1 for i, m in enumerate(MONTHS)}
 CATALOG_TTL = 12 * 3600
+JDK_PLATFORM = "226P"          # Linux x86-64
+# ARU product ids to narrow the JDK patch search, if the plain description search ever stops finding it
+JAVA_PRODUCTS = [p.strip() for p in os.environ.get("PEGASUS_MOS_JAVA_PRODUCTS", "").split(",") if p.strip()]
 
 # Product searches (Patches & Updates > Product or Family), one per component.
 MOS_PRODUCTS = {
@@ -405,54 +409,117 @@ def download_patch(config_path, cache_dir, patch, platform, file_filter, log, mo
     return cached_files(cache_dir, patch, file_filter), mos
 
 
-def download_jdk(config_path, cache_dir, version, log):
-    """Linux x64 JDK tarball for an exact release, verified against Oracle's published SHA-256."""
+def jdk_patches_path(config_path):
+    return Path(config_path).parent / "jdk_patches.json"
+
+
+def load_jdk_patches(config_path):
+    try:
+        return json.loads(jdk_patches_path(config_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_jdk_patch(config_path, version, patch):
+    data = load_jdk_patches(config_path)
+    data[version] = str(patch)
+    p = jdk_patches_path(config_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def jdk_row_matches(desc, version):
+    """An Oracle Support patch row for exactly this JDK release (21.0.13 doesn't match 21.0.13.0.2, or the reverse)."""
+    if not re.search(r"\bjdk\b|java se|java\(tm\) se|development kit", desc, re.I):
+        return False
+    if re.search(r"\b(jre|server jre|openjdk|graalvm)\b", desc, re.I) and not re.search(r"\bjdk\b", desc, re.I):
+        return False
+    return bool(re.search(r"(?<![\d.])" + re.escape(version) + r"(?!\.?\d)", desc))
+
+
+def find_jdk_patch(mos, version):
+    """The Oracle Support patch number for an Oracle JDK release, by searching patch descriptions."""
+    tried = []
+    for product in JAVA_PRODUCTS or [""]:
+        for desc in (f"%{version}%", version, f"JDK {version}", f"*{version}*"):
+            params = {"plat_lang": JDK_PLATFORM, "description": desc}
+            if product:
+                params["product"] = product
+            try:
+                r = mos.get(mos.BASE + "/Orion/AdvancedSearch/process_form?" + urlencode(params), timeout=180)
+                rows = parse_aru_rows(r.text) if r.status_code == 200 else []
+            except requests.RequestException as e:
+                tried.append(f"{desc}: {e}")
+                continue
+            hits = [row for row in rows if jdk_row_matches(row["desc"], version)]
+            if hits:
+                return max(hits, key=lambda row: (row["updated"], row["patch"]))["patch"]
+            tried.append(f"{desc}: {len(rows)} rows")
+    return None
+
+
+def extract_jdk_tarball(zips, dest_dir, version, log):
+    """Oracle Support ships the JDK as a zip holding the tarball: take the Linux x64 JDK tarball out, check it."""
+    base = version.split("+")[0]
+    for z in zips:
+        if not zipfile.is_zipfile(z):
+            continue
+        with zipfile.ZipFile(z) as zf:
+            names = [n for n in zf.namelist() if n.endswith(".tar.gz") and "jdk" in n.lower().rsplit("/", 1)[-1]]
+            names.sort(key=lambda n: ("linux-x64" not in n and "linux-x86_64" not in n, base not in n, n))
+            if not names:
+                continue
+            member = names[0]
+            name = member.rsplit("/", 1)[-1]
+            if not re.match(r"^[A-Za-z0-9_.+\-]{1,200}$", name):
+                name = f"jdk-{version}_linux-x64_bin.tar.gz"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            part = dest_dir / (name + ".part")
+            log(f"  Taking {name} out of {z.name}\n")
+            with zf.open(member) as src, open(part, "wb") as out:
+                for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                    out.write(chunk)
+            try:
+                with tarfile.open(part, "r:gz") as tf:
+                    ok = any(m.name.rstrip("/").endswith("/bin/java") for m in tf)
+            except (tarfile.TarError, OSError, EOFError):
+                ok = False
+            if not ok:
+                part.unlink()
+                raise RuntimeError(f"{name} from {z.name} isn't a usable JDK tarball (no bin/java in it).")
+            os.replace(part, dest_dir / name)
+            return [dest_dir / name]
+    listing = ", ".join(z.name for z in zips) or "nothing"
+    raise RuntimeError(f"The Oracle Support download ({listing}) has no Linux x64 JDK tarball in it.")
+
+
+def download_jdk(config_path, cache_dir, version, log, mos=None):
+    """Linux x64 JDK tarball for an exact release, from My Oracle Support with the connector's Oracle Support
+    account, like every other patch. The patch number is found by searching once and remembered on the connector;
+    if the search can't find it, it can be given once with: python -m pegasus_connector jdk-patch <version> <patch>."""
     folder = f"jdk-{version}"
+    dest_dir = Path(cache_dir) / folder
     have = cached_files(cache_dir, folder)
     if have:
         log(f"JDK {version}: {have[0].name} already in the connector's cache\n")
         return have
-    log(f"JDK {version}: looking it up on Oracle's Java download service\n")
-    r = requests.get(f"{JAVA_API}/javaReleases/{version}", timeout=30,
-                     params={"osFamily": "linux", "architecture": "x64", "packageType": "tar.gz", "artifactType": "JDK"})
-    info = r.json() if r.ok else {}
-    arts = [a for a in (info.get("artifacts") or []) if a.get("downloadUrl")]
-    dest_dir = Path(cache_dir) / folder
-    if not arts:
-        raise RuntimeError(f"Oracle's Java download service has no Linux x64 tarball for JDK {version}. "
-                           f"Put the tarball in {dest_dir} on the connector and try again.")
-    a = arts[0]
-    token = load_secrets(config_path).get("jms_token", "")
-    if (info.get("licenseDetails") or {}).get("licenseType", "") == "OTN" and not token:
-        raise RuntimeError(f"JDK {version} is under the OTN license, so Oracle's download service needs a Java "
-                           "Management Service token. Create one in the OCI Console (Java Management > Java Download "
-                           "> Tokens), then on the connector run: python -m pegasus_connector oracle-login "
-                           f"--jms-token <token>. Or put the tarball in {dest_dir}.")
-    headers = {"token": token} if token else {}
-    name = a["downloadUrl"].rsplit("/", 1)[-1].split("?")[0] or f"jdk-{version}_linux-x64_bin.tar.gz"
-    if not re.match(r"^[A-Za-z0-9_.+\-]{1,200}$", name):
-        name = f"jdk-{version}_linux-x64_bin.tar.gz"
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    part = dest_dir / (name + ".part")
-    log(f"  Downloading {name}\n")
-    with requests.get(a["downloadUrl"], headers=headers, stream=True, timeout=120) as resp:
-        if resp.status_code != 200:
-            raise RuntimeError(f"Java download returned HTTP {resp.status_code}." +
-                               (" The token may be invalid or expired." if resp.status_code in (401, 403) else ""))
-        total = int(resp.headers.get("Content-Length") or a.get("downloadFileSizeInBytes") or 0)
-        done, mark = 0, 0
-        with open(part, "wb") as f:
-            for chunk in resp.iter_content(1024 * 1024):
-                f.write(chunk)
-                done += len(chunk)
-                if total and done * 100 // total >= mark:
-                    log(f"    {name}: {done * 100 // total}% of {max(total // 1048576, 1)} MB\n")
-                    mark += 20
-    if a.get("checksumUrl"):
-        expected = requests.get(a["checksumUrl"], headers=headers, timeout=30).text.split()[0].strip().lower()
-        if sha256_file(part) != expected:
-            part.unlink()
-            raise RuntimeError(f"{name} failed its SHA-256 check against Oracle's published checksum.")
-        log(f"    {name}: SHA-256 matches Oracle's checksum\n")
-    os.replace(part, dest_dir / name)
-    return [dest_dir / name]
+    mos = mos or mos_client(config_path)
+    if not mos:
+        raise MOSError("No Oracle Support account is set on this connector. On the connector, run: "
+                       f"python -m pegasus_connector oracle-login  (or put the JDK tarball in {dest_dir}).")
+    patch = load_jdk_patches(config_path).get(version)
+    if patch:
+        log(f"JDK {version}: Oracle Support patch {patch}\n")
+    else:
+        log(f"JDK {version}: searching Oracle Support for its patch\n")
+        patch = find_jdk_patch(mos, version)
+        if not patch:
+            raise MOSError(
+                f"Couldn't find Oracle JDK {version} for Linux x86-64 by searching Oracle Support. Look up its patch "
+                f"number once on support.oracle.com (Patches & Updates, search for JDK {version}), then on the "
+                f"connector run: python -m pegasus_connector jdk-patch {version} <patch number>  "
+                f"(or put the JDK tarball in {dest_dir}).")
+        log(f"  Found patch {patch}\n")
+        save_jdk_patch(config_path, version, patch)
+    zips, _ = download_patch(config_path, cache_dir, patch, JDK_PLATFORM, "", log, mos)
+    return extract_jdk_tarball(zips, dest_dir, version, log)

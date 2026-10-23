@@ -4,11 +4,13 @@
          --ssh-user opc --ssh-key /home/opc/.ssh/id_rsa
   python -m pegasus_connector run
   python -m pegasus_connector status
-  python -m pegasus_connector oracle-login --user you@example.com [--jms-token <token>]
+  python -m pegasus_connector oracle-login --user you@example.com
+  python -m pegasus_connector jdk-patch 21.0.13 <patch number>   (only if the JDK search on Oracle Support fails)
 """
 import argparse
 import getpass
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -34,8 +36,10 @@ def main(argv=None):
     o = sub.add_parser("oracle-login", help="save the Oracle Support account this connector downloads patches with")
     o.add_argument("--user", help="Oracle Support (MOS) user name; the password is asked for, or read from "
                                   "PEGASUS_MOS_PASSWORD")
-    o.add_argument("--jms-token", help="Java Management Service download token, for OTN-licensed JDK downloads")
-    o.add_argument("--forget", action="store_true", help="remove the saved Oracle account and token")
+    o.add_argument("--forget", action="store_true", help="remove the saved Oracle account")
+    j = sub.add_parser("jdk-patch", help="tell the connector which Oracle Support patch holds a JDK release")
+    j.add_argument("version", help="the JDK release exactly as Pegasus shows it, e.g. 21.0.13")
+    j.add_argument("patch", help="its patch number on Oracle Support (Linux x86-64)")
     a = p.parse_args(argv)
 
     if a.cmd == "register":
@@ -60,6 +64,13 @@ def main(argv=None):
         return 1
     if a.cmd == "oracle-login":
         return oracle_login(a)
+    if a.cmd == "jdk-patch":
+        if not a.patch.isdigit() or not re.match(r"^\d+(\.\d+){1,5}$", a.version):
+            print("Give the JDK version (e.g. 21.0.13) and a numeric patch number.", file=sys.stderr)
+            return 1
+        oracle.save_jdk_patch(a.config, a.version, a.patch)
+        print(f"JDK {a.version} will be downloaded from Oracle Support patch {a.patch}.")
+        return 0
     if a.cmd == "status":
         cfg = load_config(a.config)
         pol = load_policy(Path(a.config).parent / "policy.json")
@@ -79,8 +90,7 @@ def main(argv=None):
         for vt, d in updater.installed(a.config):
             print(f"  installed update {d.name}{' (in use)' if vt > protocol.version_tuple(__version__) else ''}")
         sec = oracle.load_secrets(a.config)
-        print(f"Oracle Support account: {sec.get('mos_user') or 'not set (run oracle-login)'}"
-              f"{'; Java download token set' if sec.get('jms_token') else ''}")
+        print(f"Oracle Support account: {sec.get('mos_user') or 'not set (run oracle-login)'}")
         return 0
     if a.child:
         return Agent(a.config).run_forever()
@@ -90,7 +100,7 @@ def main(argv=None):
 def oracle_login(a):
     if a.forget:
         oracle.save_secrets(a.config, {})
-        print("Removed the saved Oracle account and token.")
+        print("Removed the saved Oracle account.")
         return 0
     sec = oracle.load_secrets(a.config)
     if a.user:
@@ -105,11 +115,8 @@ def oracle_login(a):
             return 1
         sec.update(mos_user=a.user, mos_password=pw)
         print(f"Signed in to Oracle Support as {a.user}.")
-    if a.jms_token:
-        sec["jms_token"] = a.jms_token.strip()
-        print("Saved the Java download token.")
-    if not a.user and not a.jms_token:
-        print("Give --user and/or --jms-token.", file=sys.stderr)
+    if not a.user:
+        print("Give --user.", file=sys.stderr)
         return 1
     oracle.save_secrets(a.config, sec)
     print(f"Saved to {oracle.secrets_path(a.config)} (readable only by this account). The control plane never "

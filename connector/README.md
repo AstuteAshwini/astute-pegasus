@@ -64,12 +64,12 @@ the code by hand (`git pull`) still works: if it's newer than anything installed
 
 ## Oracle Support account (for patching)
 
-Downloads and the WebLogic/Tuxedo/Database client lookups use the client's own Oracle Support account, saved only on
-this machine (`oracle.json` next to `config.json`, readable only by its owner):
+All downloads (the JDK included) and the WebLogic/Tuxedo/Database client lookups use the client's own Oracle Support
+account, saved only on this machine (`oracle.json` next to `config.json`, readable only by its owner):
 
 ```bash
 python3 -m pegasus_connector oracle-login --user name@client.com          # asks for the password
-python3 -m pegasus_connector oracle-login --jms-token <token>             # only for OTN-licensed JDK downloads
+python3 -m pegasus_connector jdk-patch 21.0.13 <patch number>           # only if the JDK search on Oracle Support fails
 python3 -m pegasus_connector oracle-login --forget
 ```
 

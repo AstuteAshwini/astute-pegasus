@@ -118,7 +118,7 @@ OPERATIONS = {
     "domain.clearcache": "Clear a stopped domain's cache (only inside its own folder)",
     "levels": "Read PeopleTools, JDK, Tuxedo, WebLogic and Database client levels",
     "catalog": "Look up the latest JDK, WebLogic, Tuxedo and Database client patches (Oracle)",
-    "patch.download": "Download patches into the connector's cache (Oracle Support, Oracle Java downloads)",
+    "patch.download": "Download patches into the connector's cache (all from Oracle Support)",
     "patch.stage": "Copy downloaded patches to a server's staging folder",
     "host.idle": "Check no WebLogic or Tuxedo processes are running",
     "patch.apply": "Back up a home and apply a staged patch as its owner",
