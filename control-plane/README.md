@@ -95,6 +95,23 @@ that one domain only; the environment's **Start all** / **Stop all** keep the sa
 automatic checks are read-only, run beside anything else the connector is doing, don't block start/stop or patching,
 and are left out of Recent jobs. They need the client's connector to be online.
 
+## Clear cache
+
+**Clear cache** (per environment on the Overview tab, or per domain) stops the domains in the safe order (web,
+process scheduler, app server), clears each one's cache, and starts them again (app, scheduler, web). The starts
+always run, so domains come back even if a stop or a clear failed; a domain whose stop failed is never cleared.
+On each server the connector, as the domain's owner, removes only what's inside the domain's own folder under
+`PS_CFG_HOME`, and refuses if any of the domain's processes are still running:
+
+| Domain | Cleared |
+|---|---|
+| App server | `appserv/<domain>/CACHE` (or its `Cache Base Directory`, if inside the domain folder), then `psadmin -c cleanipc` |
+| Process scheduler | `appserv/prcs/<domain>/CACHE` (likewise), then `psadmin -p cleanipc` |
+| Web server | `PORTAL.war/<site>/cache*` and each WebLogic server's `tmp` and `cache` folders |
+
+Production needs the environment name typed. It needs connector 0.4.0 or newer; Pegasus says which connector to
+update otherwise. It's also available as a schedule (**Clear cache and restart**).
+
 ## Schedules
 
 A client's **Schedules** tab starts, stops or restarts an environment at set times: weekly on chosen days, or once

@@ -68,11 +68,54 @@ fi
 true
 '''
 
+# Clears one domain's cache. Runs as the domain's owner, only while the domain is down, and only ever deletes inside
+# that domain's own folder under PS_CFG_HOME:
+#   app server / process scheduler: the CACHE folder (or the "Cache Base Directory" set in psappsrv.cfg / psprcs.cfg,
+#     if that is inside the domain folder), then cleanipc
+#   web server: the PIA site caches (PORTAL.war/<site>/cache*) and each WebLogic server's tmp and cache folders
+CLEARCACHE_SCRIPT = r'''
+fail() { echo "CC|error|$1"; exit "${2:-3}"; }
+[ -n "$PS_CFG_HOME" ] || fail "PS_CFG_HOME isn't set for $(id -un)"
+CFG=$(cd "$PS_CFG_HOME" 2>/dev/null && pwd -P) || fail "PS_CFG_HOME ($PS_CFG_HOME) isn't a folder"
+case "$ROLE" in
+  app)  D="$CFG/appserv/$DOM";      CFGFILE=psappsrv.cfg ;;
+  prcs) D="$CFG/appserv/prcs/$DOM"; CFGFILE=psprcs.cfg ;;
+  web)  D="$CFG/webserv/$DOM";      CFGFILE= ;;
+  *)    fail "unknown role $ROLE" ;;
+esac
+[ -d "$D" ] || fail "$D doesn't exist"
+D=$(cd "$D" && pwd -P)
+if pgrep -u "$(id -un)" -f -- "$D/" >/dev/null 2>&1; then
+  pgrep -a -u "$(id -un)" -f -- "$D/" | cut -c1-160 | head -5 | sed 's/^/    /'
+  fail "the $ROLE domain $DOM still has processes running, so its cache wasn't touched" 4
+fi
+rc=0; n_dirs=0
+clear_dir() {
+  [ -d "$1" ] || return 0
+  r=$(cd "$1" && pwd -P)
+  case "$r/" in "$D/"?*) ;; *) echo "CC|skip|$1 is outside the domain folder, left alone"; return 0 ;; esac
+  n=$(find "$r" -mindepth 1 | wc -l); sz=$(du -sh "$r" 2>/dev/null | cut -f1)
+  if find "$r" -mindepth 1 -delete; then echo "CC|cleared|$r|$n|$sz"; n_dirs=$((n_dirs+1))
+  else echo "CC|error|couldn't clear everything in $r"; rc=5; fi
+}
+if [ "$ROLE" = web ]; then
+  for c in "$D"/applications/peoplesoft/PORTAL.war/*/cache*; do clear_dir "$c"; done
+  for s in "$D"/servers/*/; do clear_dir "${s}tmp"; clear_dir "${s}cache"; done
+else
+  cb=$(grep -m1 -i '^[[:space:]]*Cache Base Directory[[:space:]]*=' "$D/$CFGFILE" 2>/dev/null | cut -d= -f2- | tr -d ' \r')
+  case "$cb" in ""|*%*) clear_dir "$D/CACHE" ;; *) clear_dir "$cb" ;; esac
+  if [ "$ROLE" = app ]; then psadmin -c cleanipc -d "$DOM" 2>&1 | tail -3; else psadmin -p cleanipc -d "$DOM" 2>&1 | tail -3; fi
+fi
+[ "$n_dirs" -gt 0 ] || echo "CC|nothing|no cache folders found under $D"
+exit $rc
+'''
+
 OPERATIONS = {
     "ping": "Connect and report host name, user and uptime",
     "domain.status": "psadmin status for one domain",
     "domain.start": "psadmin start/boot for one domain",
     "domain.stop": "psadmin stop/shutdown for one domain",
+    "domain.clearcache": "Clear a stopped domain's cache (only inside its own folder)",
     "levels": "Read PeopleTools, JDK, Tuxedo, WebLogic and Database client levels",
     "catalog": "Look up the latest JDK, WebLogic, Tuxedo and Database client patches (Oracle)",
     "patch.download": "Download patches into the connector's cache (Oracle Support, Oracle Java downloads)",
@@ -177,6 +220,16 @@ def build(op, params, ssh_user):
     t = check_target(params.get("target"))
     if op == "ping":
         return "hostname; id -un; uptime", None
+    if op == "domain.clearcache":
+        if not t["role"] or not t["domain"]:
+            raise OperationError("clearing a cache needs the server's role and domain")
+        script = f"ROLE={shlex.quote(t['role'])}\nDOM={shlex.quote(t['domain'])}\n" + CLEARCACHE_SCRIPT
+        if t["env_script"]:
+            script = f". {shlex.quote(t['env_script'])} >/dev/null 2>&1\n" + script
+        wrapper = "bash -l -s"
+        if t["os_user"] and t["os_user"] != ssh_user:
+            wrapper = f"sudo -n -iu {shlex.quote(t['os_user'])} bash -l -s"
+        return wrapper, script
     if op.startswith("domain."):
         action = op.split(".", 1)[1]
         if not t["role"] or not t["domain"]:

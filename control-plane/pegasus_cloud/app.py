@@ -996,7 +996,30 @@ def plan_steps(servers, action):
         return domain_steps(servers, action), True
     if action == "restart":
         return domain_steps(servers, "stop") + domain_steps(servers, "start"), True
+    if action == "clearcache":
+        # stop (web, scheduler, app), clear each domain's cache, then start again (app, scheduler, web). The starts
+        # always run, so domains come back even if a stop or a clear failed; a clear never runs after a failed stop.
+        clears = [{"op": "domain.clearcache", "target": target_of(s), "label": f"Clear cache of {s['role']} {s['domain']}"}
+                  for role in STOP_ORDER for s in servers if s["role"] == role]
+        return domain_steps(servers, "stop") + clears + domain_steps(servers, "start", always=True), True
     raise ValueError("Unknown action.")
+
+
+# what each action needs from the connector, for actions newer connectors added
+NEEDS_VERSION = {"clearcache": "0.4.0"}
+ACTION_TITLES = {"clearcache": "Clear cache and restart"}
+
+
+def check_connectors_can(cid, action):
+    """JobRefused if a connector of this client is too old for the action (any of them may pick the job up)."""
+    need = NEEDS_VERSION.get(action)
+    if not need:
+        return
+    old = [c for c in db().execute("SELECT name, version FROM connectors WHERE client_id=? AND revoked=0", (cid,))
+           if is_newer(need, c["version"] or "0")]
+    if old:
+        names = ", ".join(f"{c['name']} ({c['version'] or 'unknown'})" for c in old)
+        raise JobRefused(f"This needs connector {need} or newer; update {names} first (Overview, Update).")
 
 
 class JobRefused(Exception):
@@ -1038,11 +1061,14 @@ def run(cid):
         if not servers:
             return jsonify(error="That server or domain isn't in the environment."), 404
     tier = env_tier(servers)
-    if action in ("start", "stop", "restart") and is_prd(tier) and str(body.get("confirm") or "").upper() != env.upper():
+    if action in ("start", "stop", "restart", "clearcache") and is_prd(tier) and \
+            str(body.get("confirm") or "").upper() != env.upper():
         return jsonify(error=f"Type {env} to confirm.", need_confirm=True), 409
     try:
         steps, stop_on_failure = plan_steps(servers, action)
-        title = f"{action} {env}" + (f" / {host}" if host else "") + (f" {role} {domain}" if domain else "")
+        check_connectors_can(cid, action)
+        title = f"{ACTION_TITLES.get(action, action)} {env}" + (f" / {host}" if host else "") + \
+            (f" {role} {domain}" if domain else "")
         jid = queue_job(cid, env, action, title, steps, stop_on_failure)
     except ValueError as e:
         return jsonify(error=str(e)), 400
@@ -1053,7 +1079,7 @@ def run(cid):
 
 
 # ---------------------------------------------------------------- schedules
-SCHEDULE_ACTIONS = ("start", "stop", "restart")
+SCHEDULE_ACTIONS = ("start", "stop", "restart", "clearcache")
 LATE_GRACE = 15 * 60          # a run more than this late (Pegasus was down) is skipped, not started hours late
 DAY_NAMES = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -1134,7 +1160,7 @@ def create_schedule(cid):
     if not servers:
         return jsonify(error="Choose an environment that has servers."), 400
     if action not in SCHEDULE_ACTIONS:
-        return jsonify(error="Choose start, stop or restart."), 400
+        return jsonify(error="Choose start, stop, restart or clear cache."), 400
     at_time = str(b.get("time") or "")
     if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", at_time):
         return jsonify(error="Enter the time as HH:MM (24-hour)."), 400
@@ -1226,8 +1252,10 @@ def run_due_schedules(now=None):
         else:
             try:
                 steps, stop_on_failure = plan_steps(servers, sch["action"])
+                check_connectors_can(sch["client_id"], sch["action"])
                 job = queue_job(sch["client_id"], sch["environment"], sch["action"],
-                                f"{sch['action']} {sch['environment']} (scheduled)", steps, stop_on_failure,
+                                f"{ACTION_TITLES.get(sch['action'], sch['action'])} {sch['environment']} (scheduled)",
+                                steps, stop_on_failure,
                                 meta={"schedule": sch["id"]}, created_by="schedule")
                 status = "queued"
             except JobRefused as e:

@@ -62,6 +62,12 @@ class FakeServers:
                    "PSD|psadm2|app|FSDEV||psadm2|yes|/u01/cfg/appserv/FSDEV\n"
                    "PSD|psadm2|prcs|PRCSDOM||psadm2|yes|/u01/cfg/appserv/prcs/PRCSDOM\n"
                    "PSD|psadm2|app|FSCOPY||psadm2|no|/u01/cfg/appserv/FSCOPY\n")
+        elif "CC|" in stdin:
+            if self.state.get(target["domain"], True):
+                out, code = f"CC|error|the {target['role']} domain {target['domain']} still has processes running\n", 4
+            else:
+                self.cleared = getattr(self, "cleared", []) + [(host, target["role"], target["domain"])]
+                out = f"CC|cleared|/u01/cfg/{target['role']}/{target['domain']}/CACHE|120|35M\n"
         elif "MODE=" in stdin:
             out = self.access(host, command, stdin)
         elif "PSA|started" in stdin:

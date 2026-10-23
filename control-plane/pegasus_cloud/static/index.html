@@ -336,11 +336,11 @@ function renderOverview(){var d=S.detail,h='<div><div class="panel"><h2>Connecto
   if(!d.environments.length) h+='<div class="empty">'+(can("admin")?"Import an inventory to see environments.":"No environments yet.")+'</div>';
   d.environments.forEach(function(e){var cnt=e.servers.length;
     h+='<div class="env"><div class="env-head"><h3>'+esc(e.name)+'</h3><span class="tag'+(isPrd(e.tier)?' prd':'')+'">'+esc(e.tier||'no tier')+'</span><span class="det">'+cnt+' domain'+(cnt===1?'':'s')+'</span><span data-ssum="'+esc(e.name)+'"></span>'+
-      (can("operator")?'<span class="acts"><button class="sm" data-run="status" data-env="'+esc(e.name)+'">Check status</button><button class="sm go" data-run="start" data-env="'+esc(e.name)+'">Start all</button><button class="sm halt" data-run="stop" data-env="'+esc(e.name)+'">Stop all</button><button class="sm" data-run="restart" data-env="'+esc(e.name)+'">Restart</button><button class="sm" data-run="ping" data-env="'+esc(e.name)+'">Test connection</button>'+(can("admin")?'<button class="sm danger" data-rmenv="'+esc(e.name)+'">Remove</button>':'')+'</span>':'')+'</div>'+
+      (can("operator")?'<span class="acts"><button class="sm" data-run="status" data-env="'+esc(e.name)+'">Check status</button><button class="sm go" data-run="start" data-env="'+esc(e.name)+'">Start all</button><button class="sm halt" data-run="stop" data-env="'+esc(e.name)+'">Stop all</button><button class="sm" data-run="restart" data-env="'+esc(e.name)+'">Restart</button><button class="sm" data-run="clearcache" data-env="'+esc(e.name)+'">Clear cache</button><button class="sm" data-run="ping" data-env="'+esc(e.name)+'">Test connection</button>'+(can("admin")?'<button class="sm danger" data-rmenv="'+esc(e.name)+'">Remove</button>':'')+'</span>':'')+'</div>'+
       '<div class="scroll"><table><thead><tr><th>Host</th><th>Role</th><th>Domain</th><th>OS user</th><th>Status</th>'+(can("operator")?'<th></th>':'')+'</tr></thead><tbody>'+
       e.servers.map(function(s){return '<tr><td class="mono">'+esc(s.host)+' <span class="det">'+esc(s.ip)+'</span></td><td>'+esc(s.role)+'</td><td class="mono">'+esc(s.domain)+'</td><td class="mono">'+esc(s.os_user)+'</td><td data-skey="'+esc(e.name+"|"+(s.ip||s.host)+"|"+s.role+"|"+s.domain)+'" data-senv="'+esc(e.name)+'"><span class="st queued">Not checked</span></td>'+
-        (can("operator")?'<td style="white-space:nowrap">'+["start","stop","restart"].map(function(a){var dd=' data-env="'+esc(e.name)+'" data-host="'+esc(s.ip||s.host)+'" data-role="'+esc(s.role)+'" data-dom="'+esc(s.domain)+'"';
-          return '<button type="button" class="link sm'+(a==="stop"?' danger':'')+'" data-one="'+a+'"'+dd+'>'+a.charAt(0).toUpperCase()+a.slice(1)+'</button>'}).join(" ")+'</td>':'')+'</tr>'}).join("")+'</tbody></table></div></div>'});
+        (can("operator")?'<td style="white-space:nowrap">'+["start","stop","restart","clearcache"].map(function(a){var dd=' data-env="'+esc(e.name)+'" data-host="'+esc(s.ip||s.host)+'" data-role="'+esc(s.role)+'" data-dom="'+esc(s.domain)+'"';
+          return '<button type="button" class="link sm'+(a==="stop"?' danger':'')+'" data-one="'+a+'"'+dd+'>'+(a==="clearcache"?"Clear cache":a.charAt(0).toUpperCase()+a.slice(1))+'</button>'}).join(" ")+'</td>':'')+'</tr>'}).join("")+'</tbody></table></div></div>'});
   h+='</div><div class="panel"><h2>Recent jobs</h2>';
   if(!d.jobs.length) h+='<div class="empty">No jobs yet.</div>';
   else h+='<div class="scroll"><table><thead><tr><th>When</th><th>What</th><th>By</th><th>Result</th></tr></thead><tbody>'+d.jobs.map(function(j){
@@ -402,6 +402,7 @@ $("main").addEventListener("click",function(e){var t=e.target;
   var one=t.closest("[data-one]");if(one){var a=one.dataset.one,en=one.dataset.env,e1=envOf(en),label=one.dataset.role+" "+one.dataset.dom;
     var go1=function(typed){api("/api/clients/"+S.cid+"/run",{method:"POST",body:{environment:en,action:a,host:one.dataset.host,role:one.dataset.role,domain:one.dataset.dom,confirm:typed}})
       .then(function(j){watch(j.job,a+" "+label+" ("+en+")");refresh()}).catch(function(j){alert(j.error||"Couldn't start.")})};
+    if(a==="clearcache") return confirmBox("Clear the cache of "+label+" in "+en+"?","Only this domain on "+one.dataset.host+" is "+CC_TEXT+" The rest of "+en+" isn't touched.",isPrd(e1.tier)?en:null,go1,"Clear cache");
     return confirmBox(a.charAt(0).toUpperCase()+a.slice(1)+" "+label+" in "+en+"?","Only this domain on "+one.dataset.host+" is "+(a==="restart"?"stopped and started again":a==="stop"?"stopped":"started")+". The rest of "+en+" isn't touched.",isPrd(e1.tier)?en:null,go1)}
   if(t.id==="stNow"){t.disabled=true;return loadStates(true).then(function(){t.disabled=false})}
   if(t.id==="dGo"){var v=$("dTargets").value.trim();if(!v){$("dOut").innerHTML='<div class="msg">Enter at least one IP address.</div>';return}
@@ -440,8 +441,11 @@ $("confCancel").addEventListener("click",function(){$("confDlg").close()});
 $("confForm").addEventListener("submit",function(e){e.preventDefault();var c=confCb;$("confDlg").close();c.cb(c.must?$("confInput").value.trim():null)});
 
 function envOf(name){return (S.detail.environments||[]).filter(function(x){return x.name===name})[0]||{servers:[]}}
+var CC_TEXT="stopped, its cache is cleared (app server and process scheduler CACHE folder and IPC; the web server's PIA site cache and WebLogic tmp and cache folders), and it's started again, even if a clear fails. Nothing outside the domain's own folder is touched, and a domain that is still running is left alone. Users signed in to it are signed out.";
 function runAction(env,action){
-  var e=envOf(env), changes=/start|stop|restart/.test(action);
+  var e=envOf(env), changes=/start|stop|restart|clearcache/.test(action);
+  if(action==="clearcache") return confirmBox("Clear cache and restart "+env+"?","Every domain in "+env+" ("+e.servers.length+") is "+CC_TEXT,isPrd(e.tier)?env:null,function(typed){
+    api("/api/clients/"+S.cid+"/run",{method:"POST",body:{environment:env,action:action,confirm:typed}}).then(function(j){watch(j.job,"Clear cache and restart "+env);refresh()}).catch(function(j){alert(j.error||"Couldn't start.")})},"Clear cache");
   var go=function(typed){api("/api/clients/"+S.cid+"/run",{method:"POST",body:{environment:env,action:action,confirm:typed}})
     .then(function(j){watch(j.job,action+" "+env);refresh()}).catch(function(j){alert(j.error||"Couldn't start.")})};
   if(!changes) return go(null);
@@ -667,7 +671,7 @@ $("main").addEventListener("click",function(e){if(S.tab!=="settings")return;var 
   if(t.id==="tSave") return api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:{targets:readTargets()}}).then(function(j){S.targets=j.targets;renderTargets();msg("tMsg","Saved.","ok")}).catch(function(j){msg("tMsg",j.error)})});
 
 /* ---------- schedules ---------- */
-var DAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],ACT={start:"Start all",stop:"Stop all",restart:"Restart all"};
+var DAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],ACT={start:"Start all",stop:"Stop all",restart:"Restart all",clearcache:"Clear cache and restart"};
 function myTz(){try{return Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC"}catch(e){return "UTC"}}
 function tzList(){var l=[];try{l=Intl.supportedValuesOf("timeZone")}catch(e){}
   ["America/Los_Angeles","America/Denver","America/Chicago","America/New_York","UTC","Asia/Kolkata"].forEach(function(z){if(l.indexOf(z)<0)l.push(z)});return l.sort()}
@@ -679,7 +683,7 @@ function renderSchedules(){var d=S.detail,op=can("operator");
   if(op&&d.environments.length){
     h+='<div class="panel"><h2>Add a schedule</h2><div class="grid3">'+
       '<label>Environment<select id="scEnv">'+d.environments.map(function(e){return '<option value="'+esc(e.name)+'">'+esc(e.name)+(isPrd(e.tier)?' (production)':'')+'</option>'}).join("")+'</select></label>'+
-      '<label>What<select id="scAct"><option value="hours">Office hours: start, then stop</option><option value="stop">Stop all</option><option value="start">Start all</option><option value="restart">Restart all</option></select></label>'+
+      '<label>What<select id="scAct"><option value="hours">Office hours: start, then stop</option><option value="stop">Stop all</option><option value="start">Start all</option><option value="restart">Restart all</option><option value="clearcache">Clear cache and restart</option></select></label>'+
       '<label>Repeat<select id="scRep"><option value="weekly">Weekly</option><option value="once">Once</option></select></label>'+
       '<label id="scT1L"><span id="scT1N">Start at</span><input id="scT1" type="time" value="07:00"></label>'+
       '<label id="scT2L">Stop at<input id="scT2" type="time" value="19:00"></label>'+
