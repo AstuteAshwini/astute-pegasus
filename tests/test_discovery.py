@@ -45,8 +45,22 @@ def test_add_found_domains_keeps_other_environments(env):
     assert {"HRDEV", "HRPRD", "FSDEV"} <= set(envs) and len(envs["FSDEV"]["servers"]) == 3
     bad = dict(rows[0], domain="X; rm -rf /")
     assert env["admin"].post(base + "/inventory/add", json={"environment": "FSDEV", "rows": [bad]}).status_code == 400
-    assert env["admin"].delete(base + "/environments/FSDEV").ok
+    r = env["admin"].delete(base + "/environments/FSDEV")
+    assert r.status_code == 409 and r.json()["need_confirm"]                 # the name must be typed
+    r = env["admin"].delete(base + "/environments/FSDEV", json={"confirm": "FSDEV"})
+    assert r.ok
     assert "FSDEV" not in {e["name"] for e in env["admin"].get(base).json()["environments"]}
+    # kept aside for 30 days: it can be put back exactly as it was
+    removed = env["admin"].get(base + "/removed-environments").json()["removed"]
+    assert removed[0]["environment"] == "FSDEV" and removed[0]["servers"] == 3
+    assert env["admin"].post(env["url"] + f"/api/removed-environments/{removed[0]['id']}/restore", json={}).ok
+    assert len({e["name"]: e for e in env["admin"].get(base).json()["environments"]}["FSDEV"]["servers"]) == 3
+    assert env["admin"].post(env["url"] + f"/api/removed-environments/{removed[0]['id']}/restore",
+                             json={}).status_code == 404                 # only once
+    assert env["admin"].delete(base + "/environments/FSDEV", json={"confirm": "FSDEV"}).ok
+    with cp.app.app_context():
+        cp.purge_removed(now=__import__("time").time() + 31 * 86400)
+    assert env["admin"].get(base + "/removed-environments").json()["removed"] == []
 
 
 def test_scan_input_is_checked(env):

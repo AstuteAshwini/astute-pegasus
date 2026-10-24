@@ -147,6 +147,8 @@ CREATE TABLE IF NOT EXISTS access_requests (id TEXT PRIMARY KEY, client_id TEXT 
   requested_by_id TEXT, requested_at REAL NOT NULL, status TEXT NOT NULL, decided_by TEXT, decided_by_id TEXT,
   decided_at REAL, decision_note TEXT, job_id TEXT);
 CREATE INDEX IF NOT EXISTS access_requests_client ON access_requests (client_id, requested_at);
+CREATE TABLE IF NOT EXISTS removed_environments (id TEXT PRIMARY KEY, client_id TEXT NOT NULL, environment TEXT NOT NULL,
+  servers TEXT NOT NULL, schedules TEXT NOT NULL, removed_by TEXT, removed_at REAL NOT NULL, restored_at REAL);
 """
 MIGRATIONS = {"jobs": [("kind", "TEXT"), ("meta", "TEXT"), ("finalized", "INTEGER NOT NULL DEFAULT 0")],
               "connectors": [("public_key", "TEXT"), ("cert_serial", "TEXT"), ("cert_not_after", "REAL"),
@@ -972,14 +974,73 @@ def add_inventory(cid):
 @app.delete("/api/clients/<cid>/environments/<env>")
 @need("admin")
 def delete_environment(cid, env):
+    """Admins only, with the environment's name typed to confirm. Nothing is lost for 30 days: the servers and
+    schedules are kept aside and can be restored."""
     get_client(cid)
-    r = db().execute("DELETE FROM servers WHERE client_id=? AND environment=?", (cid, env))
-    if not r.rowcount:
+    body = request.get_json(silent=True) or {}
+    if str(body.get("confirm") or request.args.get("confirm") or "") != env:
+        return jsonify(error=f"Type {env} to confirm.", need_confirm=True, expected=env), 409
+    servers = [dict(r) for r in db().execute("SELECT * FROM servers WHERE client_id=? AND environment=?", (cid, env))]
+    if not servers:
         return jsonify(error="No such environment."), 404
+    scheds = [dict(r) for r in db().execute("SELECT * FROM schedules WHERE client_id=? AND environment=?", (cid, env))]
+    rid = "re_" + uuid.uuid4().hex[:12]
+    db().execute("INSERT INTO removed_environments (id, client_id, environment, servers, schedules, removed_by, "
+                 "removed_at) VALUES (?,?,?,?,?,?,?)",
+                 (rid, cid, env, json.dumps(servers), json.dumps(scheds), who(), time.time()))
+    db().execute("DELETE FROM servers WHERE client_id=? AND environment=?", (cid, env))
     db().execute("DELETE FROM domain_states WHERE client_id=? AND environment=?", (cid, env))
-    n = db().execute("DELETE FROM schedules WHERE client_id=? AND environment=?", (cid, env)).rowcount
-    audit("environment_removed", cid, environment=env, servers=r.rowcount, schedules_removed=n or "")
-    return jsonify(ok=True)
+    db().execute("DELETE FROM schedules WHERE client_id=? AND environment=?", (cid, env))
+    audit("environment_removed", cid, environment=env, servers=len(servers), schedules_removed=len(scheds) or "",
+          restorable_until=iso(time.time() + REMOVED_KEEP_DAYS * 86400))
+    return jsonify(ok=True, restore_id=rid)
+
+
+REMOVED_KEEP_DAYS = 30
+
+
+@app.get("/api/clients/<cid>/removed-environments")
+@need("viewer")
+def removed_environments(cid):
+    get_client(cid)
+    rows = db().execute("SELECT * FROM removed_environments WHERE client_id=? AND restored_at IS NULL AND removed_at>? "
+                        "ORDER BY removed_at DESC", (cid, time.time() - REMOVED_KEEP_DAYS * 86400)).fetchall()
+    return jsonify(removed=[{"id": r["id"], "environment": r["environment"], "servers": len(jload(r["servers"], [])),
+                             "schedules": len(jload(r["schedules"], [])), "removed_by": r["removed_by"],
+                             "removed_at": iso(r["removed_at"]),
+                             "until": iso(r["removed_at"] + REMOVED_KEEP_DAYS * 86400)} for r in rows])
+
+
+@app.post("/api/removed-environments/<rid>/restore")
+@need("admin")
+def restore_environment(rid):
+    r = db().execute("SELECT * FROM removed_environments WHERE id=? AND restored_at IS NULL", (rid,)).fetchone()
+    if not r:
+        abort(404)
+    cid, env = r["client_id"], r["environment"]
+    get_client(cid)
+    if env_servers(cid, env):
+        return jsonify(error=f"There's an environment called {env} again. Remove or rename it first."), 409
+    c = db()
+    c.execute("BEGIN")
+    for s in jload(r["servers"], []):
+        c.execute("INSERT INTO servers (client_id, environment, tier, host, ip, role, os_user, domain, env_script, "
+                  "ssh_port) VALUES (?,?,?,?,?,?,?,?,?,?)", (cid, *[s.get(k) for k in SERVER_COLS]))
+    paused = 0
+    for sc in jload(r["schedules"], []):
+        cols = [k for k in sc if k != "enabled"]
+        c.execute(f"INSERT OR IGNORE INTO schedules ({', '.join(cols)}, enabled) VALUES "
+                  f"({', '.join('?' * len(cols))}, 0)", [sc[k] for k in cols])
+        paused += 1
+    c.execute("UPDATE removed_environments SET restored_at=? WHERE id=?", (time.time(), rid))
+    c.execute("COMMIT")
+    audit("environment_restored", cid, environment=env, schedules_paused=paused or "")
+    return jsonify(ok=True, environment=env, schedules_paused=paused)
+
+
+def purge_removed(now=None):
+    db().execute("DELETE FROM removed_environments WHERE removed_at<?",
+                 ((now or time.time()) - REMOVED_KEEP_DAYS * 86400,))
 
 
 def parse_target(text):
@@ -1403,6 +1464,7 @@ def schedule_loop():
                 run_due_schedules()
                 expire_access()
                 run_patch_watch()
+                purge_removed()
         except Exception as e:                       # keep going even if one round fails
             app.logger.warning("scheduled start/stop failed: %s", e)
 

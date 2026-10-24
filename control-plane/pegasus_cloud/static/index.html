@@ -404,9 +404,15 @@ function renderOverview(){var d=S.detail,h='';
     '<div class="toolbar"><button type="button" class="primary" id="dGo">Scan servers</button></div><div id="dOut"></div>'+
     '<details style="margin-top:14px"><summary class="det">Or import a CSV (replaces this client\'s whole inventory)</summary><p class="help">One row per server and domain. Columns: environment, tier, host, ip, role (app, prcs or web), os_user, domain, env_script.</p>'+
     '<textarea id="invCsv" spellcheck="false" placeholder="environment,tier,host,ip,role,os_user,domain,env_script"></textarea><div id="invMsg"></div><div class="toolbar" style="margin-top:10px"><button type="button" id="invSave">Import CSV</button></div></details></div>';
+  h+='<div id="removedEnvs"></div>';
   $("tabBody").innerHTML=h+(can("admin")?'</div>':'');
   if($("dOut")) renderDisc();
-  if(S.states) paintStates(); loadStates()}
+  if(S.states) paintStates(); loadStates();loadRemoved()}
+function loadRemoved(){api("/api/clients/"+S.cid+"/removed-environments").then(function(j){var el=$("removedEnvs");if(!el)return;
+  if(!j.removed.length){el.innerHTML="";return}
+  el.innerHTML='<div class="panel"><h2>Recently removed</h2><p class="help">Removed environments are kept for 30 days. Restoring brings back their servers and domains; their schedules come back paused.</p><div class="scroll"><table><tbody>'+
+    j.removed.map(function(r){return '<tr><td><b>'+esc(r.environment)+'</b><br><span class="det">'+r.servers+' domain'+(r.servers===1?'':'s')+(r.schedules?', '+r.schedules+' schedule'+(r.schedules===1?'':'s'):'')+'</span></td><td class="det">Removed by '+esc(r.removed_by)+' '+esc(ago(r.removed_at))+'<br>Restorable until '+esc(new Date(r.until).toLocaleDateString())+'</td><td>'+
+      (can("admin")?'<button type="button" class="sm" data-restore="'+esc(r.id)+'">Restore</button>':'')+'</td></tr>'}).join("")+'</tbody></table></div></div>'})}
 
 /* ---------- live domain status ---------- */
 var ST_TEXT={running:"Running",stopped:"Stopped",unknown:"Unknown",unreachable:"Unreachable"};
@@ -476,8 +482,9 @@ $("main").addEventListener("click",function(e){var t=e.target;
       S.disc={};S.penv=S.penv||env;openClient(S.cid);loadClientsQuiet();
       setTimeout(function(){alert("Added "+j.added+" domain"+(j.added===1?"":"s")+" to "+env+(j.updated?" ("+j.updated+" already there, updated)":"")+".")},50)})
     .catch(function(j){msg("dMsg",j.error||"Couldn't add them.")})}
-  var rm=t.closest("[data-rmenv]");if(rm) return confirmBox("Remove "+rm.dataset.rmenv+" from the inventory?","Pegasus forgets its servers and domains. Nothing on the servers changes, and you can scan and add it again.",rm.dataset.rmenv,function(){
-    api("/api/clients/"+S.cid+"/environments/"+encodeURIComponent(rm.dataset.rmenv),{method:"DELETE"}).then(function(){if(S.penv===rm.dataset.rmenv)S.penv=null;openClient(S.cid);loadClientsQuiet()}).catch(function(j){alert(j.error)})},"Remove")
+  var rs=t.closest("[data-restore]");if(rs) return api("/api/removed-environments/"+rs.dataset.restore+"/restore",{method:"POST",body:{}}).then(function(j){openClient(S.cid);loadClientsQuiet();if(j.schedules_paused)setTimeout(function(){alert("Restored "+j.environment+". Its "+j.schedules_paused+" schedule"+(j.schedules_paused===1?" is":"s are")+" paused: turn them back on under Schedules.")},50)}).catch(function(j){alert(j.error)});
+  var rm=t.closest("[data-rmenv]");if(rm) return confirmBox("Remove "+rm.dataset.rmenv+" from the inventory?","Pegasus stops managing its servers and domains, and its schedules stop. Nothing on the servers changes. You can restore it for 30 days.",rm.dataset.rmenv,function(){
+    api("/api/clients/"+S.cid+"/environments/"+encodeURIComponent(rm.dataset.rmenv),{method:"DELETE",body:{confirm:rm.dataset.rmenv}}).then(function(){if(S.penv===rm.dataset.rmenv)S.penv=null;openClient(S.cid);loadClientsQuiet()}).catch(function(j){alert(j.error)})},"Remove")
 });
 
 $("main").addEventListener("click",function(e){var t=e.target;
@@ -846,7 +853,7 @@ var EVT={signed_in:"Signed in",sign_in_failed:"Sign-in failed",mfa_failed:"Wrong
   signed_in_with_google:"Signed in with Google",google_sign_in_refused:"Google sign-in refused",ssh_access_requested:"Asked for an SSH access change",
   ssh_access_approved:"Approved an SSH access change",ssh_access_rejected:"Rejected an SSH access change",ssh_access_withdrawn:"Withdrew an SSH access request",
   ssh_access_expired:"SSH access ended (removed automatically)",ssh_approval_changed:"Changed SSH approval",
-  patch_watch_ran:"Automatic patch check",patch_watch_changed:"Changed automatic patch checks",inventory_added:"Added domains"};
+  patch_watch_ran:"Automatic patch check",environment_restored:"Restored an environment",patch_cadence_changed:"Changed the patch plan",patch_watch_changed:"Changed automatic patch checks",inventory_added:"Added domains"};
 function auditTable(events){if(!events.length)return '<div class="empty">Nothing yet.</div>';
   return '<div class="scroll"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead><tbody>'+events.map(function(e){
     var d=e.detail||{},parts=Object.keys(d).filter(function(k){return d[k]!==null&&d[k]!==""&&typeof d[k]!=="object"}).map(function(k){return k.replace(/_/g," ")+": "+d[k]});
