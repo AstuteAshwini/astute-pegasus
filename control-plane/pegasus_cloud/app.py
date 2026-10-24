@@ -62,6 +62,8 @@ TRUST_PROXY = os.environ.get("PEGASUS_TRUST_PROXY", "false").lower() == "true"
 THREADS = int(os.environ.get("PEGASUS_THREADS", "48"))      # connectors hold one each for their 25-second long-poll
 # Pegasus checks every domain's status by itself this often (seconds); 0 turns automatic checks off.
 STATUS_EVERY = int(os.environ.get("PEGASUS_STATUS_EVERY", "600"))
+# Patch watch: how often Pegasus re-reads every environment's patch levels and Oracle's latest releases by itself.
+PATCH_WATCH_HOURS = float(os.environ.get("PEGASUS_PATCH_WATCH_HOURS", "24"))
 # Sign in with Google (OpenID Connect). Only people who already have a Pegasus account (same email) get in; Pegasus
 # keeps deciding what each of them can see and do. GOOGLE_DOMAIN limits it to one Google Workspace (e.g. beastute.com).
 GOOGLE_CLIENT_ID = os.environ.get("PEGASUS_GOOGLE_CLIENT_ID", "")
@@ -923,7 +925,8 @@ def put_inventory(cid):
                   [(cid, *[s[k] for k in SERVER_COLS]) for s in rows])
     c.execute("COMMIT")
     audit("inventory_imported", cid, servers=len(rows))
-    return jsonify(ok=True, servers=len(rows))
+    jobs = queue_levels(cid, sorted({r["environment"] for r in rows}), who())
+    return jsonify(ok=True, servers=len(rows), levels_jobs=jobs)
 
 
 @app.post("/api/clients/<cid>/inventory/add")
@@ -962,7 +965,8 @@ def add_inventory(cid):
         c.execute("UPDATE servers SET tier=? WHERE client_id=? AND environment=?", (tier, cid, env))
     c.execute("COMMIT")
     audit("inventory_added", cid, environment=env, added=added, updated=len(rows) - added)
-    return jsonify(ok=True, added=added, updated=len(rows) - added)
+    jobs = queue_levels(cid, [env], who())             # patch levels straight away, then Oracle's latest
+    return jsonify(ok=True, added=added, updated=len(rows) - added, levels_jobs=jobs)
 
 
 @app.delete("/api/clients/<cid>/environments/<env>")
@@ -1398,6 +1402,7 @@ def schedule_loop():
             with app.app_context():
                 run_due_schedules()
                 expire_access()
+                run_patch_watch()
         except Exception as e:                       # keep going even if one round fails
             app.logger.warning("scheduled start/stop failed: %s", e)
 
@@ -1880,6 +1885,17 @@ def patching_stage(cid):
     chosen = select_items(p["hosts"], body)
     if not chosen:
         return jsonify(error="Select at least one outstanding update to download."), 400
+    try:
+        jid, keys, hosts = queue_stage(cid, env, servers, chosen)
+    except JobRefused as e:
+        return jsonify(error=str(e)), e.status
+    audit("job_queued", cid, job=jid, title=f"download and stage {env}", keys=keys)
+    return jsonify(job=jid, hosts=hosts, updates=len(keys))
+
+
+def queue_stage(cid, env, servers, chosen, created_by=None):
+    """Queue one job that downloads the chosen updates on the connector and stages them on each server.
+    Returns (job id, update keys, number of hosts). Raises JobRefused."""
     keys, per_host = [], {}
     for h, it in chosen:
         need_keys = [(it["key"], ev.stage_label(it))]
@@ -1897,12 +1913,104 @@ def patching_stage(cid):
     for hk, items in per_host.items():
         steps.append({"op": "patch.stage", "target": target_of(by_key[hk]), "stage_root": root, "items": items,
                       "label": f"Stage {len(items)} file set(s) in {root}", "independent": True})
-    try:
-        jid = queue_job(cid, env, "stage", f"download and stage CPU patches {env}", steps, stop_on_failure=True)
-    except JobRefused as e:
-        return jsonify(error=str(e)), e.status
-    audit("job_queued", cid, job=jid, title=f"download and stage {env}", keys=keys)
-    return jsonify(job=jid, hosts=len(per_host), updates=len(keys))
+    jid = queue_job(cid, env, "stage", f"download and stage CPU patches {env}", steps, stop_on_failure=True,
+                    created_by=created_by)
+    return jid, keys, len(per_host)
+
+
+# ---------------------------------------------------------------- patch watch (automatic checks and staging)
+WATCH_DEFAULT = {"check": True, "stage": "nonprod"}      # stage: off | nonprod | all
+
+
+def watch_settings(cid):
+    w = dict(WATCH_DEFAULT)
+    w.update(get_setting(cid, "patch_watch", {}) or {})
+    return w
+
+
+def queue_levels(cid, envs, created_by):
+    """Read patch levels on every server of these environments (read-only); a lookup of Oracle's latest follows."""
+    jobs = []
+    for env in envs:
+        servers = env_servers(cid, env)
+        if not servers:
+            continue
+        steps, _ = plan_steps(servers, "levels")
+        try:
+            jobs.append(queue_job(cid, env, "levels", f"check patch levels {env}", steps, created_by=created_by))
+        except JobRefused:
+            pass
+    return jobs
+
+
+def client_envs(cid):
+    return [r["environment"] for r in db().execute(
+        "SELECT DISTINCT environment FROM servers WHERE client_id=? ORDER BY environment", (cid,))]
+
+
+def run_patch_watch(now=None):
+    """Per client, every PATCH_WATCH_HOURS: re-read patch levels and Oracle's latest releases, then (if the client's
+    admins allow it) download and stage the outstanding updates, so they're ready to read about and apply. Staging
+    only copies files into the staging folder; nothing is installed or restarted."""
+    now = now or time.time()
+    for c in db().execute("SELECT id FROM clients").fetchall():
+        cid = c["id"]
+        w, st = watch_settings(cid), get_setting(cid, "patch_watch_state", {}) or {}
+        if not w["check"]:
+            continue
+        if st.get("phase") == "checking":
+            busy = db().execute("SELECT 1 FROM jobs WHERE client_id=? AND kind IN ('levels','catalog') AND status IN "
+                                "('queued','signed','running')", (cid,)).fetchone()
+            if busy and now - st.get("started", now) < 2 * 3600:
+                continue
+            outstanding, staged_jobs = {}, []
+            for env in client_envs(cid):
+                servers = env_servers(cid, env)
+                p = posture(cid, env)
+                need = [(h, it) for h, it in select_items(p["hosts"], {"all": True})]
+                if need:
+                    outstanding[env] = len(need)
+                todo = [(h, it) for h, it in need if not it.get("staged")]
+                allowed = w["stage"] == "all" or (w["stage"] == "nonprod" and not is_prd(env_tier(servers)))
+                if todo and allowed and not db().execute(
+                        "SELECT 1 FROM jobs WHERE client_id=? AND environment=? AND kind='stage' AND status IN "
+                        "('queued','signed','running')", (cid, env)).fetchone():
+                    try:
+                        staged_jobs.append(queue_stage(cid, env, servers, todo, created_by="pegasus (patch watch)")[0])
+                    except JobRefused:
+                        pass
+            put_setting(cid, "patch_watch_state", {"phase": "idle", "last": st.get("started", now),
+                                                   "outstanding": outstanding, "staging_jobs": staged_jobs})
+            audit("patch_watch_ran", cid, actor="pegasus", outstanding=outstanding, staging_jobs=len(staged_jobs))
+        elif now - st.get("last", 0) >= PATCH_WATCH_HOURS * 3600 and connector_online(cid):
+            if queue_levels(cid, client_envs(cid), "pegasus (patch watch)"):
+                put_setting(cid, "patch_watch_state", dict(st, phase="checking", started=now))
+
+
+@app.get("/api/clients/<cid>/patch-watch")
+@need("viewer")
+def get_patch_watch(cid):
+    get_client(cid)
+    st = get_setting(cid, "patch_watch_state", {}) or {}
+    return jsonify(settings=watch_settings(cid), phase=st.get("phase", "idle"), last=iso(st.get("last")),
+                   outstanding=st.get("outstanding") or {}, every_hours=PATCH_WATCH_HOURS)
+
+
+@app.put("/api/clients/<cid>/patch-watch")
+@need("admin")
+def put_patch_watch(cid):
+    get_client(cid)
+    body = request.get_json(silent=True) or {}
+    w = watch_settings(cid)
+    if "check" in body:
+        w["check"] = bool(body["check"])
+    if "stage" in body:
+        if body["stage"] not in ("off", "nonprod", "all"):
+            return jsonify(error="Choose off, nonprod or all."), 400
+        w["stage"] = body["stage"]
+    put_setting(cid, "patch_watch", w)
+    audit("patch_watch_changed", cid, **w)
+    return jsonify(settings=w)
 
 
 # ---------------------------------------------------------------- OCI Console link

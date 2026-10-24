@@ -1,5 +1,6 @@
 """Add servers by IP: the connector scans them for PeopleSoft domains, unknown host keys are trusted first."""
 from conftest import drain, wait_job
+from pegasus_cloud import app as cp
 
 
 def scan(env, targets, users=""):
@@ -36,8 +37,10 @@ def test_add_found_domains_keeps_other_environments(env):
     base = env["url"] + f"/api/clients/{env['cid']}"
     r = env["admin"].post(base + "/inventory/add", json={"environment": "FSDEV", "tier": "DEV", "rows": rows})
     assert r.ok and r.json()["added"] == 3, r.text
+    assert len(r.json()["levels_jobs"]) == 1                     # patch levels are read as soon as it's added
     r = env["admin"].post(base + "/inventory/add", json={"environment": "FSDEV", "tier": "DEV", "rows": rows})
-    assert r.json() == {"ok": True, "added": 0, "updated": 3}                          # no duplicates
+    assert {k: v for k, v in r.json().items() if k != "levels_jobs"} == {"ok": True, "added": 0, "updated": 3}
+    cp.connect().execute("UPDATE jobs SET status='expired' WHERE environment='FSDEV' AND status='queued'")
     envs = {e["name"]: e for e in env["admin"].get(base).json()["environments"]}
     assert {"HRDEV", "HRPRD", "FSDEV"} <= set(envs) and len(envs["FSDEV"]["servers"]) == 3
     bad = dict(rows[0], domain="X; rm -rf /")

@@ -318,3 +318,40 @@ def test_patch_settings_round_trip(env):
 
 def test_protocol_version_unchanged():
     assert protocol.PROTOCOL_VERSION == 1
+
+
+def test_patch_watch_checks_and_stages_nonprod_only(env):
+    """Every day Pegasus re-reads levels and Oracle's latest by itself, then stages what's outstanding where allowed
+    (non-production by default). Nothing is installed."""
+    cid = env["cid"]
+    view = env["admin"].get(url(env, "/api/clients/{cid}/patch-watch")).json()
+    assert view["settings"] == {"check": True, "stage": "nonprod"}
+    c = cp.connect()
+    c.execute("DELETE FROM staged WHERE client_id=?", (cid,))
+    c.execute("DELETE FROM settings WHERE client_id=? AND key='patch_watch_state'", (cid,))
+    with cp.app.app_context():
+        cp.run_patch_watch()
+    st = env["admin"].get(url(env, "/api/clients/{cid}/patch-watch")).json()
+    assert st["phase"] == "checking"
+    queued = [r["environment"] for r in c.execute("SELECT environment FROM jobs WHERE client_id=? AND kind='levels' "
+                                                  "AND status='queued' AND created_by='pegasus (patch watch)'", (cid,))]
+    assert sorted(queued) == ["HRDEV", "HRPRD"]
+    drain(env)                                     # levels, then the catalog lookup that follows
+    with cp.app.app_context():
+        cp.run_patch_watch()
+    st = env["admin"].get(url(env, "/api/clients/{cid}/patch-watch")).json()
+    assert st["phase"] == "idle" and st["outstanding"].get("HRDEV")
+    stage = c.execute("SELECT environment, created_by FROM jobs WHERE client_id=? AND kind='stage' AND status='queued'",
+                      (cid,)).fetchall()
+    assert [(r["environment"], r["created_by"]) for r in stage] == [("HRDEV", "pegasus (patch watch)")]
+    drain(env)
+    assert all(i["staged"] for h in patching(env)["hosts"] for i in h["items"] if i["status"] == "needed")
+    # not due again until the interval passes; admins can turn staging off
+    with cp.app.app_context():
+        cp.run_patch_watch()
+    assert env["admin"].get(url(env, "/api/clients/{cid}/patch-watch")).json()["phase"] == "idle"
+    r = env["admin"].put(url(env, "/api/clients/{cid}/patch-watch"), json={"stage": "off"})
+    assert r.ok and r.json()["settings"]["stage"] == "off"
+    assert env["admin"].put(url(env, "/api/clients/{cid}/patch-watch"), json={"stage": "sometimes"}).status_code == 400
+    env["admin"].put(url(env, "/api/clients/{cid}/patch-watch"), json={"stage": "nonprod"})
+
