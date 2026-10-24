@@ -56,7 +56,7 @@ main{margin-left:var(--side);padding:28px 28px 340px;max-width:1280px}
 .panel h2{font-size:17px;margin:0 0 6px}.help{color:var(--muted);font-size:13.5px;margin:0 0 12px;max-width:90ch}
 .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .msg{font-size:13.5px;padding:10px 13px;border-radius:var(--r);margin:10px 0;background:var(--stop-bg);color:var(--stop)}.msg.ok{background:var(--run-bg);color:var(--run)}.msg.info{background:var(--soft);color:var(--ink)}
-.tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--accent)}.tag.prd{background:var(--spark-bg);color:var(--spark-ink);box-shadow:inset 0 0 0 1px var(--spark)}
+.tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--accent)}.tag.prd{background:var(--spark-bg);color:var(--spark-ink);box-shadow:inset 0 0 0 1px var(--spark)}.tag.warn{background:var(--warn-bg);color:var(--warn)}
 .st{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;white-space:nowrap}
 .st::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
 .st.up,.st.succeeded,.st.running,.st.ok,.st.approved,.st.applied{background:var(--run-bg);color:var(--run)}
@@ -649,15 +649,28 @@ function renderAccess(){var d=S.detail,h='<div>';
     h+='<div class="panel"><h2>Give someone SSH access</h2><p class="help">Adds a person\'s public key to an account\'s authorized_keys on every server of the environments you pick. Keys are checked twice: here and again on the connector. Pegasus never handles private keys.</p>'+
       '<label>Their public key (the .pub file)<textarea id="aKey" spellcheck="false" style="min-height:90px" placeholder="ssh-ed25519 AAAA... jane@laptop"></textarea></label><div id="aKeyInfo"></div>'+
       '<label>Account on the servers<input id="aAcct" placeholder="blank: the connector\'s SSH user (e.g. opc)" autocomplete="off"></label>'+
-      '<label>Note (who and why)<input id="aNote" placeholder="Jane Doe, DBA, ticket CHG-123"></label>'+
+      '<div class="grid3"><label>Note (who and why)<input id="aNote" placeholder="Jane Doe, DBA, ticket CHG-123"></label><label>Access until (optional; needed for production)<input id="aUntil" type="date"></label></div>'+
       '<div class="det">Environments</div><div class="envpick">'+d.environments.map(function(e){return '<label class="inline"><input type="checkbox" data-accenv="'+esc(e.name)+'"'+(S.acc.sel[e.name]?" checked":"")+'><span class="mono" style="font-size:13px">'+esc(e.name)+'</span>&nbsp;<span class="tag'+(isPrd(e.tier)?" prd":"")+'">'+esc(e.tier||"no tier")+'</span></label>'}).join("")+'</div>'+
-      '<div id="aMsg"></div><div class="toolbar"><button type="button" class="primary" data-acc="add">Add key</button><button type="button" data-acc="check">Check</button><button type="button" class="danger" data-acc="remove">Remove key</button></div></div>'}
+      '<div id="aMsg"></div><div class="toolbar"><button type="button" class="primary" data-acc="add">Add key</button><button type="button" data-acc="check">Check</button><button type="button" class="danger" data-acc="remove">Remove key</button></div><p class="help" id="aApprovalNote"></p></div>'}
+  h+='<div class="panel"><h2>Access requests</h2><div id="aReqs"><div class="empty">Loading…</div></div>'+(can("admin")?'<label class="inline" style="margin-top:10px"><input type="checkbox" id="aApproval">Adding or removing a key needs a second person\'s approval</label>':'')+'</div>';
   h+='<div class="panel"><h2>Keys Pegasus has added</h2><div id="aReg"><div class="empty">Loading…</div></div></div></div>';
-  $("tabBody").innerHTML=h;loadAccess()}
+  $("tabBody").innerHTML=h;loadAccess();loadAccessRequests()}
+var REQ_STATE={pending:"waiting for approval",approved:"approved, running",done:"done",failed:"approved, but the job failed",rejected:"rejected",withdrawn:"withdrawn"};
+function loadAccessRequests(){api("/api/clients/"+S.cid+"/access-requests").then(function(j){if(S.tab!=="access")return;S.acc.approval=j.approval;
+  var ap=$("aApproval");if(ap)ap.checked=j.approval;
+  var n=$("aApprovalNote");if(n)n.textContent=j.approval?"Add and Remove send a request: the change runs once another admin approves it. Check runs straight away.":"Changes run straight away (approval is turned off for this client).";
+  if(!j.requests.length){$("aReqs").innerHTML='<div class="empty">No requests yet.</div>';return}
+  $("aReqs").innerHTML='<div class="scroll"><table><thead><tr><th>Request</th><th>Who and why</th><th>Status</th><th></th></tr></thead><tbody>'+j.requests.map(function(r){
+    return '<tr><td><b>'+esc(r.summary)+'</b><br><span class="det">'+esc(r.environments.join(", "))+(r.expires_on?' · until '+esc(r.expires_on):'')+'</span>'+(r.fingerprint?'<br><span class="mono det">'+esc(r.fingerprint)+'</span>':'')+'</td>'+
+      '<td>'+esc(r.note||"")+'<br><span class="det">Asked by '+esc(r.requested_by)+' '+esc(ago(r.requested_at))+'</span></td>'+
+      '<td><span class="tag'+(r.status==="pending"?" warn":r.status==="rejected"||r.status==="failed"?" prd":"")+'">'+esc(REQ_STATE[r.status]||r.status)+'</span>'+(r.decided_by?'<br><span class="det">'+esc(r.decided_by)+' '+esc(ago(r.decided_at))+(r.decision_note?': '+esc(r.decision_note):'')+'</span>':'')+'</td><td>'+
+      (r.can_decide?'<button type="button" class="primary sm" data-areq="approve" data-id="'+esc(r.id)+'">Approve</button> <button type="button" class="link sm danger" data-areq="reject" data-id="'+esc(r.id)+'">Reject</button>':'')+
+      (r.can_withdraw?' <button type="button" class="link sm" data-areq="withdraw" data-id="'+esc(r.id)+'">Withdraw</button>':'')+
+      (r.job?' <button type="button" class="link sm" data-areqjob="'+esc(r.job)+'">Job</button>':'')+'</td></tr>'}).join("")+'</tbody></table></div>'})}
 function loadAccess(){api("/api/clients/"+S.cid+"/access").then(function(j){if(S.tab!=="access")return;
   if(!j.keys.length){$("aReg").innerHTML='<div class="empty">None yet.</div>';return}
   $("aReg").innerHTML='<div class="scroll"><table><thead><tr><th>Key</th><th>Account</th><th>Servers</th><th></th></tr></thead><tbody>'+j.keys.map(function(k){
-    return '<tr><td><b>'+esc(k.comment||k.type)+'</b><br><span class="mono det">'+esc(k.fingerprint)+'</span>'+(k.note?'<br><span class="det">'+esc(k.note)+'</span>':'')+'<br><span class="det">Added by '+esc(k.added_by)+' '+esc(ago(k.added_at))+'</span></td><td class="mono">'+esc(k.account||"SSH user")+'</td><td>'+esc(k.servers.join(", "))+'<br><span class="det">'+esc(k.environments.join(", "))+'</span></td><td>'+
+    return '<tr><td><b>'+esc(k.comment||k.type)+'</b><br><span class="mono det">'+esc(k.fingerprint)+'</span>'+(k.note?'<br><span class="det">'+esc(k.note)+'</span>':'')+'<br><span class="det">Added by '+esc(k.added_by)+' '+esc(ago(k.added_at))+(k.expires_on?' · <b>until '+esc(k.expires_on)+'</b> (removed automatically after that)':'')+'</span></td><td class="mono">'+esc(k.account||"SSH user")+'</td><td>'+esc(k.servers.join(", "))+'<br><span class="det">'+esc(k.environments.join(", "))+'</span></td><td>'+
       (can("operator")?'<button type="button" class="link sm" data-rec="check" data-rid="'+esc(k.id)+'">Check</button><button type="button" class="link sm danger" data-rec="remove" data-rid="'+esc(k.id)+'">Remove</button>':'')+'</td></tr>'}).join("")+'</tbody></table></div>'})}
 var keyTimer=null;
 $("main").addEventListener("input",function(e){if(e.target.id!=="aKey")return;clearTimeout(keyTimer);var v=e.target.value;
@@ -665,14 +678,26 @@ $("main").addEventListener("input",function(e){if(e.target.id!=="aKey")return;cl
     api("/api/access/parse",{method:"POST",body:{key:v}}).then(function(k){S.acc.key=v;$("aKeyInfo").innerHTML='<div class="msg ok">'+esc(k.type)+(k.bits?" "+k.bits+" bits":"")+' key'+(k.comment?' for '+esc(k.comment):'')+' · '+esc(k.fingerprint)+'</div>'})
     .catch(function(j){S.acc.key=null;$("aKeyInfo").innerHTML='<div class="msg">'+esc(j.error)+'</div>'})},300)});
 $("main").addEventListener("change",function(e){var c=e.target.closest("[data-accenv]");if(c)S.acc.sel[c.dataset.accenv]=c.checked});
+$("main").addEventListener("change",function(e){if(e.target.id!=="aApproval")return;var on=e.target.checked;
+  api("/api/clients/"+S.cid+"/access-settings",{method:"PUT",body:{approval:on}}).then(loadAccessRequests).catch(function(j){alert(j.error);e.target.checked=!on})});
 function accessRun(body,label){
-  var go=function(typed){if(typed)body.confirm=typed;api("/api/clients/"+S.cid+"/access",{method:"POST",body:body}).then(function(j){watch(j.job,label,loadAccess)})
+  var go=function(typed){if(typed)body.confirm=typed;api("/api/clients/"+S.cid+"/access",{method:"POST",body:body}).then(function(j){
+      if(j.pending){loadAccessRequests();var m=$("aMsg");if(m)msg("aMsg","Sent for approval. It runs on "+j.servers+" server"+(j.servers===1?"":"s")+" once another admin approves it.","ok");else alert("Sent for approval.");return}
+      watch(j.job,label,loadAccess)})
     .catch(function(j){if(j.need_confirm) return confirmBox(label+" on production?","This changes authorized_keys on production servers ("+j.prd.join(", ")+").",j.expected,go,"Continue");alert(j.error||"Couldn't start.")})};
   go(null)}
 $("main").addEventListener("click",function(e){if(S.tab!=="access")return;var t=e.target;
   var b=t.closest("[data-acc]");if(b){var envs=Object.keys(S.acc.sel).filter(function(k){return S.acc.sel[k]});
     if(!S.acc.key) return msg("aMsg","Paste a valid public key first.");if(!envs.length) return msg("aMsg","Choose at least one environment.");msg("aMsg","");
-    return accessRun({action:b.dataset.acc,key:S.acc.key,account:$("aAcct").value.trim(),note:$("aNote").value.trim(),environments:envs},b.dataset.acc+" SSH key")}
+    return accessRun({action:b.dataset.acc,key:S.acc.key,account:$("aAcct").value.trim(),note:$("aNote").value.trim(),expires_on:$("aUntil").value,environments:envs},b.dataset.acc+" SSH key")}
+  var q=t.closest("[data-areq]");if(q){var id=q.dataset.id,act=q.dataset.areq,done=function(){loadAccessRequests();loadAccess()};
+    if(act==="approve"){var ap=function(typed){api("/api/access-requests/"+id+"/approve",{method:"POST",body:typed?{confirm:typed}:{}}).then(function(j){watch(j.job,"SSH access (approved)",done)})
+        .catch(function(j){if(j.need_confirm) return confirmBox("Approve a change on production?","This changes authorized_keys on production servers ("+j.prd.join(", ")+").",j.expected,ap,"Approve");alert(j.error||"Couldn't approve.")})};
+      return confirmBox("Approve this request?","The change runs straight away on every server it lists.",null,function(){ap(null)},"Approve")}
+    if(act==="reject"){var why=prompt("Why is it rejected? (the requester sees this)");if(why===null)return;
+      return api("/api/access-requests/"+id+"/reject",{method:"POST",body:{note:why}}).then(done).catch(function(j){alert(j.error)})}
+    return api("/api/access-requests/"+id+"/withdraw",{method:"POST",body:{}}).then(done).catch(function(j){alert(j.error)})}
+  var qj=t.closest("[data-areqjob]");if(qj) return watch(qj.dataset.areqjob,"SSH access",loadAccess);
   var r=t.closest("[data-rec]");if(r){var go=function(){accessRun({action:r.dataset.rec,record:r.dataset.rid},r.dataset.rec+" SSH key")};
     if(r.dataset.rec==="remove") return confirmBox("Remove this key?","It's removed from authorized_keys on every server it was added to (a backup of the file is kept on each server).",null,go,"Remove");go()}});
 
@@ -789,7 +814,10 @@ var EVT={signed_in:"Signed in",sign_in_failed:"Sign-in failed",mfa_failed:"Wrong
   connector_updated:"A connector updated itself",oci_console_changed:"Changed the OCI Console link",schedule_created:"Added a schedule",schedule_changed:"Changed a schedule",schedule_deleted:"Deleted a schedule",
   schedule_ran:"Scheduled run started",schedule_skipped:"Scheduled run skipped",schedule_missed:"Scheduled run missed",connector_update_failed:"A connector update failed",connector_update_refused:"A connector refused an update",connector_updates_changed:"Changed connector updates",client_created:"Added the client",
   patch_settings_updated:"Changed patch settings",user_created:"Added a person",user_updated:"Changed a person",password_reset:"Reset a password",mfa_reset:"Reset MFA",
-  ssh_key_add:"Added an SSH key",ssh_key_remove:"Removed an SSH key",ssh_key_check:"Checked an SSH key",password_changed:"Changed their password",recovery_code_used:"Used a recovery code"};
+  ssh_key_add:"Added an SSH key",ssh_key_remove:"Removed an SSH key",ssh_key_check:"Checked an SSH key",password_changed:"Changed their password",recovery_code_used:"Used a recovery code",
+  signed_in_with_google:"Signed in with Google",google_sign_in_refused:"Google sign-in refused",ssh_access_requested:"Asked for an SSH access change",
+  ssh_access_approved:"Approved an SSH access change",ssh_access_rejected:"Rejected an SSH access change",ssh_access_withdrawn:"Withdrew an SSH access request",
+  ssh_access_expired:"SSH access ended (removed automatically)",ssh_approval_changed:"Changed SSH approval"};
 function auditTable(events){if(!events.length)return '<div class="empty">Nothing yet.</div>';
   return '<div class="scroll"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead><tbody>'+events.map(function(e){
     var d=e.detail||{},parts=Object.keys(d).filter(function(k){return d[k]!==null&&d[k]!==""&&typeof d[k]!=="object"}).map(function(k){return k.replace(/_/g," ")+": "+d[k]});

@@ -140,13 +140,19 @@ CREATE TABLE IF NOT EXISTS nonces (connector_id TEXT NOT NULL, nonce TEXT NOT NU
 CREATE TABLE IF NOT EXISTS access_keys (client_id TEXT NOT NULL, rid TEXT NOT NULL, fingerprint TEXT NOT NULL,
   type TEXT, comment TEXT, line TEXT NOT NULL, account TEXT, added_by TEXT, added_at REAL, note TEXT,
   servers TEXT NOT NULL DEFAULT '{}', updated_at REAL, PRIMARY KEY (client_id, rid));
+CREATE TABLE IF NOT EXISTS access_requests (id TEXT PRIMARY KEY, client_id TEXT NOT NULL, mode TEXT NOT NULL,
+  body TEXT NOT NULL, summary TEXT, environments TEXT, note TEXT, expires_on TEXT, requested_by TEXT,
+  requested_by_id TEXT, requested_at REAL NOT NULL, status TEXT NOT NULL, decided_by TEXT, decided_by_id TEXT,
+  decided_at REAL, decision_note TEXT, job_id TEXT);
+CREATE INDEX IF NOT EXISTS access_requests_client ON access_requests (client_id, requested_at);
 """
 MIGRATIONS = {"jobs": [("kind", "TEXT"), ("meta", "TEXT"), ("finalized", "INTEGER NOT NULL DEFAULT 0")],
               "connectors": [("public_key", "TEXT"), ("cert_serial", "TEXT"), ("cert_not_after", "REAL"),
                              ("cert_issued_at", "REAL"), ("prev_public_key", "TEXT"), ("prev_until", "REAL"),
                              ("update_to", "TEXT"), ("update_state", "TEXT"), ("update_version", "TEXT"),
                              ("update_detail", "TEXT"), ("update_at", "REAL"), ("can_update", "INTEGER"),
-                             ("update_requested_at", "REAL")]}
+                             ("update_requested_at", "REAL")],
+              "access_keys": [("expires_on", "TEXT")]}
 
 
 # ---------------------------------------------------------------- storage
@@ -1391,6 +1397,7 @@ def schedule_loop():
         try:
             with app.app_context():
                 run_due_schedules()
+                expire_access()
         except Exception as e:                       # keep going even if one round fails
             app.logger.warning("scheduled start/stop failed: %s", e)
 
@@ -2302,6 +2309,9 @@ def record_access(j, pairs):
     if not key:
         return
     mode, account, cid = meta.get("mode"), meta.get("account") or "", j["client_id"]
+    if meta.get("request"):
+        db().execute("UPDATE access_requests SET status=? WHERE id=?",
+                     ("done" if j["status"] == "succeeded" else "failed", meta["request"]))
     rid = access_rid(key["fingerprint"], account)
     rec = db().execute("SELECT * FROM access_keys WHERE client_id=? AND rid=?", (cid, rid)).fetchone()
     if mode == "check" and not rec:
@@ -2321,15 +2331,17 @@ def record_access(j, pairs):
     if not servers:
         db().execute("DELETE FROM access_keys WHERE client_id=? AND rid=?", (cid, rid))
         return
+    expires = meta.get("expires_on") if mode == "add" else None
     if rec:
-        db().execute("UPDATE access_keys SET servers=?, updated_at=?, note=COALESCE(NULLIF(?, ''), note) "
-                     "WHERE client_id=? AND rid=?",
-                     (json.dumps(servers), time.time(), meta.get("note") if mode == "add" else "", cid, rid))
+        db().execute("UPDATE access_keys SET servers=?, updated_at=?, note=COALESCE(NULLIF(?, ''), note), "
+                     "expires_on=CASE WHEN ? THEN ? ELSE expires_on END WHERE client_id=? AND rid=?",
+                     (json.dumps(servers), time.time(), meta.get("note") if mode == "add" else "", mode == "add",
+                      expires, cid, rid))
     else:
         db().execute("INSERT INTO access_keys (client_id, rid, fingerprint, type, comment, line, account, added_by, "
-                     "added_at, note, servers, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     "added_at, note, servers, updated_at, expires_on) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                      (cid, rid, key["fingerprint"], key["type"], key["comment"], key["line"], account,
-                      j["created_by"], time.time(), meta.get("note") or "", json.dumps(servers), time.time()))
+                      j["created_by"], time.time(), meta.get("note") or "", json.dumps(servers), time.time(), expires))
     audit(f"ssh_key_{mode}", cid, actor=j["created_by"], fingerprint=key["fingerprint"], account=account,
           servers=len(servers), result=j["status"])
 
@@ -2353,31 +2365,41 @@ def access_list(cid):
         servers = jload(r["servers"], {})
         out.append({"id": r["rid"], "fingerprint": r["fingerprint"], "type": r["type"], "comment": r["comment"],
                     "account": r["account"], "added_by": r["added_by"], "added_at": iso(r["added_at"]),
-                    "note": r["note"], "updated_at": iso(r["updated_at"]),
+                    "note": r["note"], "updated_at": iso(r["updated_at"]), "expires_on": r["expires_on"],
                     "environments": sorted({s.get("environment") or "" for s in servers.values()} - {""}),
                     "servers": sorted(s.get("host") or hk for hk, s in servers.items())})
     return jsonify(keys=out)
 
 
-@app.post("/api/clients/<cid>/access")
-@need("operator")
-def access_run(cid):
-    get_client(cid)
-    body = request.get_json(silent=True) or {}
+class AccessProblem(Exception):
+    def __init__(self, msg, status=400, **extra):
+        super().__init__(msg)
+        self.status, self.extra = status, extra
+
+
+def access_plan(cid, body):
+    """Validate an SSH access change and work out its steps. Raises AccessProblem."""
     mode = body.get("action")
     if mode not in ("add", "remove", "check"):
-        return jsonify(error="Choose add, remove or check."), 400
+        raise AccessProblem("Choose add, remove or check.")
     account = str(body.get("account") or "").strip()
     if account and not SAFE_NAME.match(account):
-        return jsonify(error="The account name can only use letters, digits, . _ and -."), 400
+        raise AccessProblem("The account name can only use letters, digits, . _ and -.")
     if account == "root":
-        return jsonify(error="Pegasus doesn't add keys for root. Use opc (or another sudo user) instead."), 400
+        raise AccessProblem("Pegasus doesn't add keys for root. Use opc (or another sudo user) instead.")
     note = str(body.get("note") or "").strip()[:300]
+    expires = str(body.get("expires_on") or "").strip()
+    if expires:
+        try:
+            if dt.date.fromisoformat(expires) < dt.date.today():
+                raise AccessProblem("The end date has already passed.")
+        except ValueError:
+            raise AccessProblem("Give the end date as YYYY-MM-DD.")
     only = None
     if body.get("record"):
         rec = db().execute("SELECT * FROM access_keys WHERE client_id=? AND rid=?", (cid, str(body["record"]))).fetchone()
         if not rec:
-            return jsonify(error="That key isn't in the register any more."), 404
+            raise AccessProblem("That key isn't in the register any more.", 404)
         key, _ = sshkeys.parse(rec["line"])
         account = rec["account"] or ""
         servers_rec = jload(rec["servers"], {})
@@ -2386,15 +2408,15 @@ def access_run(cid):
     else:
         key, err = sshkeys.parse(body.get("key"))
         if err:
-            return jsonify(error=err), 400
+            raise AccessProblem(err)
         env_names = [str(n) for n in body.get("environments") or []]
     if not env_names:
-        return jsonify(error="Choose at least one environment."), 400
+        raise AccessProblem("Choose at least one environment.")
     steps, seen, prd = [], set(), set()
     for env in env_names:
         servers = env_servers(cid, env)
         if not servers:
-            return jsonify(error=f"{env} isn't in the inventory."), 404
+            raise AccessProblem(f"{env} isn't in the inventory.", 404)
         if is_prd(env_tier(servers)):
             prd.add(env)
         for s in unique_hosts(servers):
@@ -2407,20 +2429,184 @@ def access_run(cid):
                           "label": f"{mode.capitalize()} key {key['comment'] or key['fingerprint'][:20]}"
                                    + (f" for {account}" if account else "")})
     if not steps:
-        return jsonify(error="None of those servers are in the inventory any more."), 400
-    if mode != "check" and prd:
-        expected = sorted(prd)[0] if len(prd) == 1 else "PRODUCTION"
-        if str(body.get("confirm") or "").upper() != expected.upper():
-            return jsonify(error=f"Type {expected} to confirm.", need_confirm=True, expected=expected,
-                           prd=sorted(prd)), 409
+        raise AccessProblem("None of those servers are in the inventory any more.")
     title = f"{mode} SSH key {key['comment'] or key['fingerprint'][:20]}" + (f" for {account}" if account else "")
+    return {"mode": mode, "key": key, "account": account, "note": note, "expires_on": expires or None,
+            "envs": env_names, "prd": sorted(prd), "steps": steps, "title": title}
+
+
+def check_prd_confirm(plan, body):
+    if plan["mode"] != "check" and plan["prd"]:
+        expected = plan["prd"][0] if len(plan["prd"]) == 1 else "PRODUCTION"
+        if str(body.get("confirm") or "").upper() != expected.upper():
+            raise AccessProblem(f"Type {expected} to confirm.", 409, need_confirm=True, expected=expected,
+                                prd=plan["prd"])
+
+
+def queue_access(cid, plan, created_by=None, request_id=None):
+    meta = {"mode": plan["mode"], "line": plan["key"]["line"], "account": plan["account"], "note": plan["note"],
+            "expires_on": plan["expires_on"], "request": request_id}
+    return queue_job(cid, None, f"access.{plan['mode']}", plan["title"], plan["steps"], stop_on_failure=True,
+                     meta=meta, created_by=created_by)
+
+
+def access_approval_required(cid):
+    return bool(get_setting(cid, "access_approval", True))
+
+
+@app.post("/api/clients/<cid>/access")
+@need("operator")
+def access_run(cid):
+    """Check runs straight away. Adding or removing a key needs a second person's approval (unless the client's admins
+    turned that off): it's saved as a request, and runs when another admin approves it."""
+    get_client(cid)
+    body = request.get_json(silent=True) or {}
     try:
-        jid = queue_job(cid, None, f"access.{mode}", title, steps, stop_on_failure=True,
-                        meta={"mode": mode, "line": key["line"], "account": account, "note": note})
+        plan = access_plan(cid, body)
+        if plan["mode"] != "check" and access_approval_required(cid):
+            if not plan["note"]:
+                raise AccessProblem("Say who this is for and why (the note); the approver needs it.")
+            if plan["mode"] == "add" and plan["prd"] and not plan["expires_on"]:
+                raise AccessProblem("Access to production needs an end date.")
+            rid = "ar_" + uuid.uuid4().hex[:12]
+            u = current_user()
+            saved = {k: body.get(k) for k in ("action", "key", "account", "note", "environments", "record",
+                                              "expires_on")}
+            db().execute("INSERT INTO access_requests (id, client_id, mode, body, summary, environments, note, "
+                         "expires_on, requested_by, requested_by_id, requested_at, status) "
+                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (rid, cid, plan["mode"], json.dumps(saved), plan["title"], json.dumps(plan["envs"]),
+                          plan["note"], plan["expires_on"], who(), u["id"], time.time(), "pending"))
+            audit("ssh_access_requested", cid, request=rid, title=plan["title"], environments=plan["envs"],
+                  servers=len(plan["steps"]), note=plan["note"], expires_on=plan["expires_on"])
+            return jsonify(request=rid, pending=True, servers=len(plan["steps"]), environments=plan["envs"])
+        check_prd_confirm(plan, body)
+        jid = queue_access(cid, plan)
+    except AccessProblem as e:
+        return jsonify(error=str(e), **e.extra), e.status
     except JobRefused as e:
         return jsonify(error=str(e)), e.status
-    audit("job_queued", cid, job=jid, title=title, environments=env_names)
-    return jsonify(job=jid, servers=len(steps), environments=env_names)
+    audit("job_queued", cid, job=jid, title=plan["title"], environments=plan["envs"])
+    return jsonify(job=jid, servers=len(plan["steps"]), environments=plan["envs"])
+
+
+def access_request_view(r):
+    u = current_user()
+    mine = bool(u and r["requested_by_id"] == u["id"])
+    body = jload(r["body"], {}) or {}
+    key, _ = sshkeys.parse(body.get("key")) if body.get("key") else (None, None)
+    return {"id": r["id"], "mode": r["mode"], "summary": r["summary"], "environments": jload(r["environments"], []),
+            "note": r["note"], "expires_on": r["expires_on"], "account": body.get("account") or "",
+            "fingerprint": key["fingerprint"] if key else "", "requested_by": r["requested_by"],
+            "requested_at": iso(r["requested_at"]), "status": r["status"], "decided_by": r["decided_by"],
+            "decided_at": iso(r["decided_at"]), "decision_note": r["decision_note"], "job": r["job_id"],
+            "mine": mine, "can_decide": bool(r["status"] == "pending" and u and u["role"] == "admin" and not mine),
+            "can_withdraw": bool(r["status"] == "pending" and (mine or (u and u["role"] == "admin")))}
+
+
+@app.get("/api/clients/<cid>/access-requests")
+@need("viewer")
+def access_requests(cid):
+    get_client(cid)
+    rows = db().execute("SELECT * FROM access_requests WHERE client_id=? ORDER BY status='pending' DESC, "
+                        "requested_at DESC LIMIT 60", (cid,)).fetchall()
+    return jsonify(requests=[access_request_view(r) for r in rows], approval=access_approval_required(cid))
+
+
+def pending_access_request(rid):
+    r = db().execute("SELECT * FROM access_requests WHERE id=?", (rid,)).fetchone()
+    if not r:
+        abort(404)
+    get_client(r["client_id"])
+    if r["status"] != "pending":
+        abort(409, description=f"This request is already {r['status']}.")
+    return r
+
+
+@app.post("/api/access-requests/<rid>/approve")
+@need("admin")
+def approve_access_request(rid):
+    r = pending_access_request(rid)
+    u = current_user()
+    if r["requested_by_id"] == u["id"]:
+        return jsonify(error="Someone other than the requester has to approve it."), 403
+    body = request.get_json(silent=True) or {}
+    saved = jload(r["body"], {}) or {}
+    try:
+        plan = access_plan(r["client_id"], saved)          # worked out again: the inventory may have changed
+        check_prd_confirm(plan, body)
+        jid = queue_access(r["client_id"], plan, created_by=f"{r['requested_by']} (approved by {who()})",
+                           request_id=rid)
+    except AccessProblem as e:
+        return jsonify(error=str(e), **e.extra), e.status
+    except JobRefused as e:
+        return jsonify(error=str(e)), e.status
+    db().execute("UPDATE access_requests SET status='approved', decided_by=?, decided_by_id=?, decided_at=?, "
+                 "decision_note=?, job_id=? WHERE id=?",
+                 (who(), u["id"], time.time(), str(body.get("note") or "").strip()[:300], jid, rid))
+    audit("ssh_access_approved", r["client_id"], request=rid, title=plan["title"], requested_by=r["requested_by"],
+          job=jid)
+    return jsonify(job=jid, servers=len(plan["steps"]))
+
+
+@app.post("/api/access-requests/<rid>/reject")
+@need("admin")
+def reject_access_request(rid):
+    r = pending_access_request(rid)
+    note = str((request.get_json(silent=True) or {}).get("note") or "").strip()[:300]
+    db().execute("UPDATE access_requests SET status='rejected', decided_by=?, decided_by_id=?, decided_at=?, "
+                 "decision_note=? WHERE id=?", (who(), current_user()["id"], time.time(), note, rid))
+    audit("ssh_access_rejected", r["client_id"], request=rid, title=r["summary"], requested_by=r["requested_by"],
+          note=note)
+    return jsonify(ok=True)
+
+
+@app.post("/api/access-requests/<rid>/withdraw")
+@need("operator")
+def withdraw_access_request(rid):
+    r = pending_access_request(rid)
+    u = current_user()
+    if r["requested_by_id"] != u["id"] and u["role"] != "admin":
+        return jsonify(error="Only the requester or an admin can withdraw it."), 403
+    db().execute("UPDATE access_requests SET status='withdrawn', decided_by=?, decided_by_id=?, decided_at=? "
+                 "WHERE id=?", (who(), u["id"], time.time(), rid))
+    audit("ssh_access_withdrawn", r["client_id"], request=rid, title=r["summary"])
+    return jsonify(ok=True)
+
+
+@app.put("/api/clients/<cid>/access-settings")
+@need("admin")
+def put_access_settings(cid):
+    get_client(cid)
+    on = bool((request.get_json(silent=True) or {}).get("approval"))
+    put_setting(cid, "access_approval", on)
+    audit("ssh_approval_changed", cid, approval="required" if on else "not required")
+    return jsonify(approval=on)
+
+
+def expire_access(today=None):
+    """Remove keys whose end date has passed (the end date was approved with the access, so this needs no new
+    approval). Each removal is an ordinary job, retried on the next round if it can't run yet."""
+    today = (today or dt.date.today()).isoformat()
+    rows = db().execute("SELECT * FROM access_keys WHERE expires_on IS NOT NULL AND expires_on < ?", (today,)).fetchall()
+    for rec in rows:
+        busy = db().execute("SELECT 1 FROM jobs WHERE client_id=? AND kind='access.remove' AND status IN "
+                            "('queued','signed','running') AND meta LIKE ?",
+                            (rec["client_id"], f'%"expired": "{rec["rid"]}"%')).fetchone()
+        if busy:
+            continue
+        try:
+            plan = access_plan(rec["client_id"], {"action": "remove", "record": rec["rid"]})
+            plan["title"] = f"Remove expired SSH key {rec['comment'] or rec['fingerprint'][:20]}"
+            meta = {"mode": "remove", "line": rec["line"], "account": rec["account"] or "", "note": "",
+                    "expired": rec["rid"]}
+            jid = queue_job(rec["client_id"], None, "access.remove", plan["title"], plan["steps"],
+                            stop_on_failure=True, meta=meta, created_by="pegasus (access ended)")
+        except (AccessProblem, JobRefused) as e:
+            app.logger.info("couldn't remove expired key %s yet: %s", rec["rid"], e)
+            continue
+        audit("ssh_access_expired", rec["client_id"], actor="pegasus", fingerprint=rec["fingerprint"],
+              account=rec["account"] or "", ended=rec["expires_on"], job=jid)
 
 
 # ---------------------------------------------------------------- connector API (called by connectors only)
@@ -2805,6 +2991,11 @@ def not_found(e):
     if request.path.startswith("/api/"):
         return jsonify(error="Not found."), 404
     return e
+
+
+@app.errorhandler(409)
+def conflict(e):
+    return jsonify(error=e.description or "That conflicts with the current state."), 409
 
 
 @app.errorhandler(405)

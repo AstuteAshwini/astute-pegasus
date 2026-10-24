@@ -279,7 +279,9 @@ def ed25519_key(comment="jane@laptop"):
 
 
 def test_ssh_access_add_check_remove(env):
+    """Without the approval step (a client's admins can turn it off), changes run straight away."""
     key = ed25519_key()
+    assert env["admin"].put(url(env, "/api/clients/{cid}/access-settings"), json={"approval": False}).ok
     r = env["admin"].post(url(env, "/api/clients/{cid}/access"),
                           json={"action": "add", "key": key, "account": "psadm2", "environments": ["HRDEV"],
                                 "note": "Jane, DBA"})
@@ -299,6 +301,7 @@ def test_ssh_access_add_check_remove(env):
     r = env["admin"].post(url(env, "/api/clients/{cid}/access"),
                           json={"action": "add", "key": key, "environments": ["HRPRD"]})
     assert r.status_code == 409 and r.json()["need_confirm"]
+    assert env["admin"].put(url(env, "/api/clients/{cid}/access-settings"), json={"approval": True}).ok
 
 
 def test_patch_settings_round_trip(env):
