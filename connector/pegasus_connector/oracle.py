@@ -69,6 +69,9 @@ def save_secrets(config_path, data):
 class MOSClient:
     """Signs in to updates.oracle.com with HTTP Basic auth (the same flow as Oracle's wget scripts)."""
     LINK_RE = r"""https://[^"'\s<>]+?Download/process_form/[^"'\s<>]+?\.zip[^"'\s<>]*"""
+    # Oracle's patch page may also write the link relative, or only as "<file>.zip?...&patch_file=<file>.zip"
+    # inside a script, with no host or path in front of it
+    BARE_LINK_RE = r"""(?:/Orion/Download/process_form/)?([A-Za-z0-9_.\-]+\.zip)\?([^"'\s<>]*\bpatch_file=[^"'\s<>]+)"""
 
     def __init__(self, user, password, base=None):
         self.BASE = (base or MOS_BASE).rstrip("/")
@@ -116,18 +119,26 @@ class MOSClient:
         page = r.text
         if r.status_code == 401 or "login.oracle.com" in r.url:
             raise MOSError("The Oracle Support session expired. Sign in again.")
-        links = re.findall(self.LINK_RE, page)
+        links = self.download_links(page)
         if not links:   # multi-part patches list their files on a details page
             for d in re.findall(r"/Orion/PatchDetails/process_form[^\"'\s]+", page):
-                links += re.findall(self.LINK_RE, self.get(self.BASE + htmlmod.unescape(d)).text)
+                links += self.download_links(self.get(self.BASE + htmlmod.unescape(d)).text)
         files = {}
         for link in links:
-            link = htmlmod.unescape(link)
             name = link.split("process_form/")[1].split("?")[0]
             if file_filter and not re.search(file_filter, name):
                 continue
             files[name] = link
         return sorted(files.items())
+
+    def download_links(self, page):
+        """Every patch file download URL on an Oracle Support page, made absolute and unescaped."""
+        page = htmlmod.unescape(page)
+        links = [htmlmod.unescape(u) for u in re.findall(self.LINK_RE, page)]
+        if not links:
+            for name, query in re.findall(self.BARE_LINK_RE, page):
+                links.append(f"{self.BASE}/Orion/Download/process_form/{name}?{query}")
+        return list(dict.fromkeys(links))
 
     def download(self, url, dest, log):
         part = Path(str(dest) + ".part")
