@@ -63,4 +63,25 @@ sudo systemctl restart pegasus-connector
 * **Restore:** stop Pegasus, unpack a backup into `/var/lib/pegasus`, `chown -R pegasus:pegasus /var/lib/pegasus`,
   start it.
 
+## Sign in with Google
+
+People sign in with their Google account. Only people with a Pegasus account (same email) get in, and Pegasus still
+decides which clients each person sees and what they can do.
+
+1. In the Google Cloud console for the beastute.com Workspace: **APIs & Services → OAuth consent screen**, user type
+   **Internal**. Then **Credentials → Create credentials → OAuth client ID**, type **Web application**, authorized
+   redirect URI `https://pegasus.beastute.com/api/sso/google/callback`.
+2. Add to `/etc/pegasus/pegasus.env` on the VM (`sudo vi /etc/pegasus/pegasus.env`):
+   ```
+   PEGASUS_GOOGLE_CLIENT_ID=<client id>
+   PEGASUS_GOOGLE_CLIENT_SECRET=<client secret>
+   PEGASUS_GOOGLE_DOMAIN=beastute.com
+   PEGASUS_PASSWORD_SIGNIN=admins
+   ```
+   `PEGASUS_PASSWORD_SIGNIN=admins` keeps password + authenticator sign-in for admins only, as a way in if Google is
+   ever unavailable; leave it out to keep passwords for everyone.
+3. `sudo systemctl restart pegasus`. The sign-in page shows **Sign in with Google**.
+
+Google needs the real address with a trusted certificate, so the DNS record must be in place first.
+
 If the repo is private, give the VM read access with a GitHub deploy key before `setup.sh` and `update.sh`.

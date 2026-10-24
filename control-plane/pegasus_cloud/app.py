@@ -2,7 +2,8 @@
 
 Hosted web app and job queue. Clients' connectors call in over HTTPS; this service never connects to a client.
 
-* People sign in with an email, a password and an authenticator-app code. Each has a role (admin, operator or
+* People sign in with their Google account (when PEGASUS_GOOGLE_CLIENT_ID is set; Google handles their 2-step
+  verification), or with an email, a password and an authenticator-app code. Each has a role (admin, operator or
   viewer) and is either Astute staff (every client) or a client's own user (that client only).
 * Clients (tenants), their connectors, server inventory, jobs, patch levels, Jira change requests and the SSH key
   register live in a SQLite database for now (a managed database comes with hosting).
@@ -61,6 +62,15 @@ TRUST_PROXY = os.environ.get("PEGASUS_TRUST_PROXY", "false").lower() == "true"
 THREADS = int(os.environ.get("PEGASUS_THREADS", "48"))      # connectors hold one each for their 25-second long-poll
 # Pegasus checks every domain's status by itself this often (seconds); 0 turns automatic checks off.
 STATUS_EVERY = int(os.environ.get("PEGASUS_STATUS_EVERY", "600"))
+# Sign in with Google (OpenID Connect). Only people who already have a Pegasus account (same email) get in; Pegasus
+# keeps deciding what each of them can see and do. GOOGLE_DOMAIN limits it to one Google Workspace (e.g. beastute.com).
+GOOGLE_CLIENT_ID = os.environ.get("PEGASUS_GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.environ.get("PEGASUS_GOOGLE_CLIENT_SECRET", "")
+GOOGLE_DOMAIN = os.environ.get("PEGASUS_GOOGLE_DOMAIN", "").strip().lower()
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = os.environ.get("PEGASUS_GOOGLE_TOKEN_URL", "https://oauth2.googleapis.com/token")
+# Who may still sign in with a password once Google sign-in is on: "all" (default) or "admins" (a break-glass way in).
+PASSWORD_SIGNIN = os.environ.get("PEGASUS_PASSWORD_SIGNIN", "all").strip().lower()
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
 SAFE_PATH = re.compile(r"^[A-Za-z0-9_./~\-]{1,255}$")
@@ -256,7 +266,8 @@ def is_local_request():
     return request.remote_addr in ("127.0.0.1", "::1") and not any(h in request.headers for h in FORWARD_HEADERS)
 
 
-OPEN_PATHS = ("/api/login", "/api/login/mfa", "/api/mfa/enroll", "/api/session", "/api/setup", "/api/logout")
+OPEN_PATHS = ("/api/login", "/api/login/mfa", "/api/mfa/enroll", "/api/session", "/api/setup", "/api/logout",
+              "/api/sso/google/start", "/api/sso/google/callback")
 MUST_CHANGE_PATHS = ("/api/password",)
 
 
@@ -348,7 +359,8 @@ def session_info():
     u = current_user()
     out = {"auth": bool(u), "setup_needed": n == 0, "version": __version__,
            "signing_key": protocol.fingerprint(protocol.public_key_b64(signing_key())),
-           "setup_needs_password": bool(ADMIN_PASSWORD), "stage": session.get("stage")}
+           "setup_needs_password": bool(ADMIN_PASSWORD), "stage": session.get("stage"),
+           "google": google_enabled(), "password_signin": PASSWORD_SIGNIN if google_enabled() else "all"}
     if u:
         out["user"] = user_view(u)
         out["who"] = u["name"] or u["email"]
@@ -403,6 +415,8 @@ def login():
             audit("sign_in_failed", actor=email, locked=failed >= LOCK_AFTER)
         time.sleep(1.5)
         return jsonify(error="Wrong email or password."), 401
+    if google_enabled() and PASSWORD_SIGNIN == "admins" and u["role"] != "admin":
+        return jsonify(error="Use Sign in with Google."), 403
     if u["mfa_enabled"]:
         start_session(u, "mfa")
         return jsonify(next="mfa")
@@ -475,6 +489,108 @@ def mfa_enroll():
     audit("mfa_enrolled", actor=u["email"])
     signed_in(u)
     return jsonify(ok=True, recovery_codes=codes)
+
+
+# ---------------------------------------------------------------- sign in with Google
+def google_enabled():
+    return bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+
+
+def google_redirect_uri():
+    return (PUBLIC_URL or request.host_url.rstrip("/")) + "/api/sso/google/callback"
+
+
+def sso_signer():
+    from itsdangerous import URLSafeTimedSerializer
+    return URLSafeTimedSerializer(app.secret_key, salt="pegasus-google-sso")
+
+
+def sso_fail(message, email=""):
+    from urllib.parse import quote
+    audit("google_sign_in_refused", actor=email or "unknown", reason=message)
+    r = app.redirect("/?sso_error=" + quote(message))
+    r.delete_cookie("pegasus_sso", path="/api/sso/")
+    return r
+
+
+def google_exchange(code, verifier):
+    """Trade the one-time code for Google's ID token, straight from Google over HTTPS, and return its claims.
+    (A token received directly from Google's token endpoint like this needn't have its signature checked; its claims
+    are checked by the caller.)"""
+    import base64
+    import requests
+    r = requests.post(GOOGLE_TOKEN_URL, timeout=20, data={
+        "code": code, "client_id": GOOGLE_CLIENT_ID, "client_secret": GOOGLE_CLIENT_SECRET,
+        "redirect_uri": google_redirect_uri(), "grant_type": "authorization_code", "code_verifier": verifier})
+    if r.status_code != 200:
+        raise ValueError(f"Google refused the sign-in ({r.status_code}).")
+    token = (r.json() or {}).get("id_token") or ""
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise ValueError("Google didn't send an ID token.")
+    return json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+
+
+@app.get("/api/sso/google/start")
+def google_start():
+    import base64
+    from urllib.parse import urlencode
+    if not google_enabled():
+        return app.redirect("/?sso_error=" + "Google%20sign-in%20isn%27t%20set%20up.")
+    state, nonce, verifier = secrets.token_urlsafe(24), secrets.token_urlsafe(24), secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    params = {"client_id": GOOGLE_CLIENT_ID, "redirect_uri": google_redirect_uri(), "response_type": "code",
+              "scope": "openid email profile", "state": state, "nonce": nonce, "code_challenge": challenge,
+              "code_challenge_method": "S256", "prompt": "select_account"}
+    if GOOGLE_DOMAIN:
+        params["hd"] = GOOGLE_DOMAIN
+    r = app.redirect(GOOGLE_AUTH_URL + "?" + urlencode(params))
+    # Google sends the browser back from another site, so this short-lived cookie is Lax (the session cookie is Strict)
+    r.set_cookie("pegasus_sso", sso_signer().dumps({"s": state, "n": nonce, "v": verifier}), max_age=600,
+                 path="/api/sso/", httponly=True, samesite="Lax", secure=app.config["SESSION_COOKIE_SECURE"])
+    return r
+
+
+@app.get("/api/sso/google/callback")
+def google_callback():
+    if not google_enabled():
+        return sso_fail("Google sign-in isn't set up.")
+    try:
+        saved = sso_signer().loads(request.cookies.get("pegasus_sso", ""), max_age=600)
+    except Exception:
+        return sso_fail("The Google sign-in took too long or started in another browser. Try again.")
+    if request.args.get("error"):
+        return sso_fail("Google sign-in was cancelled.")
+    if not hmac.compare_digest(str(request.args.get("state", "")), saved["s"]):
+        return sso_fail("The Google sign-in didn't match. Try again.")
+    try:
+        claims = google_exchange(str(request.args.get("code", "")), saved["v"])
+    except Exception as e:
+        return sso_fail(f"Couldn't finish signing in with Google: {e}")
+    email = str(claims.get("email") or "").strip().lower()
+    problems = [
+        claims.get("iss") not in ("accounts.google.com", "https://accounts.google.com") and "issuer",
+        claims.get("aud") != GOOGLE_CLIENT_ID and "audience",
+        not (isinstance(claims.get("exp"), (int, float)) and claims["exp"] > time.time()) and "expiry",
+        not hmac.compare_digest(str(claims.get("nonce", "")), saved["n"]) and "nonce",
+        claims.get("email_verified") not in (True, "true") and "unverified email"]
+    problems = [p for p in problems if p]
+    if problems:
+        return sso_fail("Google's answer didn't check out (" + ", ".join(problems) + ").", email)
+    if GOOGLE_DOMAIN and str(claims.get("hd") or "").lower() != GOOGLE_DOMAIN:
+        return sso_fail(f"Use your {GOOGLE_DOMAIN} Google account.", email)
+    u = db().execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+    if not u or u["disabled"]:
+        return sso_fail(f"{email} doesn't have a Pegasus account. Ask a Pegasus admin to add you.", email)
+    if u["must_change"]:
+        # a temporary password from an admin is no longer needed: retire it rather than leave it usable
+        db().execute("UPDATE users SET must_change=0, pw_hash=? WHERE id=?",
+                     (auth.hash_password(secrets.token_urlsafe(32)), u["id"]))
+    signed_in(u)
+    audit("signed_in_with_google", actor=u["email"])
+    r = app.redirect("/")
+    r.delete_cookie("pegasus_sso", path="/api/sso/")
+    return r
 
 
 @app.post("/api/logout")

@@ -52,6 +52,11 @@ PEGASUS_TRUST_PROXY=true
 PEGASUS_ADMIN_LOCAL_ONLY=false
 # Only needed to create the first admin on an empty install (not when you import your existing data):
 # PEGASUS_ADMIN_PASSWORD=
+# Sign in with Google (see deploy/oci/README.md):
+# PEGASUS_GOOGLE_CLIENT_ID=
+# PEGASUS_GOOGLE_CLIENT_SECRET=
+# PEGASUS_GOOGLE_DOMAIN=beastute.com
+# PEGASUS_PASSWORD_SIGNIN=admins
 ENV
 fi
 chown root:pegasus "$ETC/pegasus.env"; chmod 640 "$ETC/pegasus.env"

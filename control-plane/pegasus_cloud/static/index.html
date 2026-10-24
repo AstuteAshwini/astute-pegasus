@@ -105,6 +105,7 @@ details summary{cursor:pointer;margin:6px 0}
   background:radial-gradient(1200px 600px at 85% 110%,#0B89A155,transparent 60%),var(--night)}
 #gate .gate-brand{display:flex;align-items:center;gap:14px}#gate .gate-brand .logo{width:120px;height:auto;color:#fff}#gate .gate-brand .logo .mark{color:var(--cyan);fill:var(--cyan)}
 #gate .gate-brand b{font-family:var(--display);font-size:24px;font-weight:800;padding-left:14px;border-left:1px solid #ffffff40}
+#gate .google-btn{display:block;text-align:center;padding:11px 14px;font-weight:600;margin:6px 0 4px}#gate .or{text-align:center;margin:8px 0 2px;font-size:13px}
 #gate .panel{width:min(420px,94vw);box-shadow:0 18px 50px #00141c55;border:none;color:var(--ink)}#gate .panel h2{font-size:20px}
 dialog{border:1px solid var(--line);border-radius:var(--r-lg);padding:22px 24px;background:var(--surface);color:var(--ink);width:min(560px,94vw)}
 dialog::backdrop{background:#00222fa0}.row{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
@@ -137,9 +138,12 @@ dialog::backdrop{background:#00222fa0}.row{display:flex;gap:8px;justify-content:
   </form>
   <form class="panel" id="loginForm" hidden>
     <h2>Sign in</h2><p class="help">Manage clients and their PeopleSoft environments.</p>
-    <label>Email<input id="loginEmail" type="email" autocomplete="username" required></label>
+    <div id="googleBlock" hidden><a class="btn primary google-btn" href="/api/sso/google/start">Sign in with Google</a>
+      <p class="or" id="pwToggleP"><button type="button" class="link sm" id="pwToggle">Sign in with a password instead</button></p></div>
+    <div id="loginMsg"></div>
+    <div id="pwBlock"><label>Email<input id="loginEmail" type="email" autocomplete="username" required></label>
     <label>Password<input id="loginPw" type="password" autocomplete="current-password" required></label>
-    <div id="loginMsg"></div><button class="primary" type="submit">Sign in</button>
+    <button class="primary" type="submit">Sign in</button></div>
   </form>
   <form class="panel" id="mfaForm" hidden>
     <h2>Enter your code</h2><p class="help">Open your authenticator app and enter the 6-digit code for Pegasus. If you've lost your phone, enter one of your recovery codes.</p>
@@ -262,10 +266,16 @@ function staffAdmin(){return S.me&&S.me.role==="admin"&&!S.me.client_id}
 function gate(which){$("shell").hidden=true;$("gate").hidden=false;
   ["setupForm","loginForm","mfaForm","enrollForm","codesPanel","pwForm"].forEach(function(id){$(id).hidden=id!==which});
   var f=$(which).querySelector("input");if(f)setTimeout(function(){f.focus()},30)}
+function loginOptions(s){var g=!!s.google;$("googleBlock").hidden=!g;$("pwBlock").hidden=g;
+  $("pwToggle").textContent=s.password_signin==="admins"?"Admin? Sign in with a password":"Sign in with a password instead";
+  $("loginEmail").required=$("loginPw").required=!g;
+  var m=/[?&]sso_error=([^&]*)/.exec(location.search);
+  if(m){msg("loginMsg",decodeURIComponent(m[1].replace(/\+/g," ")));try{history.replaceState(null,"",location.pathname)}catch(e){}}
+  if(g)setTimeout(function(){var a=document.querySelector(".google-btn");if(a)a.focus()},40)}
 function boot(){api("/api/session").then(function(s){
   $("keyFp").textContent=s.signing_key;
   if(s.setup_needed){$("setupPwL").hidden=!s.setup_needs_password;return gate("setupForm")}
-  if(!s.auth) return gate("loginForm");
+  if(!s.auth){gate("loginForm");loginOptions(s);return}
   S.me=s.user;
   if(s.must_change_password) return gate("pwForm");
   $("gate").hidden=true;$("shell").hidden=false;
@@ -286,6 +296,7 @@ function signIn(){msg("loginMsg","");
     $("enrollCode").value="";msg("enrollMsg","");gate("enrollForm")})
   .catch(function(j){msg("loginMsg",j.error||"Sign-in failed.")})}
 $("loginForm").addEventListener("submit",function(e){e.preventDefault();signIn()});
+$("pwToggle").addEventListener("click",function(){$("pwBlock").hidden=false;$("pwToggleP").hidden=true;$("loginEmail").required=$("loginPw").required=true;$("loginEmail").focus()});
 $("mfaForm").addEventListener("submit",function(e){e.preventDefault();
   api("/api/login/mfa",{method:"POST",body:{code:$("mfaCode").value}}).then(function(j){
     if(j.recovery_left!==undefined) alert("That recovery code is now used up. You have "+j.recovery_left+" left; get a new set under My account.");boot()})
