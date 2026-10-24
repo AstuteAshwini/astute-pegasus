@@ -57,6 +57,8 @@ main{margin-left:var(--side);padding:28px 28px 340px;max-width:1280px}
 .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .msg{font-size:13.5px;padding:10px 13px;border-radius:var(--r);margin:10px 0;background:var(--stop-bg);color:var(--stop)}.msg.ok{background:var(--run-bg);color:var(--run)}.msg.info{background:var(--soft);color:var(--ink)}
 .tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--accent)}.tag.prd{background:var(--spark-bg);color:var(--spark-ink);box-shadow:inset 0 0 0 1px var(--spark)}.tag.warn{background:var(--warn-bg);color:var(--warn)}
+table.weekplan{width:auto;margin:0 0 10px}table.weekplan td,table.weekplan th{padding:4px 14px 4px 0}table.weekplan input{width:130px;padding:5px 8px}
+.apply-row a.link,.risks a:not(.risk){font-size:12.5px;font-weight:600;margin-left:4px}
 a.risk{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 7px;border-radius:999px;text-decoration:none;vertical-align:1px}
 a.risk.critical{background:var(--stop);color:#fff}a.risk.high{background:var(--spark);color:#2a1503}a.risk.medium{background:var(--warn-bg);color:var(--warn)}a.risk.low{background:var(--unk-bg);color:var(--unk)}
 .st.deferred{background:var(--unk-bg);color:var(--unk)}
@@ -800,6 +802,12 @@ function inWhen(t){if(!t)return "";var s=Math.round((new Date(t)-Date.now())/600
 function renderSchedules(){var d=S.detail,op=can("operator");
   var h='<div class="panel"><h2>Schedules</h2><p class="help">Start, stop or restart an environment at set times, for example to stop non-production in the evening and at weekends. Each run is the same job as clicking Start all or Stop all, in the same safe order. A run that is more than 15 minutes late (Pegasus was down) is skipped, and so is a run while another job is busy on that environment; both show here and in Activity.</p><div id="schOut"><div class="empty">Loading…</div></div></div>';
   if(op&&d.environments.length){
+    h+='<div class="panel"><h2>Weekly plan</h2><p class="help">A start and stop time for each day of the week. Leave a day blank to leave the environment as it is that day. Saving replaces this environment\'s weekly plan; schedules added below are kept.</p>'+
+      '<div class="grid3"><label>Environment<select id="wpEnv">'+d.environments.map(function(e){return '<option value="'+esc(e.name)+'">'+esc(e.name)+(isPrd(e.tier)?' (production)':'')+'</option>'}).join("")+'</select></label>'+
+      '<label>Time zone<select id="wpTz">'+tzList().map(function(z){return '<option'+(z===myTz()?' selected':'')+'>'+esc(z)+'</option>'}).join("")+'</select></label></div>'+
+      '<div class="toolbar" style="margin:4px 0 8px"><span class="det">Fill in:</span><button type="button" class="sm" data-wpfill="office">Weekdays 7am–7pm, weekends off</button><button type="button" class="sm" data-wpfill="nights">Stop every night at 8pm, start at 6am</button><button type="button" class="sm" data-wpfill="clear">Clear</button></div>'+
+      '<table class="weekplan"><thead><tr><th>Day</th><th>Start at</th><th>Stop at</th></tr></thead><tbody>'+DAYS.map(function(n,i){return '<tr><td>'+n+'</td><td><input type="time" data-wp="start" data-day="'+i+'"></td><td><input type="time" data-wp="stop" data-day="'+i+'"></td></tr>'}).join("")+'</tbody></table>'+
+      '<div id="wpMsg"></div><div class="toolbar"><button type="button" class="primary" id="wpSave">Save weekly plan</button></div></div>';
     h+='<div class="panel"><h2>Add a schedule</h2><div class="grid3">'+
       '<label>Environment<select id="scEnv">'+d.environments.map(function(e){return '<option value="'+esc(e.name)+'">'+esc(e.name)+(isPrd(e.tier)?' (production)':'')+'</option>'}).join("")+'</select></label>'+
       '<label>What<select id="scAct"><option value="hours">Office hours: start, then stop</option><option value="stop">Stop all</option><option value="start">Start all</option><option value="restart">Restart all</option><option value="clearcache">Clear cache and restart</option></select></label>'+
@@ -811,7 +819,16 @@ function renderSchedules(){var d=S.detail,op=can("operator");
       '<label>Note (optional)<input id="scNote" placeholder="e.g. save OCI cost overnight" maxlength="200"></label></div>'+
       '<div id="scDays" class="envpick" style="margin:6px 0 4px">'+DAYS.map(function(n,i){return '<label class="inline"><input type="checkbox" data-scday="'+i+'"'+(i<5?' checked':'')+'>'+n+'</label>'}).join("")+'</div>'+
       '<div id="scMsg"></div><div class="toolbar"><button type="button" class="primary" id="scAdd">Add schedule</button></div></div>'}
-  $("tabBody").innerHTML=h;if(op&&d.environments.length)scForm();loadSchedules()}
+  $("tabBody").innerHTML=h;if(op&&d.environments.length){scForm();loadWeekly()}loadSchedules()}
+$("main").addEventListener("change",function(e){if(e.target.id==="wpEnv")loadWeekly()});
+function loadWeekly(){var env=$("wpEnv").value;api("/api/clients/"+S.cid+"/schedules/weekly?environment="+encodeURIComponent(env)).then(function(j){if(!$("wpEnv")||$("wpEnv").value!==env)return;
+  if(j.tz)$("wpTz").value=j.tz;j.plan.forEach(function(p){["start","stop"].forEach(function(a){var el=document.querySelector('[data-wp="'+a+'"][data-day="'+p.day+'"]');if(el)el.value=p[a]||""})});msg("wpMsg","")})}
+function fillWeekly(kind){[].forEach.call(document.querySelectorAll("[data-wp]"),function(el){var d=+el.dataset.day,a=el.dataset.wp;
+  el.value=kind==="office"?(d<5?(a==="start"?"07:00":"19:00"):""):kind==="nights"?(a==="start"?"06:00":"20:00"):""})}
+function saveWeekly(confirmName){var env=$("wpEnv").value,plan=DAYS.map(function(n,i){return{day:i,start:document.querySelector('[data-wp="start"][data-day="'+i+'"]').value,stop:document.querySelector('[data-wp="stop"][data-day="'+i+'"]').value}});
+  api("/api/clients/"+S.cid+"/schedules/weekly",{method:"PUT",body:{environment:env,tz:$("wpTz").value,plan:plan,confirm:confirmName||""}}).then(function(j){
+    msg("wpMsg",j.schedules?"Saved: "+j.described.join("; ")+".":"Saved. "+env+" has no weekly plan now.","ok");loadSchedules()})
+  .catch(function(j){if(j.need_confirm) return confirmBox("Schedule production?",env+" is a production environment. The weekly plan will start and stop it automatically.",env,function(){saveWeekly(env)},"Save");msg("wpMsg",j.error||"Couldn't save.")})}
 function scForm(){var a=$("scAct").value,once=$("scRep").value==="once";
   $("scT2L").hidden=a!=="hours";$("scT1N").textContent=a==="hours"?"Start at":"At";$("scDays").hidden=once;$("scDateL").hidden=!once}
 function loadSchedules(){api("/api/clients/"+S.cid+"/schedules").then(function(j){var op=can("operator");
@@ -836,6 +853,8 @@ function addSchedules(confirmName){var env=$("scEnv").value,a=$("scAct").value,o
 $("main").addEventListener("change",function(e){if(e.target.id==="scAct"||e.target.id==="scRep")scForm()});
 $("main").addEventListener("click",function(e){var t=e.target;
   if(t.id==="scAdd") return addSchedules();
+  if(t.id==="wpSave") return saveWeekly();
+  var wf=t.closest("[data-wpfill]");if(wf) return fillWeekly(wf.dataset.wpfill);
   var k=t.closest("[data-scskip]");if(k) return api("/api/schedules/"+k.dataset.scskip,{method:"PATCH",body:{skip_next:k.dataset.v==="1"}}).then(loadSchedules).catch(function(j){alert(j.error)});
   var pz=t.closest("[data-scpause]");if(pz) return api("/api/schedules/"+pz.dataset.scpause,{method:"PATCH",body:{enabled:pz.dataset.v==="1"}}).then(loadSchedules).catch(function(j){alert(j.error)});
   var dl=t.closest("[data-scdel]");if(dl) return confirmBox("Delete this schedule?","It won't run again. Nothing on the servers changes.",null,function(){api("/api/schedules/"+dl.dataset.scdel,{method:"DELETE"}).then(loadSchedules)},"Delete")});
@@ -853,7 +872,7 @@ var EVT={signed_in:"Signed in",sign_in_failed:"Sign-in failed",mfa_failed:"Wrong
   signed_in_with_google:"Signed in with Google",google_sign_in_refused:"Google sign-in refused",ssh_access_requested:"Asked for an SSH access change",
   ssh_access_approved:"Approved an SSH access change",ssh_access_rejected:"Rejected an SSH access change",ssh_access_withdrawn:"Withdrew an SSH access request",
   ssh_access_expired:"SSH access ended (removed automatically)",ssh_approval_changed:"Changed SSH approval",
-  patch_watch_ran:"Automatic patch check",environment_restored:"Restored an environment",patch_cadence_changed:"Changed the patch plan",patch_watch_changed:"Changed automatic patch checks",inventory_added:"Added domains"};
+  patch_watch_ran:"Automatic patch check",environment_restored:"Restored an environment",weekly_plan_saved:"Saved a weekly plan",patch_cadence_changed:"Changed the patch plan",patch_watch_changed:"Changed automatic patch checks",inventory_added:"Added domains"};
 function auditTable(events){if(!events.length)return '<div class="empty">Nothing yet.</div>';
   return '<div class="scroll"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead><tbody>'+events.map(function(e){
     var d=e.detail||{},parts=Object.keys(d).filter(function(k){return d[k]!==null&&d[k]!==""&&typeof d[k]!=="object"}).map(function(k){return k.replace(/_/g," ")+": "+d[k]});

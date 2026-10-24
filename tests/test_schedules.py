@@ -138,3 +138,32 @@ def test_a_one_off_schedule_finishes(env):
     assert v["last_status"] == "queued" and v["next_run"] is None
     drain(env)
     api(env, "DELETE", f"/api/schedules/{s['id']}")
+
+
+def test_weekly_plan_per_day_times(env):
+    """Different start and stop times per day: days sharing a time become one schedule; saving again replaces the
+    plan but not other schedules."""
+    base = f"/api/clients/{env['cid']}/schedules/weekly"
+    other = add(env, action="restart", days=[2], time="03:00").json()
+    plan = [{"day": d, "start": "07:00", "stop": "19:00"} for d in range(4)]          # Mon-Thu 7-7
+    plan.append({"day": 4, "start": "07:00", "stop": "15:00"})                         # Friday ends early
+    plan.append({"day": 5, "start": "", "stop": ""})                                   # weekend off
+    r = api(env, "PUT", base, json={"environment": "HRDEV", "tz": LA, "plan": plan})
+    assert r.ok and r.json()["schedules"] == 3, r.text                                 # start M-F, stop M-Th, stop F
+    got = api(env, "GET", base, params={"environment": "HRDEV"}).json()
+    assert got["tz"] == LA and got["plan"][4] == {"day": 4, "start": "07:00", "stop": "15:00"}
+    assert got["plan"][6] == {"day": 6, "start": "", "stop": ""}
+    mine = [s for s in api(env, "GET", f"/api/clients/{env['cid']}/schedules").json()["schedules"]
+            if s["note"] == "Weekly plan"]
+    assert sorted((s["action"], s["time"], tuple(s["days"])) for s in mine) == [
+        ("start", "07:00", (0, 1, 2, 3, 4)), ("stop", "15:00", (4,)), ("stop", "19:00", (0, 1, 2, 3))]
+    r = api(env, "PUT", base, json={"environment": "HRDEV", "tz": LA, "plan": [{"day": 0, "start": "06:30"}]})
+    assert r.json()["schedules"] == 1
+    left = api(env, "GET", f"/api/clients/{env['cid']}/schedules").json()["schedules"]
+    assert other["id"] in [s["id"] for s in left] and len([s for s in left if s["note"] == "Weekly plan"]) == 1
+    assert api(env, "PUT", base, json={"environment": "HRDEV", "tz": LA, "plan": [{"day": 0, "start": "7am"}]}
+               ).status_code == 400
+    r = api(env, "PUT", base, json={"environment": "HRPRD", "tz": LA, "plan": [{"day": 0, "stop": "20:00"}]})
+    assert r.status_code == 409 and r.json()["need_confirm"]
+    api(env, "PUT", base, json={"environment": "HRDEV", "tz": LA, "plan": []})            # clear the plan
+    api(env, "DELETE", f"/api/schedules/{other['id']}")

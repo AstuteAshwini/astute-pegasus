@@ -156,7 +156,8 @@ MIGRATIONS = {"jobs": [("kind", "TEXT"), ("meta", "TEXT"), ("finalized", "INTEGE
                              ("update_to", "TEXT"), ("update_state", "TEXT"), ("update_version", "TEXT"),
                              ("update_detail", "TEXT"), ("update_at", "REAL"), ("can_update", "INTEGER"),
                              ("update_requested_at", "REAL")],
-              "access_keys": [("expires_on", "TEXT")]}
+              "access_keys": [("expires_on", "TEXT")],
+              "schedules": [("plan", "TEXT")]}
 
 
 # ---------------------------------------------------------------- storage
@@ -1385,6 +1386,73 @@ def create_schedule(cid):
                  (sch["id"], cid, env, action, days, sch["once_date"], at_time, tz, sch["note"], who(), time.time(), nxt))
     audit("schedule_created", cid, schedule=sch["id"], what=describe_schedule(sch), next_run=iso(nxt))
     return jsonify(schedule_view(db().execute("SELECT * FROM schedules WHERE id=?", (sch["id"],)).fetchone()))
+
+
+HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+@app.get("/api/clients/<cid>/schedules/weekly")
+@need("viewer")
+def get_weekly_plan(cid):
+    """The environment's weekly plan: a start and a stop time (or none) for each day of the week."""
+    get_client(cid)
+    env = str(request.args.get("environment") or "")
+    plan = [{"day": d, "start": "", "stop": ""} for d in range(7)]
+    tz = ""
+    for r in db().execute("SELECT * FROM schedules WHERE client_id=? AND environment=? AND plan='weekly'", (cid, env)):
+        tz = tz or r["tz"]
+        for d in schedule_days(r):
+            plan[d][r["action"]] = r["at_time"]
+    return jsonify(environment=env, tz=tz, plan=plan)
+
+
+@app.put("/api/clients/<cid>/schedules/weekly")
+@need("operator")
+def put_weekly_plan(cid):
+    """Replace the environment's weekly plan. Days that share a time become one schedule (e.g. start Mon-Fri 07:00),
+    so the schedule list stays short; other schedules of the environment are left alone."""
+    get_client(cid)
+    b = request.get_json(silent=True) or {}
+    env = str(b.get("environment") or "")
+    servers = env_servers(cid, env)
+    if not servers:
+        return jsonify(error="Choose an environment that has servers."), 400
+    tz = str(b.get("tz") or "")
+    try:
+        ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError):
+        return jsonify(error="Choose a valid time zone."), 400
+    groups = {}                                  # (action, time) -> days
+    for row_ in b.get("plan") or []:
+        try:
+            d = int(row_.get("day"))
+        except (TypeError, ValueError):
+            return jsonify(error="Each day needs a number from 0 (Monday) to 6 (Sunday)."), 400
+        if not 0 <= d <= 6:
+            return jsonify(error="Each day needs a number from 0 (Monday) to 6 (Sunday)."), 400
+        for action in ("start", "stop"):
+            t = str(row_.get(action) or "").strip()
+            if not t:
+                continue
+            if not HHMM.match(t):
+                return jsonify(error=f"Enter {action} times as HH:MM (24-hour)."), 400
+            groups.setdefault((action, t), set()).add(d)
+    if groups and is_prd(env_tier(servers)) and str(b.get("confirm") or "").upper() != env.upper():
+        return jsonify(error=f"Type {env} to confirm a schedule on production.", need_confirm=True), 409
+    old = db().execute("DELETE FROM schedules WHERE client_id=? AND environment=? AND plan='weekly'",
+                       (cid, env)).rowcount
+    made = []
+    for (action, t), ds in sorted(groups.items(), key=lambda x: (min(x[1]), x[0][0] != "start", x[0][1])):
+        sch = {"id": "s_" + uuid.uuid4().hex[:12], "client_id": cid, "environment": env, "action": action,
+               "days": ",".join(str(d) for d in sorted(ds)), "once_date": None, "at_time": t, "tz": tz,
+               "note": "Weekly plan"}
+        nxt = next_occurrence(sch, time.time())
+        db().execute("INSERT INTO schedules (id, client_id, environment, action, days, once_date, at_time, tz, note, "
+                     "created_by, created_at, next_run, plan) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'weekly')",
+                     (sch["id"], cid, env, action, sch["days"], None, t, tz, sch["note"], who(), time.time(), nxt))
+        made.append(describe_schedule(sch))
+    audit("weekly_plan_saved", cid, environment=env, schedules=made or "none", replaced=old)
+    return jsonify(ok=True, schedules=len(made), described=made)
 
 
 @app.patch("/api/schedules/<sid>")
