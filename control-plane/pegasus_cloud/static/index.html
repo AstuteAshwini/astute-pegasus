@@ -57,6 +57,9 @@ main{margin-left:var(--side);padding:28px 28px 340px;max-width:1280px}
 .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .msg{font-size:13.5px;padding:10px 13px;border-radius:var(--r);margin:10px 0;background:var(--stop-bg);color:var(--stop)}.msg.ok{background:var(--run-bg);color:var(--run)}.msg.info{background:var(--soft);color:var(--ink)}
 .tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--accent)}.tag.prd{background:var(--spark-bg);color:var(--spark-ink);box-shadow:inset 0 0 0 1px var(--spark)}.tag.warn{background:var(--warn-bg);color:var(--warn)}
+a.risk{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 7px;border-radius:999px;text-decoration:none;vertical-align:1px}
+a.risk.critical{background:var(--stop);color:#fff}a.risk.high{background:var(--spark);color:#2a1503}a.risk.medium{background:var(--warn-bg);color:var(--warn)}a.risk.low{background:var(--unk-bg);color:var(--unk)}
+.st.deferred{background:var(--unk-bg);color:var(--unk)}
 .watch{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;padding:10px 12px;margin:0 0 12px;background:var(--sunk);border:1px solid var(--line);border-radius:var(--r);font-size:13px}.watch label.inline{margin:0}.watch select{width:auto;padding:4px 8px;font-size:13px}
 .st{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;white-space:nowrap}
 .st::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
@@ -556,6 +559,17 @@ function applyCell(scope,ready,applyBtn,notReady){
   if(c.status==="stale") return '<span class="cr">'+link+'<span class="det">The plan changed after this ticket was raised</span>'+req("Request again")+'</span>';
   if(c.status==="failed") return '<span class="cr">'+link+'<span class="det">Last apply failed</span>'+req("Request again")+'</span>';
   return req("Request approval")}
+function advisoryLine(a){if(!a)return"";var keys=["jdk","weblogic","tuxedo","dbclient","peopletools"].filter(function(k){return a.components[k]});
+  if(!keys.length) return '<p class="help"><a href="'+esc(a.url)+'" target="_blank" rel="noopener">Read Oracle\'s latest CPU advisory</a>'+(a.error?' <span class="det">(risk scores unavailable: '+esc(a.error)+')</span>':'')+'</p>';
+  return '<p class="help risks"><b>Risk in Oracle\'s latest CPU:</b> '+keys.map(function(k){var r=a.components[k];return esc(r.title)+' <a class="risk '+esc(r.severity)+'" href="'+esc(a.url)+'" target="_blank" rel="noopener" title="'+r.count+' fix'+(r.count===1?'':'es')+'; highest: '+esc(r.cve)+'">CVSS '+r.max.toFixed(1)+'</a>'}).join(" · ")+
+    ' · <a href="'+esc(a.url)+'" target="_blank" rel="noopener">Read the advisory</a></p>'}
+function riskBadge(comp){var a=(S.pat&&S.pat.advisory&&S.pat.advisory.components)||{},r=a[comp];
+  if(!r) return "";
+  return '<a class="risk '+esc(r.severity)+'" href="'+esc(S.pat.advisory.url)+'" target="_blank" rel="noopener" title="Highest CVSS score among the '+r.count+' '+esc(r.title)+' fix'+(r.count===1?'':'es')+' in Oracle\'s latest CPU ('+esc(r.cve)+')">CVSS '+r.max.toFixed(1)+'</a>'}
+function readmeLink(it){
+  if(it.component==="jdk"){var m=String(it.target||"").split(".")[0];return m?'<a class="link sm" href="https://www.oracle.com/java/technologies/javase/'+encodeURIComponent(m)+'u-relnotes.html" target="_blank" rel="noopener">Release notes</a>':""}
+  if(it.patch_number) return '<a class="link sm" href="https://updates.oracle.com/Orion/SimpleSearch/process_form?search_type=patch&patch_number='+encodeURIComponent(it.patch_number)+'&plat_lang='+encodeURIComponent(it.platform||"226P")+'" target="_blank" rel="noopener" title="Oracle Support page for patch '+esc(it.patch_number)+', with its readme">Readme</a>';
+  return ""}
 function nodeType(roles){var r=roles||[],p=[];if(r.indexOf("app")>=0)p.push("App server");if(r.indexOf("prcs")>=0)p.push("Process scheduler");if(r.indexOf("web")>=0)p.push("Web (PIA)");return p.join(", ")}
 function renderPat(){var j=S.pat,h="",env=j.environment;
   var checked=j.hosts.map(function(x){return x.checked}).filter(Boolean).sort().pop();
@@ -566,7 +580,7 @@ function renderPat(){var j=S.pat,h="",env=j.environment;
   if(j.approval.error) h+='<div class="msg">Jira: '+esc(j.approval.error)+'</div>';
   var groups={},order=[];
   j.hosts.forEach(function(host){(host.items||[]).forEach(function(it){if(it.status!=="needed"||!it.key)return;
-    var g=groups[it.key];if(!g){g=groups[it.key]={component:it.component,target:it.target,label:it.latest_label||it.target,key:it.key,hosts:[],ready:0};order.push(it.key)}
+    var g=groups[it.key];if(!g){g=groups[it.key]={component:it.component,target:it.target,label:it.latest_label||it.target,key:it.key,hosts:[],ready:0,item:it};order.push(it.key)}
     g.hosts.push(host.host);if(it.staged)g.ready++})});
   if(order.length){
     if(j.approval.required) h+='<p class="help">Patching '+esc(env)+' needs an approved Jira ticket. Request approval, then Apply unlocks once someone other than the Pegasus account approves it.</p>';
@@ -575,13 +589,13 @@ function renderPat(){var j=S.pat,h="",env=j.environment;
       h+='<div class="apply-row apply-all"><span><b>All '+order.length+' outstanding updates</b> ('+esc(names.join(", "))+') in one maintenance window</span>'+
         applyCell("all",allReady,function(cr){return '<button type="button" class="sm primary" data-applyall="1"'+(cr?' data-cr="'+esc(cr)+'"':'')+'>Apply all to '+esc(env)+'</button>'},'<span class="det">Download every update first</span>')+'</div>'}
     order.forEach(function(k){var g=groups[k];
-      h+='<div class="apply-row"><span><b>'+esc(NM[g.component]+" "+g.label)+'</b> for '+g.hosts.length+' server'+(g.hosts.length===1?'':'s')+'</span>'+
+      h+='<div class="apply-row"><span><b>'+esc(NM[g.component]+" "+g.label)+'</b> for '+g.hosts.length+' server'+(g.hosts.length===1?'':'s')+' '+riskBadge(g.component)+' '+readmeLink(g.item)+'</span>'+
         applyCell(g.component+"~"+k,g.ready===g.hosts.length,function(cr){return '<button type="button" class="sm primary" data-apply="'+esc(k)+'"'+(cr?' data-cr="'+esc(cr)+'"':'')+'>Apply to '+esc(env)+'</button>'},
           '<span class="det">Download on every server first ('+g.ready+' of '+g.hosts.length+' done)</span>')+'</div>'})}
   var behind=0,toStage=0;j.hosts.forEach(function(host){(host.items||[]).forEach(function(it){if(it.status==="needed"){behind++;if(it.key&&!it.staged)toStage++}})});
   h+='<p class="help" style="margin:12px 0 10px"><b>'+(behind?behind+' component'+(behind===1?'':'s')+' behind the latest Oracle release.':'Every component is on the latest known release.')+'</b>'+
     ' Oracle\'s last Critical Patch Update was '+esc(new Date(j.cpu.last+"T12:00:00").toLocaleDateString(undefined,{month:"long",day:"numeric",year:"numeric"}))+'; the next is '+esc(new Date(j.cpu.next+"T12:00:00").toLocaleDateString(undefined,{month:"long",day:"numeric",year:"numeric"}))+'.'+
-    (j.infra_dpk?' Latest PeopleTools Infrastructure DPK: <b>'+esc(j.infra_dpk.patch)+'</b> ('+esc(j.infra_dpk.released)+').':'')+'</p>';
+    (j.infra_dpk?' Latest PeopleTools Infrastructure DPK: <b>'+esc(j.infra_dpk.patch)+'</b> ('+esc(j.infra_dpk.released)+').':'')+'</p>'+advisoryLine(j.advisory);
   if(toStage&&can("operator")) h+='<div class="toolbar" style="margin-bottom:12px"><button type="button" class="primary" id="pStageAll">Download all '+toStage+' update'+(toStage===1?'':'s')+'</button><span class="det">Downloaded on the connector once, copied to '+esc(j.settings.staging_root)+' on each server. Nothing is installed or restarted.</span></div>';
   h+='<div class="scroll"><table><thead><tr><th>Server</th><th>Component</th><th>Installed</th><th>Latest</th><th>Status</th><th></th></tr></thead><tbody>';
   j.hosts.forEach(function(host,hi){var hc='<td><span class="mono">'+esc(host.host)+'</span><br><span class="det">'+esc(nodeType(host.roles))+(host.pt?' · PeopleTools '+esc(host.pt):'')+'</span></td>';
@@ -593,7 +607,7 @@ function renderPat(){var j=S.pat,h="",env=j.environment;
       var act="";
       if(it.staged&&it.status==="needed") act='<span class="st ok" title="'+esc(it.staged.dir)+'">Downloaded</span>';
       else if(it.status==="needed"&&it.key&&can("operator")) act='<button type="button" class="sm" data-dl="'+hi+':'+ii+'">Download</button>';
-      var st={needed:"Update available",ok:"Up to date","no-target":"Unknown"}[it.status]||it.status;
+      var st={needed:"Update available",ok:"Up to date","no-target":"Unknown",deferred:"With the next CPU"}[it.status]||it.status;
       h+='<tr title="'+esc(it.detail||"")+'">'+(ii===0?hc:'<td></td>')+'<td>'+esc(NM[it.component]||it.component)+'</td><td>'+esc(it.installed)+'</td><td>'+latest+'</td><td><span class="st '+esc(it.status)+'">'+st+'</span></td><td>'+act+'</td></tr>';
       if(it.status!=="ok"&&it.detail) h+='<tr class="sub"><td></td><td colspan="5" class="det">'+esc(it.detail)+'</td></tr>'});
     (host.warnings||[]).forEach(function(w){h+='<tr class="sub"><td></td><td colspan="5" class="det">Warning: '+esc(w)+'</td></tr>'})});
@@ -685,6 +699,8 @@ $("main").addEventListener("input",function(e){if(e.target.id!=="aKey")return;cl
     api("/api/access/parse",{method:"POST",body:{key:v}}).then(function(k){S.acc.key=v;$("aKeyInfo").innerHTML='<div class="msg ok">'+esc(k.type)+(k.bits?" "+k.bits+" bits":"")+' key'+(k.comment?' for '+esc(k.comment):'')+' · '+esc(k.fingerprint)+'</div>'})
     .catch(function(j){S.acc.key=null;$("aKeyInfo").innerHTML='<div class="msg">'+esc(j.error)+'</div>'})},300)});
 $("main").addEventListener("change",function(e){var c=e.target.closest("[data-accenv]");if(c)S.acc.sel[c.dataset.accenv]=c.checked});
+$("main").addEventListener("change",function(e){if(e.target.id!=="sCadence")return;
+  api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:{cadence:e.target.value}}).then(function(){$("sCadMsg").innerHTML='<span class="st ok">Saved</span>'}).catch(function(j){alert(j.error)})});
 $("main").addEventListener("change",function(e){var t=e.target;if(t.id!=="wCheck"&&t.id!=="wStage")return;
   var body=t.id==="wCheck"?{check:t.checked}:{stage:t.value};
   api("/api/clients/"+S.cid+"/patch-watch",{method:"PUT",body:body}).then(loadWatch).catch(function(j){alert(j.error);loadWatch()})});
@@ -730,6 +746,8 @@ function renderSettings(){var ro=!can("admin")?" disabled":"",oc=S.detail.oci_co
     '<label>Additional fields (JSON)<input id="jExtra" class="mono"'+ro+'></label>'+
     '<label class="inline"><input type="checkbox" id="jSelf"'+ro+'>Don\'t accept approval by the account Pegasus raises tickets with</label>'+
     '<div id="jMsg"></div>'+(can("admin")?'<div class="toolbar"><button type="button" class="primary" id="jSave">Save</button><button type="button" id="jTest">Test connection</button><button type="button" class="danger" id="jForget" hidden>Remove token</button></div>':'')+'</div>'+
+    '<div class="panel"><h2>Patch plan</h2><p class="help">What this client signed up for. On quarterly CPUs only, releases Oracle ships between CPUs are shown as coming with the next CPU, and can\'t be downloaded or applied.</p>'+
+    '<div class="toolbar"><select id="sCadence" style="max-width:420px"'+ro+'><option value="monthly">Every release, as Oracle ships it (monthly)</option><option value="quarterly">Quarterly Critical Patch Updates only</option></select><span id="sCadMsg"></span></div></div>'+
     '<div class="panel"><h2>Staging folder</h2><p class="help">Where downloaded patches are copied on each server. Pegasus creates it (with sudo if it must) and gives it to the PeopleSoft owner.</p>'+
     '<div class="toolbar"><input id="sRoot" class="mono" style="max-width:420px"'+ro+'>'+(can("admin")?'<button type="button" id="sSave">Save</button>':'')+'</div><div id="sMsg"></div></div>'+
     '<div class="panel"><h2>CPU targets (optional)</h2><p class="help">Pegasus finds the latest JDK, WebLogic 14.1.2, Tuxedo 22.1 and Database 19c client patches by itself. Pin a target here only for other releases, or to hold a component at a specific level.</p>'+
@@ -741,7 +759,7 @@ function renderSettings(){var ro=!can("admin")?" disabled":"",oc=S.detail.oci_co
     $("jStart").value=c.start_transition||"";$("jDone").value=c.done_transition||"";$("jApproved").value=(c.approved_statuses||[]).join(", ");$("jRejected").value=(c.rejected_statuses||[]).join(", ");
     $("jExtra").value=c.extra_fields&&Object.keys(c.extra_fields).length?JSON.stringify(c.extra_fields):"";$("jSelf").checked=c.block_self_approval!==false;
     $("jToken").placeholder=j.has_token?"saved (leave blank to keep)":"";if($("jForget"))$("jForget").hidden=!j.has_token;jiraUi()});
-  api("/api/clients/"+S.cid+"/patch-settings").then(function(j){$("sRoot").value=j.staging_root;S.targets=j.targets;renderTargets()})}
+  api("/api/clients/"+S.cid+"/patch-settings").then(function(j){$("sRoot").value=j.staging_root;$("sCadence").value=j.cadence||"monthly";S.targets=j.targets;renderTargets()})}
 function jiraUi(){var cloud=$("jDeploy").value==="cloud";$("jUserL").hidden=!cloud;$("jTokL").textContent=cloud?"API token":"Personal access token"}
 function renderTargets(){var ro=!can("admin")?" disabled":"";
   if(!S.targets.length){$("tBody").innerHTML='<tr><td colspan="8" class="det">No targets. Pegasus uses Oracle\'s latest releases.</td></tr>';return}

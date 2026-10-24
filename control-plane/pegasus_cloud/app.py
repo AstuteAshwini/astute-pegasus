@@ -33,7 +33,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory, session
 
-from . import __version__, auth, evaluate as ev, jira as jiramod, protocol, sshkeys
+from . import __version__, advisory, auth, evaluate as ev, jira as jiramod, protocol, sshkeys
 
 DATA_DIR = Path(os.environ.get("PEGASUS_DATA", Path(__file__).resolve().parent.parent / "data"))
 DB_PATH = DATA_DIR / "pegasus.db"
@@ -1704,7 +1704,9 @@ def jira_later(cid, key, comment, transition_field=None):
 # ---------------------------------------------------------------- patching: levels, latest releases, staging
 def patch_settings(cid):
     return {"staging_root": get_setting(cid, "staging_root", DEFAULT_STAGING),
-            "targets": get_setting(cid, "cpu_targets", [])}
+            "targets": get_setting(cid, "cpu_targets", []),
+            # monthly: every release as Oracle ships it; quarterly: only Critical Patch Updates (what the client signed up for)
+            "cadence": get_setting(cid, "patch_cadence", "monthly")}
 
 
 def env_levels(cid, env):
@@ -1730,7 +1732,8 @@ def posture(cid, env):
     servers = env_servers(cid, env)
     levels, staged = env_levels(cid, env), env_staged(cid, env)
     cat, cat_at = client_catalog(cid)
-    targets = patch_settings(cid)["targets"]
+    ps = patch_settings(cid)
+    targets, cadence = ps["targets"], ps["cadence"]
     java_dates = dict(cat.get("java_dates") or {})
     for info in (cat.get("java") or {}).values():         # a JDK just updated to the latest release
         if info.get("version") and info.get("date"):
@@ -1746,7 +1749,8 @@ def posture(cid, env):
             h.update(checked=iso(lv["checked_at"]), pt=lv.get("pt", ""), warnings=lv.get("warnings", []),
                      error=lv.get("error", ""))
             if not lv.get("error"):
-                items = ev.evaluate(lv, targets, cat.get("java"), cat.get("oracle"), java_dates)
+                items = ev.apply_cadence(ev.evaluate(lv, targets, cat.get("java"), cat.get("oracle"), java_dates),
+                                         cadence)
                 hs = staged.get(hk, {})
                 for it in items:
                     st = hs.get(it.get("key") or "-")
@@ -1823,7 +1827,7 @@ def patching_view(cid):
                    approval={"enabled": bool(jcfg["enabled"]), "required": approval_required(cid, tier),
                              "error": jira_error},
                    change_requests=[change_request_view(c) for c in latest.values()],
-                   outstanding=len(outstanding_groups(p["hosts"])))
+                   outstanding=len(outstanding_groups(p["hosts"])), advisory=advisory_view())
 
 
 @app.post("/api/clients/<cid>/patching/check")
@@ -1916,6 +1920,58 @@ def queue_stage(cid, env, servers, chosen, created_by=None):
     jid = queue_job(cid, env, "stage", f"download and stage CPU patches {env}", steps, stop_on_failure=True,
                     created_by=created_by)
     return jid, keys, len(per_host)
+
+
+# ---------------------------------------------------------------- Oracle's CPU advisory (risk scores)
+def fetch_advisory_page(url):
+    import requests
+    r = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0 (Pegasus CPU advisory reader)"})
+    r.raise_for_status()
+    return r.text
+
+
+def refresh_advisory(now=None, force=False):
+    """Read the latest CPU advisory's risk matrices once a day (retrying hourly if it fails). The control plane does
+    this itself: the page is public, and no client data is involved."""
+    now = now or time.time()
+    cpu = ev.cpu_dates()["last"]
+    cur = get_setting("_global", "cpu_advisory", {}) or {}
+    if not force:
+        if cur.get("cpu") == cpu and not cur.get("error") and now - cur.get("fetched", 0) < 24 * 3600:
+            return cur
+        if now - cur.get("tried", 0) < 3600:
+            return cur
+    url = advisory.advisory_url(cpu)
+    try:
+        found = advisory.parse(fetch_advisory_page(url))
+        data = {"cpu": cpu, "url": url, "fetched": now, "tried": now, "components": found,
+                "error": "" if found else "Oracle's advisory page didn't have the risk matrices Pegasus expects."}
+        if not found and cur.get("components"):
+            data = dict(cur, tried=now, error=data["error"])
+    except Exception as e:
+        data = dict(cur, tried=now, error=f"Couldn't read Oracle's advisory ({url}): {e}")
+        data.setdefault("cpu", cpu)
+        data.setdefault("url", url)
+    put_setting("_global", "cpu_advisory", data)
+    return data
+
+
+def advisory_loop():
+    while True:
+        try:
+            with app.app_context():
+                refresh_advisory()
+        except Exception as e:
+            app.logger.warning("reading the CPU advisory failed: %s", e)
+        time.sleep(300)
+
+
+def advisory_view():
+    a = get_setting("_global", "cpu_advisory", {}) or {}
+    comps = {k: dict(v, severity=advisory.severity(v["max"]), title=advisory.TITLES.get(k, k))
+             for k, v in (a.get("components") or {}).items()}
+    return {"cpu": a.get("cpu"), "url": a.get("url") or advisory.advisory_url(ev.cpu_dates()["last"]),
+            "components": comps, "checked": iso(a.get("fetched")), "error": a.get("error") or ""}
 
 
 # ---------------------------------------------------------------- patch watch (automatic checks and staging)
@@ -2061,6 +2117,11 @@ def put_patch_settings(cid):
             return jsonify(error="The staging folder must be a dedicated absolute path like "
                                  "/u01/app/oracle/staging/cpu."), 400
         put_setting(cid, "staging_root", root)
+    if "cadence" in body:
+        if body["cadence"] not in ("monthly", "quarterly"):
+            return jsonify(error="Choose monthly or quarterly."), 400
+        put_setting(cid, "patch_cadence", body["cadence"])
+        audit("patch_cadence_changed", cid, cadence=body["cadence"])
     if "targets" in body:
         clean, problems = [], []
         for i, r in enumerate(body.get("targets") or [], start=1):
@@ -3137,6 +3198,7 @@ def main():
         threading.Thread(target=auto_status_loop, daemon=True).start()
         print(f"Checking every domain's status every {STATUS_EVERY // 60} minutes (PEGASUS_STATUS_EVERY=0 turns it off)")
     threading.Thread(target=schedule_loop, daemon=True).start()
+    threading.Thread(target=advisory_loop, daemon=True).start()
     try:
         from waitress import serve
     except ImportError:

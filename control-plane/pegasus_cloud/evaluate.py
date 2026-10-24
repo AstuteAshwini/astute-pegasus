@@ -38,6 +38,33 @@ def cpu_dates(today=None):
     return {"last": last.isoformat(), "next": nxt.isoformat(), "label": last.strftime("%Y-%b")}
 
 
+def is_cpu_release(iso_date):
+    """True if a release came out with a quarterly Critical Patch Update (within a few days of one), rather than in
+    the months between them."""
+    try:
+        d = dt.date.fromisoformat(str(iso_date)[:10])
+    except ValueError:
+        return True                    # unknown date: don't hold it back
+    cpus = cpu_dates(d + dt.timedelta(days=10))
+    last = dt.date.fromisoformat(cpus["last"])
+    return -3 <= (d - last).days <= 10
+
+
+def apply_cadence(items, cadence):
+    """For a client on quarterly CPUs only, a release made between CPUs isn't due: it's shown as deferred (the next
+    CPU includes it) and can't be downloaded or applied. Pinned CPU targets are left alone."""
+    if cadence != "quarterly":
+        return items
+    for it in items:
+        if it.get("status") == "needed" and it.get("released") and it.get("source") != "CPU target" \
+                and not is_cpu_release(it["released"]):
+            it["status"] = "deferred"
+            it["detail"] = (f"{it.get('latest_label') or it.get('target')} was released on {it['released']}, between "
+                            "quarterly CPUs. This client takes quarterly CPUs only, so it comes with the next CPU. "
+                            + (it.get("detail") or ""))
+    return items
+
+
 def month_label(yymmdd):
     try:
         return f"{MONTHS[int(yymmdd[2:4]) - 1]}{2000 + int(yymmdd[:2])}"
@@ -99,6 +126,7 @@ def evaluate(host, targets=None, java=None, oracle=None, java_dates=None):
                 items.append({"component": comp, "installed": installed, "target": latest["version"],
                               "latest_label": f"{latest['version']} {month_label(d[2:4] + d[5:7] + '01')} CPU",
                               "auto": "jdk", "key": f"{latest['version']}|java|", "source": "Oracle Java releases",
+                              "released": d,
                               "status": "needed" if needed else "ok",
                               "detail": f"Oracle's latest JDK {jdk_major(version)} release is {latest['version']} ({d})."})
                 continue
@@ -112,7 +140,7 @@ def evaluate(host, targets=None, java=None, oracle=None, java_dates=None):
             patch = lw["spb_patch"] or lw["psu_patch"]
             items.append({"component": comp, "installed": installed, "target": lw["stamp"],
                           "latest_label": f"14.1.2.0 {cpu_label(lw['released'])} CPU", "source": "Oracle Support",
-                          "auto": "mos", "patch_number": patch, "platform": "2000P",
+                          "auto": "mos", "patch_number": patch, "platform": "2000P", "released": lw["released"],
                           "verify_ids": [lw["psu_patch"]], "key": f"{patch}|2000P|",
                           "status": "needed" if needed else "ok",
                           "detail": (f"Installed WLS PSU 14.1.2.0.{psu}; newest is 14.1.2.0.{lw['stamp']} (patch "
@@ -125,7 +153,7 @@ def evaluate(host, targets=None, java=None, oracle=None, java_dates=None):
             needed = cur < lt["rp"]
             items.append({"component": comp, "installed": installed, "target": str(lt["rp"]), "level": str(lt["rp"]),
                           "latest_label": f"{version} RP{lt['rp']:03d}", "source": "Oracle Support",
-                          "auto": "mos", "patch_number": lt["patch"], "platform": "226P",
+                          "auto": "mos", "patch_number": lt["patch"], "platform": "226P", "released": lt["released"],
                           "key": f"{lt['patch']}|226P|", "status": "needed" if needed else "ok",
                           "detail": f"Newest rolling patch: RP{lt['rp']:03d}, patch {lt['patch']} (released "
                                     f"{lt['released']}" + (", RP number inferred from the sequence"
@@ -139,6 +167,7 @@ def evaluate(host, targets=None, java=None, oracle=None, java_dates=None):
                 items.append({"component": comp, "installed": installed, "target": f"19.{ld['ru']}",
                               "latest_label": f"{version} {cpu_label(ld['released'])} CPU", "source": "Oracle Support",
                               "auto": "mos", "patch_number": ld["patch"], "platform": "226P",
+                              "released": ld["released"],
                               "verify_ids": [ld["patch"]], "key": f"{ld['patch']}|226P|",
                               "status": "needed" if needed else "ok",
                               "detail": f"Installed Release Update {ru}; newest is 19.{ld['ru']} (patch {ld['patch']}, "
