@@ -688,15 +688,18 @@ function renderAccess(){var d=S.detail,h='<div>';
 var REQ_STATE={pending:"waiting for approval",approved:"approved, running",done:"done",failed:"approved, but the job failed",rejected:"rejected",withdrawn:"withdrawn"};
 function loadAccessRequests(){api("/api/clients/"+S.cid+"/access-requests").then(function(j){if(S.tab!=="access")return;S.acc.approval=j.approval;
   var ap=$("aApproval");if(ap)ap.checked=j.approval;
-  var n=$("aApprovalNote");if(n)n.textContent=j.approval?"Add and Remove send a request: the change runs once another admin approves it. Check runs straight away.":"Changes run straight away (approval is turned off for this client).";
+  var n=$("aApprovalNote");if(n)n.textContent=!j.approval?"Changes run straight away (approval is turned off for this client).":j.jira?"Add and Remove raise a Jira ticket. Pegasus makes the change by itself once someone other than the Pegasus account approves it in Jira (it checks every couple of minutes). Check runs straight away.":"Add and Remove send a request: the change runs once another admin approves it. Check runs straight away.";
+  var hasJira=j.requests.some(function(r){return r.jira_key&&r.status==="pending"});
   if(!j.requests.length){$("aReqs").innerHTML='<div class="empty">No requests yet.</div>';return}
   $("aReqs").innerHTML='<div class="scroll"><table><thead><tr><th>Request</th><th>Who and why</th><th>Status</th><th></th></tr></thead><tbody>'+j.requests.map(function(r){
     return '<tr><td><b>'+esc(r.summary)+'</b><br><span class="det">'+esc(r.environments.join(", "))+(r.expires_on?' · until '+esc(r.expires_on):'')+'</span>'+(r.fingerprint?'<br><span class="mono det">'+esc(r.fingerprint)+'</span>':'')+'</td>'+
       '<td>'+esc(r.note||"")+'<br><span class="det">Asked by '+esc(r.requested_by)+' '+esc(ago(r.requested_at))+'</span></td>'+
-      '<td><span class="tag'+(r.status==="pending"?" warn":r.status==="rejected"||r.status==="failed"?" prd":"")+'">'+esc(REQ_STATE[r.status]||r.status)+'</span>'+(r.decided_by?'<br><span class="det">'+esc(r.decided_by)+' '+esc(ago(r.decided_at))+(r.decision_note?': '+esc(r.decision_note):'')+'</span>':'')+'</td><td>'+
+      '<td><span class="tag'+(r.status==="pending"?" warn":r.status==="rejected"||r.status==="failed"?" prd":"")+'">'+esc(r.status==="pending"&&r.jira_key?"waiting for Jira approval":REQ_STATE[r.status]||r.status)+'</span>'+
+      (r.jira_key?'<br><a href="'+esc(r.jira_url)+'" target="_blank" rel="noopener">'+esc(r.jira_key)+'</a>'+(r.jira_status&&r.status==="pending"?' <span class="det">'+esc(r.jira_status)+(r.checked_at?', checked '+esc(ago(r.checked_at)):'')+'</span>':''):'')+(r.decided_by?'<br><span class="det">'+esc(r.decided_by)+' '+esc(ago(r.decided_at))+(r.decision_note?': '+esc(r.decision_note):'')+'</span>':'')+'</td><td>'+
       (r.can_decide?'<button type="button" class="primary sm" data-areq="approve" data-id="'+esc(r.id)+'">Approve</button> <button type="button" class="link sm danger" data-areq="reject" data-id="'+esc(r.id)+'">Reject</button>':'')+
       (r.can_withdraw?' <button type="button" class="link sm" data-areq="withdraw" data-id="'+esc(r.id)+'">Withdraw</button>':'')+
-      (r.job?' <button type="button" class="link sm" data-areqjob="'+esc(r.job)+'">Job</button>':'')+'</td></tr>'}).join("")+'</tbody></table></div>'})}
+      (r.job?' <button type="button" class="link sm" data-areqjob="'+esc(r.job)+'">Job</button>':'')+'</td></tr>'}).join("")+'</tbody></table></div>'+
+    (hasJira?'<div class="toolbar" style="margin-top:8px"><button type="button" class="sm" id="aJiraCheck">Check Jira now</button></div>':'')})}
 function loadAccess(){api("/api/clients/"+S.cid+"/access").then(function(j){if(S.tab!=="access")return;
   if(!j.keys.length){$("aReg").innerHTML='<div class="empty">None yet.</div>';return}
   $("aReg").innerHTML='<div class="scroll"><table><thead><tr><th>Key</th><th>Account</th><th>Servers</th><th></th></tr></thead><tbody>'+j.keys.map(function(k){
@@ -717,7 +720,8 @@ $("main").addEventListener("change",function(e){if(e.target.id!=="aApproval")ret
   api("/api/clients/"+S.cid+"/access-settings",{method:"PUT",body:{approval:on}}).then(loadAccessRequests).catch(function(j){alert(j.error);e.target.checked=!on})});
 function accessRun(body,label){
   var go=function(typed){if(typed)body.confirm=typed;api("/api/clients/"+S.cid+"/access",{method:"POST",body:body}).then(function(j){
-      if(j.pending){loadAccessRequests();var m=$("aMsg");if(m)msg("aMsg","Sent for approval. It runs on "+j.servers+" server"+(j.servers===1?"":"s")+" once another admin approves it.","ok");else alert("Sent for approval.");return}
+      if(j.pending){loadAccessRequests();var txt=j.jira_key?"Raised "+j.jira_key+" in Jira. Pegasus makes the change on "+j.servers+" server"+(j.servers===1?"":"s")+" once it's approved there.":"Sent for approval. It runs on "+j.servers+" server"+(j.servers===1?"":"s")+" once another admin approves it.";
+        var m=$("aMsg");if(m)msg("aMsg",txt,"ok");else alert(txt);return}
       watch(j.job,label,loadAccess)})
     .catch(function(j){if(j.need_confirm) return confirmBox(label+" on production?","This changes authorized_keys on production servers ("+j.prd.join(", ")+").",j.expected,go,"Continue");alert(j.error||"Couldn't start.")})};
   go(null)}
@@ -733,6 +737,7 @@ $("main").addEventListener("click",function(e){if(S.tab!=="access")return;var t=
       return api("/api/access-requests/"+id+"/reject",{method:"POST",body:{note:why}}).then(done).catch(function(j){alert(j.error)})}
     return api("/api/access-requests/"+id+"/withdraw",{method:"POST",body:{}}).then(done).catch(function(j){alert(j.error)})}
   var qj=t.closest("[data-areqjob]");if(qj) return watch(qj.dataset.areqjob,"SSH access",loadAccess);
+  if(t.id==="aJiraCheck"){t.disabled=true;t.textContent="Checking…";return api("/api/clients/"+S.cid+"/access-requests/check",{method:"POST",body:{}}).then(function(){loadAccessRequests();loadAccess()}).catch(function(j){alert(j.error);loadAccessRequests()})}
   var r=t.closest("[data-rec]");if(r){var go=function(){accessRun({action:r.dataset.rec,record:r.dataset.rid},r.dataset.rec+" SSH key")};
     if(r.dataset.rec==="remove") return confirmBox("Remove this key?","It's removed from authorized_keys on every server it was added to (a backup of the file is kept on each server).",null,go,"Remove");go()}});
 

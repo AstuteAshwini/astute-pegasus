@@ -157,7 +157,9 @@ MIGRATIONS = {"jobs": [("kind", "TEXT"), ("meta", "TEXT"), ("finalized", "INTEGE
                              ("update_detail", "TEXT"), ("update_at", "REAL"), ("can_update", "INTEGER"),
                              ("update_requested_at", "REAL")],
               "access_keys": [("expires_on", "TEXT")],
-              "schedules": [("plan", "TEXT")]}
+              "schedules": [("plan", "TEXT")],
+              "access_requests": [("jira_key", "TEXT"), ("jira_url", "TEXT"), ("jira_status", "TEXT"),
+                                  ("checked_at", "REAL")]}
 
 
 # ---------------------------------------------------------------- storage
@@ -1531,6 +1533,7 @@ def schedule_loop():
             with app.app_context():
                 run_due_schedules()
                 expire_access()
+                check_access_jira()
                 run_patch_watch()
                 purge_removed()
         except Exception as e:                       # keep going even if one round fails
@@ -2602,6 +2605,10 @@ def access_rid(fp, account):
     return f"{fp}|{account or ''}"
 
 
+def cid_of(j):
+    return j["client_id"]
+
+
 def record_access(j, pairs):
     meta = jload(j["meta"], {}) or {}
     key, _ = sshkeys.parse(meta.get("line"))
@@ -2609,8 +2616,14 @@ def record_access(j, pairs):
         return
     mode, account, cid = meta.get("mode"), meta.get("account") or "", j["client_id"]
     if meta.get("request"):
-        db().execute("UPDATE access_requests SET status=? WHERE id=?",
-                     ("done" if j["status"] == "succeeded" else "failed", meta["request"]))
+        ok = j["status"] == "succeeded"
+        db().execute("UPDATE access_requests SET status=? WHERE id=?", ("done" if ok else "failed", meta["request"]))
+        ar = db().execute("SELECT jira_key FROM access_requests WHERE id=?", (meta["request"],)).fetchone()
+        if ar and ar["jira_key"]:
+            jira_later(cid_of(j), ar["jira_key"],
+                       f"Pegasus finished this SSH access change on {now_text()}: *{'SUCCEEDED' if ok else 'FAILED'}*"
+                       + (f" ({j['note']})" if j["note"] else "") + f". Job {j['id']}; the details are in Pegasus.",
+                       "done_transition" if ok else None)
     rid = access_rid(key["fingerprint"], account)
     rec = db().execute("SELECT * FROM access_keys WHERE client_id=? AND rid=?", (cid, rid)).fetchone()
     if mode == "check" and not rec:
@@ -2771,14 +2784,22 @@ def access_run(cid):
             u = current_user()
             saved = {k: body.get(k) for k in ("action", "key", "account", "note", "environments", "record",
                                               "expires_on")}
+            key, url, jstatus = None, None, None
+            if access_uses_jira(cid):
+                try:
+                    key, url = raise_access_ticket(cid, plan)
+                except jiramod.JiraError as e:
+                    return jsonify(error=f"Couldn't raise the Jira ticket: {e}"), 502
+                jstatus = "raised"
             db().execute("INSERT INTO access_requests (id, client_id, mode, body, summary, environments, note, "
-                         "expires_on, requested_by, requested_by_id, requested_at, status) "
-                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                         "expires_on, requested_by, requested_by_id, requested_at, status, jira_key, jira_url, "
+                         "jira_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (rid, cid, plan["mode"], json.dumps(saved), plan["title"], json.dumps(plan["envs"]),
-                          plan["note"], plan["expires_on"], who(), u["id"], time.time(), "pending"))
+                          plan["note"], plan["expires_on"], who(), u["id"], time.time(), "pending", key, url, jstatus))
             audit("ssh_access_requested", cid, request=rid, title=plan["title"], environments=plan["envs"],
-                  servers=len(plan["steps"]), note=plan["note"], expires_on=plan["expires_on"])
-            return jsonify(request=rid, pending=True, servers=len(plan["steps"]), environments=plan["envs"])
+                  servers=len(plan["steps"]), note=plan["note"], expires_on=plan["expires_on"], ticket=key or "")
+            return jsonify(request=rid, pending=True, servers=len(plan["steps"]), environments=plan["envs"],
+                           jira_key=key, jira_url=url)
         check_prd_confirm(plan, body)
         jid = queue_access(cid, plan)
     except AccessProblem as e:
@@ -2799,7 +2820,10 @@ def access_request_view(r):
             "fingerprint": key["fingerprint"] if key else "", "requested_by": r["requested_by"],
             "requested_at": iso(r["requested_at"]), "status": r["status"], "decided_by": r["decided_by"],
             "decided_at": iso(r["decided_at"]), "decision_note": r["decision_note"], "job": r["job_id"],
-            "mine": mine, "can_decide": bool(r["status"] == "pending" and u and u["role"] == "admin" and not mine),
+            "jira_key": r["jira_key"], "jira_url": r["jira_url"], "jira_status": r["jira_status"],
+            "checked_at": iso(r["checked_at"]),
+            "mine": mine, "can_decide": bool(r["status"] == "pending" and not r["jira_key"] and u
+                                             and u["role"] == "admin" and not mine),
             "can_withdraw": bool(r["status"] == "pending" and (mine or (u and u["role"] == "admin")))}
 
 
@@ -2809,7 +2833,8 @@ def access_requests(cid):
     get_client(cid)
     rows = db().execute("SELECT * FROM access_requests WHERE client_id=? ORDER BY status='pending' DESC, "
                         "requested_at DESC LIMIT 60", (cid,)).fetchall()
-    return jsonify(requests=[access_request_view(r) for r in rows], approval=access_approval_required(cid))
+    return jsonify(requests=[access_request_view(r) for r in rows], approval=access_approval_required(cid),
+                   jira=access_uses_jira(cid))
 
 
 def pending_access_request(rid):
@@ -2827,6 +2852,9 @@ def pending_access_request(rid):
 def approve_access_request(rid):
     r = pending_access_request(rid)
     u = current_user()
+    if r["jira_key"]:
+        return jsonify(error=f"This request is approved in Jira ({r['jira_key']}). Pegasus makes the change as soon "
+                             "as it sees the approval."), 409
     if r["requested_by_id"] == u["id"]:
         return jsonify(error="Someone other than the requester has to approve it."), 403
     body = request.get_json(silent=True) or {}
@@ -2852,6 +2880,8 @@ def approve_access_request(rid):
 @need("admin")
 def reject_access_request(rid):
     r = pending_access_request(rid)
+    if r["jira_key"]:
+        return jsonify(error=f"Reject it in Jira ({r['jira_key']}), or withdraw it here."), 409
     note = str((request.get_json(silent=True) or {}).get("note") or "").strip()[:300]
     db().execute("UPDATE access_requests SET status='rejected', decided_by=?, decided_by_id=?, decided_at=?, "
                  "decision_note=? WHERE id=?", (who(), current_user()["id"], time.time(), note, rid))
@@ -2869,8 +2899,103 @@ def withdraw_access_request(rid):
         return jsonify(error="Only the requester or an admin can withdraw it."), 403
     db().execute("UPDATE access_requests SET status='withdrawn', decided_by=?, decided_by_id=?, decided_at=? "
                  "WHERE id=?", (who(), u["id"], time.time(), rid))
+    if r["jira_key"]:
+        jira_later(r["client_id"], r["jira_key"], f"Withdrawn in Pegasus by {who()} on {now_text()}. Nothing was "
+                                                  "changed on the servers.")
     audit("ssh_access_withdrawn", r["client_id"], request=rid, title=r["summary"])
     return jsonify(ok=True)
+
+
+def access_uses_jira(cid):
+    """SSH access changes are approved in Jira when the client has Jira change approval switched on."""
+    return bool(access_approval_required(cid) and jiramod.config(get_setting(cid, "jira", {}))["enabled"])
+
+
+def raise_access_ticket(cid, plan):
+    """Raise a Jira ticket describing the SSH access change exactly. Returns (key, url). Raises JiraError."""
+    jcfg = jiramod.config(get_setting(cid, "jira", {}))
+    extra = dict(jcfg.get("extra_fields") or {})
+    if isinstance(extra.get("labels"), list):
+        extra["labels"] = [x for x in extra["labels"] if x != "cpu-patching"] + ["ssh-access"]
+    jcfg["extra_fields"] = extra
+    client = db().execute("SELECT name FROM clients WHERE id=?", (cid,)).fetchone()
+    key_ = plan["key"]
+    servers = sorted({(st.get("environment"), st["target"].get("host") or st["target"].get("ip")) for st in plan["steps"]})
+    verb = {"add": "Give SSH access", "remove": "Remove SSH access"}[plan["mode"]]
+    summary = (f"[Pegasus] {verb}: {key_['comment'] or key_['fingerprint'][:24]}"
+               + (f" ({plan['account']})" if plan["account"] else "") + f" on {', '.join(plan['envs'])}")
+    lines = [f"Requested in Pegasus by {who()} on {now_text()} for {client['name'] if client else cid}.", "",
+             f"*Change:* {verb.lower()} for the key below"
+             + (f" on account {plan['account']}" if plan["account"] else " on the connector's SSH account") + ".",
+             f"*Who and why:* {plan['note']}",
+             f"*Key:* {key_['type']} {key_['comment'] or ''} (fingerprint {key_['fingerprint']})"]
+    if plan["mode"] == "add":
+        lines.append(f"*Access ends:* {plan['expires_on']} (Pegasus removes the key automatically after this date)"
+                     if plan["expires_on"] else "*Access ends:* not set (until removed)")
+    lines += ["", f"*Servers ({len(servers)}):*"] + [f"* {env}: {host}" for env, host in servers]
+    lines += ["", "When this ticket is approved by someone other than the account that raised it, Pegasus makes "
+                  "the change on these servers by itself and comments here with the result."]
+    jc = jiramod.Jira(jcfg, box().open(get_setting(cid, "jira_token", "")))
+    key = jc.create(summary, "\n".join(lines))
+    try:
+        jc.transition(key, jcfg["submit_transition"])
+    except jiramod.JiraError:
+        pass
+    return key, jc.browse(key)
+
+
+_access_jira_checked = {"at": 0.0}
+
+
+def check_access_jira(cid=None, now=None, force=False):
+    """Ask Jira about pending SSH access tickets. Approved: make the change. Rejected: close the request."""
+    now = now or time.time()
+    if not force and now - _access_jira_checked["at"] < 120:
+        return
+    _access_jira_checked["at"] = now
+    q = "SELECT * FROM access_requests WHERE status='pending' AND jira_key IS NOT NULL"
+    rows = db().execute(q + (" AND client_id=?" if cid else ""), (cid,) if cid else ()).fetchall()
+    clients = {}
+    for r in rows:
+        c = r["client_id"]
+        try:
+            if c not in clients:
+                clients[c] = jiramod.Jira(jiramod.config(get_setting(c, "jira", {})),
+                                          box().open(get_setting(c, "jira_token", "")))
+            state, jstatus, approver = clients[c].approval_state(r["jira_key"])
+        except jiramod.JiraError as e:
+            db().execute("UPDATE access_requests SET jira_status=?, checked_at=? WHERE id=?",
+                         (f"couldn't check: {e}"[:200], now, r["id"]))
+            continue
+        db().execute("UPDATE access_requests SET jira_status=?, checked_at=? WHERE id=?",
+                     (jstatus + (" (approved by the account Pegasus uses; someone else has to approve it)"
+                                 if state == "self_approved" else ""), now, r["id"]))
+        if state == "rejected":
+            db().execute("UPDATE access_requests SET status='rejected', decided_by=?, decided_at=?, decision_note=? "
+                         "WHERE id=?", (f"Jira ({r['jira_key']})", now, f"Jira status: {jstatus}", r["id"]))
+            audit("ssh_access_rejected", c, actor="jira", request=r["id"], ticket=r["jira_key"], status=jstatus)
+        elif state == "approved":
+            try:
+                plan = access_plan(c, jload(r["body"], {}) or {})
+                jid = queue_access(c, plan, created_by=f"{r['requested_by']} (approved in Jira by "
+                                                       f"{approver or 'Jira'})", request_id=r["id"])
+            except (AccessProblem, JobRefused) as e:
+                db().execute("UPDATE access_requests SET jira_status=? WHERE id=?",
+                             (f"{jstatus}; waiting to run: {e}"[:200], r["id"]))
+                continue
+            db().execute("UPDATE access_requests SET status='approved', decided_by=?, decided_at=?, job_id=? "
+                         "WHERE id=?", (f"{approver or 'Jira'} (in Jira)", now, jid, r["id"]))
+            audit("ssh_access_approved", c, actor=approver or "jira", request=r["id"], ticket=r["jira_key"], job=jid)
+            jira_later(c, r["jira_key"], f"Approved. Pegasus started the change on {now_text()} (job {jid}).",
+                       "start_transition")
+
+
+@app.post("/api/clients/<cid>/access-requests/check")
+@need("viewer")
+def check_access_requests_now(cid):
+    get_client(cid)
+    check_access_jira(cid, force=True)
+    return access_requests(cid)
 
 
 @app.put("/api/clients/<cid>/access-settings")
