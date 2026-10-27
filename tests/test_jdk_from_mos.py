@@ -2,6 +2,7 @@
 tarball out of the zip, and refuse anything that isn't a JDK."""
 import io
 import json
+import re
 import tarfile
 import zipfile
 from pathlib import Path
@@ -12,6 +13,12 @@ from pegasus_connector import oracle
 
 ROW = ('<tr class="OraBGAccentVeryDark"><td><a href="x?aru=999">{patch}</a></td><td>{desc}</td><td>Oracle JDK</td>'
        '<td>{date}</td><td>180 MB</td></tr>')
+
+
+# how Oracle's search form lists releases (an excerpt of the real page's script)
+RELEASES = ('<script>orig_release_600000000247513="Oracle Retail Order Management System Cloud Service 21.14.0.0.0";\n'
+            'orig_release_600000000259014="Oracle JDK 21.0.13.0.3";\norig_release_600000000259013="Oracle JDK 21.0.13";\n'
+            'orig_release_600000000250001="Oracle JDK 21.0.12";</script>')
 
 
 class Resp:
@@ -27,7 +34,7 @@ class FakeMOS:
 
     def get(self, url, timeout=60, stream=False):
         self.urls.append(url)
-        return Resp("".join(ROW.format(**r) for r in self.rows))
+        return Resp(RELEASES + "".join(ROW.format(**r) for r in self.rows))
 
 
 def jdk_zip(path, version, with_java=True):
@@ -101,10 +108,15 @@ def test_a_patch_given_by_hand_and_a_failed_search(cfg, tmp_path, monkeypatch):
 
 
 class SearchMOS(FakeMOS):
-    """Oracle Support that only finds JDK patches when the search names the Java SE product."""
+    """Oracle Support as it behaves now: the search form lists release ids in its script, and a product + release
+    search lists that release's patches. Patches for 21.0.13.0.x sit under release "Oracle JDK 21.0.13"."""
 
     def __init__(self, form="", patch_page=""):
-        super().__init__([{"patch": "40186074", "desc": "Oracle JDK Update 21.0.13.0.2 (Patch)", "date": "21-OCT-2026"}])
+        super().__init__([])
+        self.by_release = {
+            "600000000259013": [{"patch": "40186074", "desc": "Oracle JDK Update 21.0.13.0.2 (Patch)", "date": "21-OCT-2026"},
+                                {"patch": "40132109", "desc": "Oracle JDK Update 21.0.13.0.1 (Patch)", "date": "14-OCT-2026"}],
+            "600000000259014": [{"patch": "40211111", "desc": "Oracle JDK Update 21.0.13.0.3 (Patch)", "date": "26-OCT-2026"}]}
         self.form, self.patch_page = form, patch_page
 
     def get(self, url, timeout=60, stream=False):
@@ -113,22 +125,26 @@ class SearchMOS(FakeMOS):
             return Resp("")
         if "search_type=patch" in url:
             return Resp(self.patch_page)
-        if "AdvancedSearch" in url and "description" not in url:
-            return Resp(self.form)
-        if "product=10120" in url:
-            return Resp("".join(ROW.format(**r) for r in self.rows))
-        return Resp("")
+        if "AdvancedSearch" in url:
+            return Resp(self.form + RELEASES)
+        rel = re.search(r"release=(\d+)", url)
+        if "search_type=prod" in url and "product=10120" in url and rel:
+            return Resp("".join(ROW.format(**r) for r in self.by_release.get(rel.group(1), [])))
+        return Resp("<html>Error Your browser does not have Javascript enabled.</html>")
+
+
+FORM = ('<select name="product"><option value="9480">Oracle Database</option>'
+        '<option value="10120">Java SE JDK and JRE</option></select>')
 
 
 def test_learns_the_java_product_from_the_search_form(cfg):
-    mos = SearchMOS(form='<select name="product"><option value="9480">Oracle Database</option>'
-                         '<option value="10120">Java SE JDK and JRE</option></select>')
+    mos = SearchMOS(form=FORM)
     patch, tried = oracle.find_jdk_patch(mos, "21.0.13.0.2", cfg)
-    assert patch == "40186074"
+    assert patch == "40186074"                       # under release "Oracle JDK 21.0.13", not .0.1
     assert oracle.load_jdk_patches(cfg)["_java_product"] == "10120"
-    mos.urls.clear()                                                     # remembered: no second discovery
-    assert oracle.find_jdk_patch(mos, "21.0.13.0.2", cfg)[0] == "40186074"
-    assert not any("metadata" in u or "description" not in u for u in mos.urls)
+    mos.urls.clear()                                 # remembered: no second discovery
+    assert oracle.find_jdk_patch(mos, "21.0.13.0.3", cfg)[0] == "40211111"   # its own release id
+    assert not any("metadata" in u for u in mos.urls)
 
 
 def test_learns_the_java_product_from_a_known_jdk_patch(cfg):
@@ -138,6 +154,8 @@ def test_learns_the_java_product_from_a_known_jdk_patch(cfg):
     assert oracle.load_jdk_patches(cfg)["_java_product"] == "10120"
 
 
-def test_nothing_found_says_what_was_tried(cfg):
-    patch, tried = oracle.find_jdk_patch(SearchMOS(), "21.0.14", cfg)
-    assert patch is None and any("product list: nothing" in t for t in tried)
+def test_release_ids_and_nothing_found(cfg):
+    assert oracle.jdk_release_ids(SearchMOS(), "10120", "21.0.13.0.3")[0] == ["600000000259014", "600000000259013"]
+    assert oracle.jdk_release_ids(SearchMOS(), "10120", "21.0.12")[0] == ["600000000250001"]
+    patch, tried = oracle.find_jdk_patch(SearchMOS(form=FORM), "21.0.14", cfg)
+    assert patch is None and any("release ids for 21.0.14: none" in t for t in tried)

@@ -501,27 +501,58 @@ def discover_java_product(mos, config_path=None, log=None):
     return pid, tried
 
 
+RELEASE_RE = re.compile(r'orig_release_(\d+)="([^"]*)"')
+
+
+def jdk_release_ids(mos, product, version):
+    """Oracle Support's release ids for this JDK, e.g. "Oracle JDK 21.0.13.0.3" and "Oracle JDK 21.0.13". The search
+    form lists every release as orig_release_<id>="<name>" in its script; the patch search needs these ids."""
+    params = {"plat_lang": JDK_PLATFORM}
+    if product:
+        params["product"] = product
+    page = mos.get(mos.BASE + "/Orion/AdvancedSearch/process_form?" + urlencode(params), timeout=300).text
+    names = {}
+    for rid, name in RELEASE_RE.findall(page):
+        names.setdefault(htmlmod.unescape(name).strip().lower(), rid)
+    parts = version.split(".")
+    wanted = [version] + ([".".join(parts[:3])] if len(parts) > 3 else [])
+    out = []
+    for v in wanted:
+        for prefix in ("oracle jdk ", "java se ", "jdk "):
+            rid = names.get(prefix + v)
+            if rid and rid not in out:
+                out.append(rid)
+    return out, len(names)
+
+
 def find_jdk_patch(mos, version, config_path=None, log=None):
-    """The Oracle Support patch number for an Oracle JDK release, by searching patch descriptions under the
-    "Java SE JDK and JRE" product. Returns (patch or None, what was tried)."""
+    """The Oracle Support patch number for an Oracle JDK release: find the release's id on the search form, list the
+    "Java SE JDK and JRE" patches for that release on Linux x86-64, and take the one for exactly this version.
+    Returns (patch or None, what was tried)."""
     product, tried = discover_java_product(mos, config_path, log)
     products = [product] if product else []
     products += [p for p in JAVA_PRODUCTS if p not in products]
-    for prod in products + [""]:
-        for desc in (f"%{version}%", version, f"Oracle JDK Update {version}", f"*{version}*"):
-            params = {"plat_lang": JDK_PLATFORM, "description": desc}
+    try:
+        releases, listed = jdk_release_ids(mos, products[0] if products else "", version)
+    except requests.RequestException as e:
+        return None, tried + [f"release list: {e}"]
+    tried.append(f"release ids for {version}: {', '.join(releases) or 'none'} (of {listed} releases listed)")
+    for rel in releases:
+        for prod in products + [""]:
+            params = {"search_type": "prod", "release": rel, "plat_lang": JDK_PLATFORM}
             if prod:
                 params["product"] = prod
             try:
-                r = mos.get(mos.BASE + "/Orion/AdvancedSearch/process_form?" + urlencode(params), timeout=180)
+                r = mos.get(mos.BASE + "/Orion/SimpleSearch/process_form?" + urlencode(params), timeout=180)
                 rows = parse_aru_rows(r.text) if r.status_code == 200 else []
             except requests.RequestException as e:
-                tried.append(f"product {prod or 'any'}, {desc}: {e}")
+                tried.append(f"release {rel}, product {prod or 'any'}: {e}")
                 continue
             hits = [row for row in rows if jdk_row_matches(row["desc"], version)]
             if hits:
                 return max(hits, key=lambda row: (row["updated"], row["patch"]))["patch"], tried
-            tried.append(f"product {prod or 'any'}, '{desc}': {len(rows)} rows")
+            tried.append(f"release {rel}, product {prod or 'any'}: {len(rows)} rows"
+                         + (f" ({'; '.join(x['desc'][:40] for x in rows[:3])})" if rows else ""))
     return None, tried
 
 
