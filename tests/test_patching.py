@@ -355,3 +355,63 @@ def test_patch_watch_checks_and_stages_nonprod_only(env):
     assert env["admin"].put(url(env, "/api/clients/{cid}/patch-watch"), json={"stage": "sometimes"}).status_code == 400
     env["admin"].put(url(env, "/api/clients/{cid}/patch-watch"), json={"stage": "nonprod"})
 
+
+
+def test_os_updates_in_one_window_with_reboot_when_needed(env):
+    """yum update is part of the same maintenance window: stop everything, OS updates, middleware patches, reboot
+    only where Linux says so, then start everything once."""
+    fake = env["fake"]
+    env["admin"].put(url(env, "/api/clients/{cid}/jira"), json={"enabled": False})
+    fake.os_updates, fake.os_kernel = True, True
+    fake.applied = {x for x in fake.applied if x[1] != "os"}
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/check"), json={"environment": "HRDEV"})
+    drain(env)
+    wait_job(env, r.json()["job"])
+    os_item = item(patching(env), "hrdevapp01", "os")
+    assert os_item["status"] == "needed" and os_item["key"] == "os|yum|3" and os_item["kernel_update"]
+    assert os_item["security"]["critical"] == 1 and "Oracle Linux Server 8.10" in os_item["installed"]
+    assert "a new kernel (needs a reboot)" in os_item["detail"]
+    # downloading ahead of the window: yum update --downloadonly on each server
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/stage"),
+                          json={"environment": "HRDEV", "items": [{"host_key": h["host_key"], "key": "os|yum|3"}
+                                                                  for h in patching(env)["hosts"]]})
+    assert r.ok, r.text
+    drain(env)
+    assert wait_job(env, r.json()["job"])["status"] == "succeeded" and len(fake.os_downloaded) == 2
+    assert item(patching(env), "hrdevapp01", "os")["staged"]
+    # apply everything outstanding in one window
+    fake.calls.clear()
+    fake.rebooted = []
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"), json={"environment": "HRDEV", "scope": "all"})
+    assert r.ok, r.text
+    jid = r.json()["job"]
+    steps = [s["op"] for s in cp.connect().execute("SELECT params FROM jobs WHERE id=?", (jid,)).fetchone()
+             and __import__("json").loads(cp.connect().execute("SELECT params FROM jobs WHERE id=?", (jid,))
+                                          .fetchone()["params"])["steps"]]
+    first_start = steps.index("domain.start")
+    assert steps.index("os.update") > max(i for i, op in enumerate(steps) if op == "domain.stop")
+    assert all(i < first_start for i, op in enumerate(steps) if op in ("os.update", "patch.apply", "host.reboot"))
+    assert max(i for i, op in enumerate(steps) if op in ("os.update", "patch.apply")) < steps.index("host.reboot")
+    assert steps.count("domain.start") == 3                     # everything is started once, at the end
+    drain(env)
+    j = wait_job(env, jid)
+    assert j["status"] == "succeeded", j["text"][-800:]
+    assert sorted(fake.rebooted) == ["hrdevapp01", "hrdevweb01"] and "back up after the reboot" in j["text"]
+    v = patching(env)
+    assert item(v, "hrdevapp01", "os")["status"] == "ok"
+    # without a reboot: the job doesn't reboot, and the reboot shows as pending
+    fake.applied.discard(("hrdevapp01", "os"))
+    fake.applied.discard(("hrdevweb01", "os"))
+    fake.rebooted = []
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/check"), json={"environment": "HRDEV"})
+    drain(env)
+    wait_job(env, r.json()["job"])
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"),
+                          json={"environment": "HRDEV", "scope": "os~os|yum|3", "reboot": False})
+    assert r.ok, r.text
+    drain(env)
+    assert wait_job(env, r.json()["job"])["status"] == "succeeded" and fake.rebooted == []
+    after = item(patching(env), "hrdevapp01", "os")
+    assert after["status"] == "ok" and after["reboot_pending"] and "reboot is pending" in after["detail"]
+    fake.os_updates = False
+    fake.reboot_needed.clear()

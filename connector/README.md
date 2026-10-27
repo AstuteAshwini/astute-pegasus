@@ -74,6 +74,12 @@ python3 -m pegasus_connector jdk-patch 21.0.13 <patch number>           # only i
 python3 -m pegasus_connector oracle-login --forget
 ```
 
+**OS updates** run the same command the team runs by hand, `yum update`, as the connector's SSH user (e.g. opc) with
+sudo. That user needs passwordless sudo for `yum`, `needs-restarting` and `systemctl reboot`. Pegasus checks for
+updates with `yum check-update` (read-only), can download them ahead of the window with `yum update --downloadonly`,
+installs them in the same maintenance window as the middleware patches, and reboots a server only when Linux reports
+it's needed (after all updates, before PeopleSoft starts again).
+
 Downloaded patches are kept in `cache/` next to `config.json` (set `PEGASUS_CACHE` to put them elsewhere) and
 copied to the servers over SSH. The connector needs outbound HTTPS to `updates.oracle.com`, `login.oracle.com` and
 `java.oraclecloud.com` for this. A patch zip copied into `cache/<patch number>/` by hand is used as is.

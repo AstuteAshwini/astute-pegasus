@@ -11,6 +11,10 @@ Operations
   host.idle      fail if WebLogic or Tuxedo processes are still running (checked before patching binaries)
   patch.apply    back up a home and apply a staged patch as the software owner, detached on the server
   access.check / access.add / access.remove   a person's SSH public key in an account's authorized_keys
+  os.check       Linux package updates available on a server (read-only)
+  os.download    download them ahead of the maintenance window (yum update --downloadonly)
+  os.update      yum update (all available updates), detached on the server, and report whether a reboot is needed
+  host.reboot    reboot only if Linux says it's needed, then wait until the server is back
 """
 import base64
 import hashlib
@@ -34,7 +38,8 @@ COMPONENTS = ("jdk", "weblogic", "dbclient", "tuxedo")
 PROTECTED_DIRS = {"/", "/u01", "/u01/app", "/u01/app/oracle", "/u01/app/oracle/product", "/home", "/root", "/etc",
                   "/usr", "/var", "/opt", "/tmp", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/dev", "/proc", "/sys"}
 HANDLED = ("catalog", "patch.download", "patch.stage", "patch.apply", "host.idle",
-           "access.check", "access.add", "access.remove", "discover", "hostkey.trust")
+           "access.check", "access.add", "access.remove", "discover", "hostkey.trust",
+           "os.check", "os.download", "os.update", "host.reboot")
 
 
 def q(v):
@@ -98,6 +103,10 @@ def validate(op, step, ssh_user):
     t = check_target(step.get("target"))
     if op == "host.idle":
         return {"t": t}
+    if op in ("os.check", "os.download", "os.update"):
+        return {"t": t}
+    if op == "host.reboot":
+        return {"t": t, "if_needed": step.get("if_needed", True) is not False}
     if op == "patch.stage":
         root = abs_path(step.get("stage_root"), "the staging folder", allow_empty=False)
         items = []
@@ -197,6 +206,14 @@ def run(op, c, ctx, out):
         return 0, {"running": []}
     if op == "patch.apply":
         return apply(c, ctx, out)
+    if op == "os.check":
+        return os_check(c, ctx, out)
+    if op == "os.download":
+        return os_download(c, ctx, out)
+    if op == "os.update":
+        return os_update(c, ctx, out)
+    if op == "host.reboot":
+        return host_reboot(c, ctx, out)
     if op.startswith("access."):
         return access(c, ctx, out)
     raise OperationError("unhandled operation")
@@ -423,6 +440,8 @@ def apply(c, ctx, out):
     """Launch the apply script detached on the server as the owner (so a dropped connection can't interrupt an opatch
     run halfway), then follow its log until it finishes."""
     t, user = c["t"], ctx.runner.user
+    if not c.get("owner"):
+        c = dict(c, owner=user)
     tag = f"pegasus_apply/{re.sub(r'[^A-Za-z0-9_-]', '', ctx.job_id)}-{secrets.token_hex(3)}"
     launcher = (f'D="$HOME/{tag}"; mkdir -p "$D" || exit 1\n'
                 f'cat > "$D/apply.sh" <<\'PEGASUS_APPLY_EOF\'\n{c["script"]}\nPEGASUS_APPLY_EOF\n'
@@ -569,3 +588,149 @@ def access(c, ctx, out):
     result, detail = m[-1][0], m[-1][1].strip()
     out(f"{t['host']} ({acct}): {result.replace('_', ' ').lower()}{(': ' + detail) if detail else ''}\n")
     return (1 if result == "FAILED" else 0), {"result": result, "account": acct, "fingerprint": key["fingerprint"]}
+
+
+# ---------------------------------------------------------------- Linux OS updates (yum update, with sudo)
+# The same command the team runs by hand: yum update (on Oracle Linux 8 and 9, yum is dnf under its old name)
+OS_FIND_PM = 'PM=$(command -v yum); [ -n "$PM" ] || { echo "OS|error|yum is not installed"; exit 0; }\n'
+OS_REBOOT_CHECK = r"""
+reboot_needed() {
+  if command -v needs-restarting >/dev/null 2>&1; then
+    sudo -n needs-restarting -r >/dev/null 2>&1 && return 1 || return 0
+  fi
+  local NEWK; NEWK=$(rpm -q --last kernel kernel-uek kernel-core 2>/dev/null | head -1 | awk '{print $1}' | sed -E 's/^kernel(-uek|-core)?-//')
+  [ -n "$NEWK" ] && [ "$NEWK" != "$(uname -r)" ]
+}
+"""
+OS_CHECK_SCRIPT = OS_FIND_PM + OS_REBOOT_CHECK + r"""
+. /etc/os-release 2>/dev/null; echo "OS|name|${PRETTY_NAME:-unknown}"
+echo "OS|kernel|$(uname -r)"
+echo "OS|pm|$(basename "$PM")"
+OUT=$(sudo -n "$PM" -q check-update 2>&1); RC=$?
+echo "OS|rc|$RC"
+if [ "$RC" = 1 ]; then echo "$OUT" | grep -v '^\s*$' | tail -3 | sed 's/^/OS|err|/'; fi
+echo "$OUT" | awk 'NF==3 && $1 ~ /\./ && $2 ~ /[0-9]/ {print "OS|pkg|"$1"|"$2}'
+sudo -n "$PM" -q updateinfo list --security 2>/dev/null | awk 'NF>=3 {print "OS|sec|"$1"|"$2}'
+if reboot_needed; then echo "OS|reboot|yes"; else echo "OS|reboot|no"; fi
+"""
+OS_UPDATE_SCRIPT = "set -u\n" + OS_FIND_PM + OS_REBOOT_CHECK + r"""
+echo "Running: sudo yum -y update"
+sudo -n "$PM" -y update || { echo "OS UPDATE FAILED: yum update returned an error (see above)"; exit 1; }
+echo "Updates installed."
+if reboot_needed; then echo "PEGASUS_REBOOT|yes"; echo "Linux reports a reboot is needed for these updates to take effect."
+else echo "PEGASUS_REBOOT|no"; echo "No reboot needed."; fi
+"""
+
+
+def parse_os_check(text):
+    """The OS| lines os.check prints, as the data the control plane stores with a server's levels."""
+    d = {"name": "", "kernel": "", "pm": "", "updates": 0, "packages": [], "kernel_update": False,
+         "security": {"advisories": 0, "critical": 0, "important": 0, "moderate": 0, "low": 0},
+         "reboot_pending": False, "error": ""}
+    seen_adv, errs = set(), []
+    for line in (text or "").splitlines():
+        p = line.strip().split("|")
+        if p[0] != "OS" or len(p) < 3:
+            continue
+        k = p[1]
+        if k in ("name", "kernel", "pm"):
+            d[k] = p[2][:120]
+        elif k == "rc" and p[2] not in ("0", "100"):
+            d["error"] = "the package manager couldn't check for updates"
+        elif k == "err":
+            errs.append(p[2][:200])
+        elif k == "error":
+            d["error"] = p[2][:200]
+        elif k == "pkg" and len(p) > 3:
+            d["updates"] += 1
+            if len(d["packages"]) < 400:
+                d["packages"].append(f"{p[2][:80]} {p[3][:60]}")
+            if re.match(r"^kernel(-uek|-core)?\.", p[2]):
+                d["kernel_update"] = True
+        elif k == "sec" and len(p) > 3 and p[2] not in seen_adv:
+            seen_adv.add(p[2])
+            d["security"]["advisories"] += 1
+            sev = p[3].split("/")[0].lower()
+            if sev in d["security"]:
+                d["security"][sev] += 1
+        elif k == "reboot":
+            d["reboot_pending"] = p[2] == "yes"
+    if d["error"] and errs:
+        d["error"] += ": " + " / ".join(errs)
+        if any("password is required" in e or "a terminal is required" in e for e in errs):
+            d["error"] = ("the SSH user can't run yum with sudo without a password. Give it passwordless sudo "
+                          "for yum, needs-restarting and systemctl reboot.")
+    return d
+
+
+def os_check(c, ctx, out):
+    code, text = ctx.sh(c["t"], "bash -s", stdin=OS_CHECK_SCRIPT, timeout=600)
+    d = parse_os_check(text)
+    if d["error"]:
+        out(f"Couldn't check OS updates on {c['t']['host']}: {d['error']}\n")
+        return 1, {"os": d}
+    sec = d["security"]
+    out(f"{c['t']['host']}: {d['name']}, kernel {d['kernel']}: {d['updates']} update(s) available"
+        + (f", {sec['advisories']} security advisories" if sec["advisories"] else "")
+        + ("; includes a new kernel" if d["kernel_update"] else "")
+        + ("; a reboot is already pending" if d["reboot_pending"] else "") + "\n")
+    return 0, {"os": d}
+
+
+def os_download(c, ctx, out):
+    script = OS_FIND_PM + 'echo "Downloading updates with $(basename "$PM") (not installing)"\n' \
+                          'sudo -n "$PM" -y -q update --downloadonly && echo "PEGASUS_DOWNLOADED" ' \
+                          '|| echo "OS DOWNLOAD FAILED"\n'
+    code, text = ctx.sh(c["t"], "bash -s", stdin=script, timeout=3600)
+    out(text if text.endswith("\n") else text + "\n")
+    ok = "PEGASUS_DOWNLOADED" in text
+    return (0 if ok else 1), {"downloaded": ok}
+
+
+def os_update(c, ctx, out):
+    """Install every available update, detached on the server like a patch apply (a dropped connection can't stop
+    yum halfway), and report whether Linux needs a reboot."""
+    seen = []
+
+    def keep(text):
+        seen.append(text)
+        out(text)
+    code, data = apply({"t": c["t"], "owner": ctx.runner.user, "script": OS_UPDATE_SCRIPT}, ctx, keep)
+    log = "".join(seen)
+    reboot = "PEGASUS_REBOOT|yes" in log
+    return code, {"updated": code == 0, "reboot_needed": reboot}
+
+
+BOOT_ID = "cat /proc/sys/kernel/random/boot_id"
+
+
+def host_reboot(c, ctx, out, wait_minutes=20):
+    """Reboot only if Linux says it's needed (or always, if asked), then wait until the server answers again with a
+    new boot id."""
+    t = c["t"]
+    code, before = ctx.sh(t, "bash -s", stdin=OS_REBOOT_CHECK + f"{BOOT_ID}\nif reboot_needed; then echo 'NEED|yes'; "
+                                                               "else echo 'NEED|no'; fi\n", timeout=120)
+    boot = (re.findall(r"^[0-9a-f-]{36}$", before, re.M) or [""])[0]
+    if c["if_needed"] and "NEED|yes" not in before:
+        out(f"{t['host']}: no reboot needed.\n")
+        return 0, {"rebooted": False}
+    if not boot:
+        out(f"{t['host']}: couldn't read the boot id, so the reboot can't be confirmed; not rebooting.\n")
+        return 1, {"rebooted": False}
+    out(f"{t['host']}: rebooting.\n")
+    ctx.sh(t, "sudo -n sh -c 'nohup sh -c \"sleep 3; systemctl reboot || /sbin/shutdown -r now\" >/dev/null 2>&1 &'; "
+              "echo PEGASUS_REBOOT_SENT", timeout=60)
+    deadline = time.time() + wait_minutes * 60
+    time.sleep(min(30, ctx.poll_interval * 6))
+    while time.time() < deadline:
+        try:
+            code, text = ctx.sh(t, BOOT_ID, timeout=30)
+            now = (re.findall(r"^[0-9a-f-]{36}$", text, re.M) or [""])[0]
+            if code == 0 and now and now != boot:
+                out(f"{t['host']}: back up after the reboot.\n")
+                return 0, {"rebooted": True}
+        except Exception:
+            pass
+        time.sleep(max(ctx.poll_interval, 0.05) * 3)          # every 15 s with the usual 5 s poll interval
+    out(f"{t['host']} didn't come back within {wait_minutes} minutes of the reboot. Check it in the OCI Console.\n")
+    return 1, {"rebooted": "unknown"}

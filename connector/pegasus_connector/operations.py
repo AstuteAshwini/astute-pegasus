@@ -127,9 +127,14 @@ OPERATIONS = {
     "access.remove": "Remove a person's SSH public key from an account",
     "discover": "Find PeopleSoft domains on a server (read-only)",
     "hostkey.trust": "Trust a server's SSH host key after an operator compared its fingerprint",
+    "os.check": "List the Linux package updates available on a server (yum check-update, read-only)",
+    "os.download": "Download a server's Linux package updates without installing them (yum update --downloadonly)",
+    "os.update": "Run yum update on a server (all available updates, with sudo)",
+    "host.reboot": "Reboot a server, only if Linux reports a reboot is needed, and wait for it to come back",
 }
 # allowed when local policy is read_only: nothing here changes a server
-READ_ONLY_OPERATIONS = {"ping", "domain.status", "levels", "catalog", "host.idle", "access.check", "discover"}
+READ_ONLY_OPERATIONS = {"ping", "domain.status", "levels", "catalog", "host.idle", "access.check", "discover",
+                        "os.check"}
 
 
 class OperationError(Exception):

@@ -1197,7 +1197,23 @@ def plan_steps(servers, action):
 
 
 # what each action needs from the connector, for actions newer connectors added
-NEEDS_VERSION = {"clearcache": "0.4.0"}
+NEEDS_VERSION = {"clearcache": "0.4.0", "os": "0.5.0"}
+OS_VERSION = NEEDS_VERSION["os"]
+
+
+def os_capable(cid):
+    """True when every connector of the client can check and apply Linux OS updates."""
+    cons = db().execute("SELECT version FROM connectors WHERE client_id=? AND revoked=0", (cid,)).fetchall()
+    return bool(cons) and not any(is_newer(OS_VERSION, c["version"] or "0") for c in cons)
+
+
+def levels_steps(cid, servers):
+    """Read middleware patch levels on every server, plus the available Linux OS updates (when the connector can)."""
+    steps, _ = plan_steps(servers, "levels")
+    if os_capable(cid):
+        steps += [{"op": "os.check", "target": target_of(s), "label": "Check OS updates", "ignore_failure": True}
+                  for s in unique_hosts(servers)]
+    return steps
 ACTION_TITLES = {"clearcache": "Clear cache and restart"}
 
 
@@ -1640,6 +1656,25 @@ def step_results(j):
     return [(st, res.get(i)) for i, st in enumerate(steps)]
 
 
+def store_os(cid, env, st, r):
+    """Keep a server's OS update check with its patch levels."""
+    t = st.get("target") or {}
+    hk = t.get("ip") or t.get("host")
+    data = (r.get("data") or {}).get("os") if isinstance(r.get("data"), dict) else None
+    if not hk:
+        return
+    if not data:
+        tail = [l for l in str(r.get("output") or "").splitlines() if l.strip()]
+        data = {"error": tail[-1][:300] if tail else "No answer from the server."}
+    row_ = db().execute("SELECT data FROM levels WHERE client_id=? AND environment=? AND host_key=?",
+                        (cid, env, hk)).fetchone()
+    lv = jload(row_["data"], {}) if row_ else {}
+    lv["os"] = data
+    db().execute("INSERT INTO levels (client_id, environment, host_key, host, data, checked_at) VALUES (?,?,?,?,?,?) "
+                 "ON CONFLICT(client_id, environment, host_key) DO UPDATE SET data=excluded.data",
+                 (cid, env, hk, t.get("host") or hk, json.dumps(lv), time.time()))
+
+
 def store_levels(cid, env, st, r):
     t = st.get("target") or {}
     hk = t.get("ip") or t.get("host")
@@ -1769,6 +1804,9 @@ def finalize(j):
         for st, r in pairs:
             if st["op"] == "levels" and r:
                 store_levels(cid, env, st, r)
+        for st, r in pairs:
+            if st["op"] == "os.check" and r:
+                store_os(cid, env, st, r)
         if kind == "levels" and j["status"] in ("succeeded", "failed"):
             follow = queue_catalog(cid, j["created_by"])
             if follow:
@@ -1781,6 +1819,13 @@ def finalize(j):
                              "DO UPDATE SET data=excluded.data, checked_at=excluded.checked_at",
                              (cid, json.dumps(r["data"]), time.time()))
     if kind == "stage":
+        for st, r in pairs:
+            if st["op"] == "os.download" and r and r.get("exit_code") == 0 and st.get("key"):
+                hk = st["target"].get("ip") or st["target"].get("host")
+                db().execute("INSERT INTO staged (client_id, environment, host_key, patch_key, dir, files, at) "
+                             "VALUES (?,?,?,?,?,?,?) ON CONFLICT(client_id, environment, host_key, patch_key) DO "
+                             "UPDATE SET dir=excluded.dir, files=excluded.files, at=excluded.at",
+                             (cid, env, hk, st["key"], "package manager cache", json.dumps(["downloaded"]), time.time()))
         for st, r in pairs:
             if st["op"] == "patch.stage" and r and r.get("exit_code") == 0:
                 hk = st["target"].get("ip") or st["target"].get("host")
@@ -1884,6 +1929,9 @@ def posture(cid, env):
             if not lv.get("error"):
                 items = ev.apply_cadence(ev.evaluate(lv, targets, cat.get("java"), cat.get("oracle"), java_dates),
                                          cadence)
+                osi = ev.os_item(lv.get("os"))
+                if osi:
+                    items.insert(0, osi)
                 hs = staged.get(hk, {})
                 for it in items:
                     st = hs.get(it.get("key") or "-")
@@ -1973,7 +2021,7 @@ def patching_check(cid):
     servers = env_servers(cid, env)
     if not servers:
         return jsonify(error="That environment has no servers."), 404
-    steps, _ = plan_steps(servers, "levels")
+    steps = levels_steps(cid, servers)
     try:
         jid = queue_job(cid, env, "levels", f"check patch levels {env}", steps)
     except JobRefused as e:
@@ -2033,8 +2081,11 @@ def patching_stage(cid):
 def queue_stage(cid, env, servers, chosen, created_by=None):
     """Queue one job that downloads the chosen updates on the connector and stages them on each server.
     Returns (job id, update keys, number of hosts). Raises JobRefused."""
-    keys, per_host = [], {}
+    keys, per_host, os_hosts = [], {}, {}
     for h, it in chosen:
+        if it["component"] == "os":
+            os_hosts[h["host_key"]] = it
+            continue
         need_keys = [(it["key"], ev.stage_label(it))]
         if it.get("needs_opatch"):
             need_keys.append((ev.OPATCH_19_KEY, "p6880880"))
@@ -2046,13 +2097,19 @@ def queue_stage(cid, env, servers, chosen, created_by=None):
                 items.append({"key": k, "label": label})
     root = patch_settings(cid)["staging_root"]
     by_key = {host_key(s): s for s in unique_hosts(servers)}
-    steps = [{"op": "patch.download", "label": f"Download {len(keys)} update(s) on the connector", "keys": keys}]
+    if os_hosts:
+        check_connectors_can(cid, "os")
+    steps = [{"op": "patch.download", "label": f"Download {len(keys)} update(s) on the connector", "keys": keys}] \
+        if keys else []
     for hk, items in per_host.items():
         steps.append({"op": "patch.stage", "target": target_of(by_key[hk]), "stage_root": root, "items": items,
                       "label": f"Stage {len(items)} file set(s) in {root}", "independent": True})
+    for hk, it in os_hosts.items():         # OS packages download into the server's own package cache
+        steps.append({"op": "os.download", "target": target_of(by_key[hk]), "key": it["key"], "independent": True,
+                      "label": f"Download OS updates ({it.get('latest_label') or it['target']}) on the server"})
     jid = queue_job(cid, env, "stage", f"download and stage CPU patches {env}", steps, stop_on_failure=True,
                     created_by=created_by)
-    return jid, keys, len(per_host)
+    return jid, keys + [it["key"] for it in os_hosts.values()][:1], len(set(per_host) | set(os_hosts))
 
 
 # ---------------------------------------------------------------- Oracle's CPU advisory (risk scores)
@@ -2124,7 +2181,7 @@ def queue_levels(cid, envs, created_by):
         servers = env_servers(cid, env)
         if not servers:
             continue
-        steps, _ = plan_steps(servers, "levels")
+        steps = levels_steps(cid, servers)
         try:
             jobs.append(queue_job(cid, env, "levels", f"check patch levels {env}", steps, created_by=created_by))
         except JobRefused:
@@ -2300,6 +2357,11 @@ def build_apply_plan(cid, env, groups):
                          and it["status"] == "needed"), None)
             if not item:
                 continue
+            if component == "os":           # installed straight from the Linux repositories; downloading first is optional
+                plan.append({"component": "os", "key": key, "label": item.get("latest_label") or item["target"],
+                             "host": h["host"], "host_key": h["host_key"], "owner": "", "home": "",
+                             "kernel_update": bool(item.get("kernel_update"))})
+                continue
             st = staged.get(h["host_key"], {}).get(key)
             if not st or not st["files"]:
                 missing.append(f"{ev.COMP_TITLE[component]} on {h['host']}")
@@ -2327,23 +2389,32 @@ def build_apply_plan(cid, env, groups):
     return plan, missing, None
 
 
-def apply_steps(servers, plan):
-    """Stop every domain once, check nothing is left running, apply each update, then start everything again (even
-    after a failure), check status and read the levels again."""
+def apply_steps(cid, servers, plan, reboot=True):
+    """One maintenance window: stop every domain once, check nothing is left running, install the OS updates, apply
+    each middleware update, reboot the servers where Linux says it's needed, then start everything once (even after
+    a failure), check status and read the levels again."""
     by_key = {host_key(s): s for s in unique_hosts(servers)}
     steps = domain_steps(servers, "stop", ignore_failure=True)
     for hk in dict.fromkeys(p["host_key"] for p in plan):
         steps.append({"op": "host.idle", "target": target_of(by_key[hk]), "label": "Check nothing is still running"})
     for p in plan:
+        if p["component"] == "os":
+            steps.append({"op": "os.update", "target": target_of(by_key[p["host_key"]]),
+                          "label": f"Install OS updates ({p['label']})"})
+            continue
         steps.append({"op": "patch.apply", "target": target_of(by_key[p["host_key"]]),
                       "label": f"Apply {ev.COMP_TITLE[p['component']]} {p['label']} as {p['owner']}",
                       "component": p["component"], "owner": p["owner"], "home": p["home"],
                       "jdk_home": p["jdk_home"], "wl_home": p["wl_home"],
                       "staged": {"dir": p["staged"]["dir"], "files": p["staged"]["files"]},
                       "version": p["version"], "ids": p["ids"], "level": p["level"], "opatch_zip": p["opatch_zip"]})
+    if reboot:
+        for hk in dict.fromkeys(p["host_key"] for p in plan if p["component"] == "os"):
+            steps.append({"op": "host.reboot", "target": target_of(by_key[hk]), "if_needed": True,
+                          "label": "Reboot if Linux says it's needed, and wait for the server"})
     steps += domain_steps(servers, "start", always=True)
     steps += domain_steps(servers, "status", always=True, ignore_failure=True)
-    steps += [dict(s, always=True, ignore_failure=True) for s in plan_steps(servers, "levels")[0]]
+    steps += [dict(s, always=True, ignore_failure=True) for s in levels_steps(cid, servers)]
     return steps
 
 
@@ -2352,7 +2423,7 @@ def groups_for_scope(hosts, scope):
         groups = outstanding_groups(hosts)
         return (groups, None) if groups else (None, "Nothing outstanding. Check patch levels again.")
     comp, _, key = str(scope or "").partition("~")
-    if comp not in ev.COMPONENTS or not key:
+    if comp not in ev.ALL_COMPONENTS or not key:
         return None, "Choose an update."
     return [(comp, key)], None
 
@@ -2507,6 +2578,11 @@ def patching_apply(cid):
         return jsonify(error="Download these first: " + ", ".join(missing)), 409
     if not plan:
         return jsonify(error="Nothing needs applying. Check patch levels again."), 400
+    if any(p["component"] == "os" for p in plan):
+        try:
+            check_connectors_can(cid, "os")
+        except JobRefused as e:
+            return jsonify(error=str(e)), e.status
     if db().execute("SELECT 1 FROM jobs WHERE client_id=? AND environment=? AND status IN ('queued','running')",
                     (cid, env)).fetchone():
         return jsonify(error=f"Something is already running or queued for {env}."), 409
@@ -2519,8 +2595,10 @@ def patching_apply(cid):
     if body.get("scope") != "all":
         title = f"apply {ev.COMP_TITLE[plan[0]['component']]} {plan[0]['label']} to {env}"
     try:
-        jid = queue_job(cid, env, "apply", title, apply_steps(servers, plan), stop_on_failure=True,
-                        meta={"cr": cr["id"] if cr else None, "signature": ev.plan_signature(plan)})
+        jid = queue_job(cid, env, "apply", title, apply_steps(cid, servers, plan, reboot=body.get("reboot", True)
+                                                              is not False), stop_on_failure=True,
+                        meta={"cr": cr["id"] if cr else None, "signature": ev.plan_signature(plan),
+                              "reboot": body.get("reboot", True) is not False})
     except JobRefused as e:
         if cr:
             db().execute("UPDATE change_requests SET status='approved' WHERE id=?", (cr["id"],))

@@ -8,8 +8,10 @@ import datetime as dt
 import re
 
 COMPONENTS = ["weblogic", "jdk", "dbclient", "tuxedo"]
-APPLY_ORDER = ["jdk", "weblogic", "dbclient", "tuxedo"]       # JDK first: OPatch for WebLogic runs on it
-COMP_TITLE = {"jdk": "JDK", "weblogic": "WebLogic", "dbclient": "Oracle Database Client", "tuxedo": "Tuxedo"}
+APPLY_ORDER = ["os", "jdk", "weblogic", "dbclient", "tuxedo"]  # OS first; then JDK, since OPatch for WebLogic runs on it
+ALL_COMPONENTS = ["os"] + COMPONENTS                            # middleware COMPONENTS plus the Linux OS packages
+COMP_TITLE = {"jdk": "JDK", "weblogic": "WebLogic", "dbclient": "Oracle Database Client", "tuxedo": "Tuxedo",
+              "os": "OS updates"}
 DEFAULT_PLATFORM = {"jdk": "226P", "tuxedo": "226P", "weblogic": "2000P", "dbclient": "226P"}
 OPATCH_19_KEY = "6880880|226P|190000"           # OPatch 12.2.0.1.x for Database 19c, Linux x86-64
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -215,6 +217,37 @@ def stage_label(item):
     return item.get("label") or f"p{patch}"
 
 
+def os_item(osd):
+    """The Linux OS packages as one patching item for a server: every available update (yum update)."""
+    if not osd:
+        return None
+    inst = f"{osd.get('name') or 'Linux'}, kernel {osd.get('kernel') or '?'}"
+    if osd.get("error"):
+        return {"component": "os", "installed": inst, "target": "", "status": "no-target",
+                "detail": f"Couldn't check OS updates: {osd['error']}"}
+    n, sec = int(osd.get("updates") or 0), osd.get("security") or {}
+    pending = " A reboot is pending from an earlier update." if osd.get("reboot_pending") else ""
+    if not n:
+        return {"component": "os", "installed": inst, "target": "", "latest_label": "Up to date", "status": "ok",
+                "reboot_pending": bool(osd.get("reboot_pending")),
+                "detail": "No OS updates available." + pending}
+    parts = [f"{n} package update{'s' if n != 1 else ''}"]
+    if sec.get("advisories"):
+        sev = ", ".join(f"{sec[k]} {k}" for k in ("critical", "important", "moderate", "low") if sec.get(k))
+        parts.append(f"{sec['advisories']} security advisor{'ies' if sec['advisories'] != 1 else 'y'}"
+                     + (f" ({sev})" if sev else ""))
+    if osd.get("kernel_update"):
+        parts.append("a new kernel (needs a reboot)")
+    pkgs = osd.get("packages") or []
+    return {"component": "os", "installed": inst, "target": f"{n} updates", "latest_label": f"{n} package{'s' if n != 1 else ''}",
+            "key": f"os|yum|{n}", "status": "needed", "source": "Linux repositories",
+            "kernel_update": bool(osd.get("kernel_update")), "security": sec,
+            "reboot_pending": bool(osd.get("reboot_pending")), "packages": pkgs[:400],
+            "detail": "; ".join(parts) + ". " + (", ".join(p.split(" ")[0] for p in pkgs[:12])
+                                                 + (f" and {len(pkgs) - 12} more" if len(pkgs) > 12 else "")
+                                                 + ".") + pending}
+
+
 def plan_signature(plan):
     """What an approval covers: every component, update and server in the plan."""
     return sorted(f"{p['component']}|{p['key']}|{p['host']}" for p in plan)
@@ -233,6 +266,11 @@ def describe_plan(env, client_name, tier, plan, notes, who, when, window=None):
     hosts = list(dict.fromkeys(p["host"] for p in plan))
     rows = "\n".join(f"|{wiki(c)}|{wiki(v)}|{wiki(', '.join(h))}|" for c, v, h in comps)
     backups = []
+    if any(p["component"] == "os" for p in plan):
+        backups.append("OS: yum update installs all available Linux package updates. The previous kernel "
+                       "stays installed and can be chosen at boot; package changes can be reversed with "
+                       "'yum history undo'. Servers reboot only where Linux reports a reboot is needed, after all "
+                       "updates and before PeopleSoft is started again.")
     if any(p["component"] == "jdk" for p in plan):
         backups.append("JDK: the old JDK is kept as jdk.bak.<timestamp> next to the new one, and put back "
                        "automatically if the new JDK fails verification.")

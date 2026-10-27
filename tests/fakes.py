@@ -25,12 +25,22 @@ class FakeServers:
         self.keys = {}           # (host, account) -> set of key bodies
         self.trusted = {"10.0.1.11", "10.0.1.21", "10.0.9.21"}   # host keys already in known_hosts
         self.host_fp = "SHA256:" + "A" * 43
+        self.os_updates = False   # yum check-update finds updates (off unless a test turns it on)
+        self.os_kernel = True     # the available OS updates include a new kernel (so a reboot is needed)
+        self.boot = {}            # host -> boot id; changes when the host reboots
+        self.reboot_needed = set()
+        self.os_downloaded = set()
 
     def run(self, target, command, stdin=None, on_output=None, timeout=900, stdin_path=None):
         self.calls.append((target["host"], command))
         out, code, host = "", 0, target["host"]
         stdin = stdin or ""
-        if "hostname" in command and "uptime" in command:
+        if "PEGASUS_REBOOT_SENT" in command:                         # host.reboot (checked first: it says "shutdown")
+            self.boot[host] = "22222222-2222-2222-2222-" + "2" * 12
+            self.reboot_needed.discard(host)
+            self.rebooted = getattr(self, "rebooted", []) + [host]
+            out = "PEGASUS_REBOOT_SENT\n"
+        elif "hostname" in command and "uptime" in command:
             out = f"{host}\nopc\n 10:00 up 3 days\n"
         elif "sstatus" in command or "-p status" in command or "-w status" in command:
             up = self.state.get(target["domain"], True)
@@ -68,15 +78,39 @@ class FakeServers:
             else:
                 self.cleared = getattr(self, "cleared", []) + [(host, target["role"], target["domain"])]
                 out = f"CC|cleared|/u01/cfg/{target['role']}/{target['domain']}/CACHE|120|35M\n"
+        elif "OS|name" in stdin:                                     # os.check
+            out = "OS|name|Oracle Linux Server 8.10\nOS|kernel|5.15.0-200.el8uek.x86_64\nOS|pm|yum\n"
+            if (host, "os") in self.applied or not self.os_updates:
+                out += "OS|rc|0\n"
+            else:
+                out += ("OS|rc|100\nOS|pkg|openssl.x86_64|1:1.1.1k-14.el8_10\nOS|pkg|glibc.x86_64|2.28-251.0.3.el8\n"
+                        + ("OS|pkg|kernel-uek.x86_64|5.15.0-210.el8uek\n" if self.os_kernel else "")
+                        + "OS|sec|ELSA-2026-7001|Important/Sec.\nOS|sec|ELSA-2026-7002|Critical/Sec.\n")
+            out += f"OS|reboot|{'yes' if host in self.reboot_needed else 'no'}\n"
+        elif "--downloadonly" in stdin:                              # os.download
+            self.os_downloaded.add(host)
+            out = "Downloading updates with yum (not installing)\nPEGASUS_DOWNLOADED\n"
+        elif "'NEED|yes'" in stdin:                                  # host.reboot: is one needed?
+            out = self.boot.setdefault(host, "11111111-1111-1111-1111-" + "1" * 12) + "\n"
+            out += "NEED|yes\n" if host in self.reboot_needed else "NEED|no\n"
+        elif command == "cat /proc/sys/kernel/random/boot_id":
+            out = self.boot.setdefault(host, "11111111-1111-1111-1111-" + "1" * 12) + "\n"
         elif "MODE=" in stdin:
             out = self.access(host, command, stdin)
         elif "PSA|started" in stdin:
             out = "PSA|started|/home/psadm1/pegasus_apply/x\n"
-            self.pending[host] = "jdk" if "NEWVER=" in stdin else "weblogic" if "SPB=" in stdin else "other"
+            self.pending[host] = ("os" if "PEGASUS_REBOOT" in stdin else "jdk" if "NEWVER=" in stdin
+                                  else "weblogic" if "SPB=" in stdin else "other")
         elif "OFFSET=" in stdin:
             comp = self.pending.pop(host, None)
             if self.fail_apply:
                 out = "RC=1\nSIZE=40\nAPPLY FAILED: opatch apply failed\n"
+            elif comp == "os":
+                self.applied.add((host, "os"))
+                if self.os_kernel:
+                    self.reboot_needed.add(host)
+                out = ("RC=0\nSIZE=40\nRunning: sudo yum -y update\nUpdates installed.\n"
+                       + ("PEGASUS_REBOOT|yes\n" if self.os_kernel else "PEGASUS_REBOOT|no\n"))
             else:
                 self.applied.add((host, comp))
                 out = "RC=0\nSIZE=40\nApplying patch\nAPPLY OK\n"

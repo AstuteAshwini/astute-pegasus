@@ -207,6 +207,7 @@ dialog::backdrop{background:#00222fa0}.row{display:flex;gap:8px;justify-content:
 </dialog>
 
 <dialog id="confDlg"><form id="confForm"><h2 id="confTitle"></h2><p class="help" id="confText"></p>
+  <label class="inline" id="confRebootL" hidden><input type="checkbox" id="confReboot" checked>Reboot servers where Linux says it's needed (after all updates, before PeopleSoft starts)</label>
   <label id="confLabel">Type <b id="confMust" class="mono"></b> to confirm<input id="confInput" class="mono" autocomplete="off"></label>
   <div class="row"><button type="button" id="confCancel">Cancel</button><button class="primary" type="submit" id="confGo">Continue</button></div></form></dialog>
 
@@ -253,7 +254,7 @@ dialog::backdrop{background:#00222fa0}.row{display:flex;gap:8px;justify-content:
 "use strict";
 var $=function(id){return document.getElementById(id)};
 var S={me:null,clients:[],cid:null,detail:null,tab:"overview",job:null,penv:null,pat:null,jira:null,acc:{key:null,sel:{}},users:null,view:"client",disc:{}};
-var NM={jdk:"JDK",weblogic:"WebLogic",dbclient:"Oracle Database Client",tuxedo:"Tuxedo"};
+var NM={os:"OS updates",jdk:"JDK",weblogic:"WebLogic",dbclient:"Oracle Database Client",tuxedo:"Tuxedo"};
 function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 function api(path,opt){opt=opt||{};var o={method:opt.method||"GET",headers:{"X-Requested-With":"pegasus"},credentials:"same-origin"};
   if(opt.body!==undefined){o.headers["Content-Type"]="application/json";o.body=JSON.stringify(opt.body)}
@@ -503,7 +504,7 @@ $("tokClose").addEventListener("click",function(){$("tokDlg").close();refresh()}
 $("tokCopy").addEventListener("click",function(){navigator.clipboard&&navigator.clipboard.writeText($("tokCmd").textContent);this.textContent="Copied"});
 
 var confCb=null;
-function confirmBox(title,text,must,cb,go){confCb={cb:cb,must:must};$("confTitle").textContent=title;$("confText").textContent=text;$("confLabel").hidden=!must;$("confMust").textContent=must||"";$("confInput").value="";$("confGo").disabled=!!must;$("confGo").textContent=go||"Continue";$("confDlg").showModal()}
+function confirmBox(title,text,must,cb,go){confCb={cb:cb,must:must};$("confRebootL").hidden=true;$("confReboot").checked=true;$("confTitle").textContent=title;$("confText").textContent=text;$("confLabel").hidden=!must;$("confMust").textContent=must||"";$("confInput").value="";$("confGo").disabled=!!must;$("confGo").textContent=go||"Continue";$("confDlg").showModal()}
 $("confInput").addEventListener("input",function(){$("confGo").disabled=this.value.trim().toUpperCase()!==String(confCb.must).toUpperCase()});
 $("confCancel").addEventListener("click",function(){$("confDlg").close()});
 $("confForm").addEventListener("submit",function(e){e.preventDefault();var c=confCb;$("confDlg").close();c.cb(c.must?$("confInput").value.trim():null)});
@@ -590,7 +591,7 @@ function renderPat(){var j=S.pat,h="",env=j.environment;
   var groups={},order=[];
   j.hosts.forEach(function(host){(host.items||[]).forEach(function(it){if(it.status!=="needed"||!it.key)return;
     var g=groups[it.key];if(!g){g=groups[it.key]={component:it.component,target:it.target,label:it.latest_label||it.target,key:it.key,hosts:[],ready:0,item:it};order.push(it.key)}
-    g.hosts.push(host.host);if(it.staged)g.ready++})});
+    g.hosts.push(host.host);if(it.staged||it.component==="os")g.ready++})});      // OS updates install straight from yum
   if(order.length){
     if(j.approval.required) h+='<p class="help">Patching '+esc(env)+' needs an approved Jira ticket. Request approval, then Apply unlocks once someone other than the Pegasus account approves it.</p>';
     if(order.length>1){var allReady=order.every(function(k){return groups[k].ready===groups[k].hosts.length});
@@ -617,27 +618,31 @@ function renderPat(){var j=S.pat,h="",env=j.environment;
       if(it.staged&&it.status==="needed") act='<span class="st ok" title="'+esc(it.staged.dir)+'">Downloaded</span>';
       else if(it.status==="needed"&&it.key&&can("operator")) act='<button type="button" class="sm" data-dl="'+hi+':'+ii+'">Download</button>';
       var st={needed:"Update available",ok:"Up to date","no-target":"Unknown",deferred:"With the next CPU"}[it.status]||it.status;
-      h+='<tr title="'+esc(it.detail||"")+'">'+(ii===0?hc:'<td></td>')+'<td>'+esc(NM[it.component]||it.component)+'</td><td>'+esc(it.installed)+'</td><td>'+latest+'</td><td><span class="st '+esc(it.status)+'">'+st+'</span></td><td>'+act+'</td></tr>';
+      h+='<tr title="'+esc(it.detail||"")+'">'+(ii===0?hc:'<td></td>')+'<td>'+esc(NM[it.component]||it.component)+'</td><td>'+esc(it.installed)+'</td><td>'+latest+'</td><td><span class="st '+esc(it.status)+'">'+st+'</span>'+(it.reboot_pending?'<br><span class="st pending" title="Linux says this server needs a reboot for earlier updates to take effect">Reboot pending</span>':'')+'</td><td>'+act+'</td></tr>';
       if(it.status!=="ok"&&it.detail) h+='<tr class="sub"><td></td><td colspan="5" class="det">'+esc(it.detail)+'</td></tr>'});
     (host.warnings||[]).forEach(function(w){h+='<tr class="sub"><td></td><td colspan="5" class="det">Warning: '+esc(w)+'</td></tr>'})});
   $("pOut").innerHTML=h+'</tbody></table></div>'}
 function stageItems(refs){var out=[];refs.forEach(function(ref){var p=ref.split(":"),host=S.pat.hosts[+p[0]],it=host.items[+p[1]];out.push({host_key:host.host_key,key:it.key,host:host.host})});return out}
 function startStage(body,what){
   var hosts={};S.pat.hosts.forEach(function(h){(h.items||[]).forEach(function(it){if(it.status==="needed"&&it.key&&!it.staged&&(body.all||body.items.some(function(x){return x.host_key===h.host_key&&x.key===it.key})))hosts[h.host]=1})});
-  confirmBox("Download "+what+"?","The connector downloads each update once (from Oracle Support with the client's own account), then copies it to "+S.pat.settings.staging_root+" on "+Object.keys(hosts).join(", ")+" and checks the checksum. Nothing is installed or restarted.",null,function(){
+  confirmBox("Download "+what+"?","The connector downloads each Oracle update once (from Oracle Support with the client's own account), then copies it to "+S.pat.settings.staging_root+" on "+Object.keys(hosts).join(", ")+" and checks the checksum. OS updates are downloaded on each server with yum --downloadonly. Nothing is installed or restarted.",null,function(){
     api("/api/clients/"+S.cid+"/patching/stage",{method:"POST",body:Object.assign({environment:S.penv},body)}).then(function(j){watch(j.job,"download and stage "+S.penv,function(){loadPatching(false)})}).catch(function(j){alert(j.error||"Couldn't start the download.")})},"Download")}
 function startApply(scope,crId){
   var env=S.penv,e=envOf(env),by={},order=[];
   S.pat.hosts.forEach(function(host){(host.items||[]).forEach(function(it){if(it.status!=="needed"||!it.key)return;if(scope!=="all"&&it.component+"~"+it.key!==scope)return;
     if(!by[it.component]){by[it.component]={label:it.latest_label||it.target,hosts:[]};order.push(it.component)}by[it.component].hosts.push(host.host)})});
-  order.sort(function(a,b){return ["jdk","weblogic","dbclient","tuxedo"].indexOf(a)-["jdk","weblogic","dbclient","tuxedo"].indexOf(b)});
+  var ORD=["os","jdk","weblogic","dbclient","tuxedo"];order.sort(function(a,b){return ORD.indexOf(a)-ORD.indexOf(b)});
+  var hasOs=order.indexOf("os")>=0;
   var text="This takes "+env+" down once: every domain is stopped, Pegasus checks nothing is still running, then applies in order: "+
-    order.map(function(c){return NM[c]+" "+by[c].label+" on "+by[c].hosts.join(", ")}).join("; ")+". Each home is backed up first. If a step fails the rest are skipped, and the domains are started again either way.";
+    order.map(function(c){return (c==="os"?"OS updates (sudo yum -y update)":NM[c]+" "+by[c].label)+" on "+by[c].hosts.join(", ")}).join("; ")+"."+
+    (hasOs?" Then servers reboot where Linux says it's needed, once, after all updates.":"")+
+    " Each middleware home is backed up first. If a step fails the rest are skipped, and the domains are started again either way.";
   var cr=crId&&crFor(scope);if(cr) text+=" Approved under "+cr.jira_key+(cr.approver?" by "+cr.approver:"")+"; the result is posted back to the ticket.";
   confirmBox((scope==="all"?"Apply all outstanding updates":"Apply "+NM[order[0]])+" to "+env+"?",text,isPrd(e.tier)?env:null,function(typed){
-    var body={environment:env,scope:scope};if(typed)body.confirm=typed;if(crId)body.change_request=crId;
+    var body={environment:env,scope:scope};if(typed)body.confirm=typed;if(crId)body.change_request=crId;if(hasOs)body.reboot=$("confReboot").checked;
     api("/api/clients/"+S.cid+"/patching/apply",{method:"POST",body:body}).then(function(j){watch(j.job,"apply "+env,function(){loadPatching()})})
-    .catch(function(j){alert(j.error||"Couldn't start the apply.");if(j.need_approval)loadPatching()})},"Apply")}
+    .catch(function(j){alert(j.error||"Couldn't start the apply.");if(j.need_approval)loadPatching()})},"Apply");
+  $("confRebootL").hidden=!hasOs}
 var reqScope=null;
 function requestApproval(scope){var env=S.penv,by={},order=[];
   S.pat.hosts.forEach(function(host){(host.items||[]).forEach(function(it){if(it.status!=="needed"||!it.key)return;if(scope!=="all"&&it.component+"~"+it.key!==scope)return;
