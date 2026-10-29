@@ -570,12 +570,13 @@ function applyCell(scope,ready,applyBtn,notReady){
   if(c.status==="failed") return '<span class="cr">'+link+'<span class="det">Last apply failed</span>'+req("Request again")+'</span>';
   return req("Request approval")}
 function advisoryLine(a){if(!a)return"";var keys=["jdk","weblogic","tuxedo","dbclient","peopletools"].filter(function(k){return a.components[k]});
-  if(!keys.length) return '<p class="help"><a href="'+esc(a.url)+'" target="_blank" rel="noopener">Read Oracle\'s latest CPU advisory</a>'+(a.error?' <span class="det">(risk scores unavailable: '+esc(a.error)+')</span>':'')+'</p>';
-  return '<p class="help risks"><b>Risk in Oracle\'s latest CPU:</b> '+keys.map(function(k){var r=a.components[k];return esc(r.title)+' <a class="risk '+esc(r.severity)+'" href="'+esc(a.url)+'" target="_blank" rel="noopener" title="'+r.count+' fix'+(r.count===1?'':'es')+'; highest: '+esc(r.cve)+'">CVSS '+r.max.toFixed(1)+'</a>'}).join(" · ")+
+  if(!keys.length) return '<p class="help"><a href="'+esc(a.url)+'" target="_blank" rel="noopener">Read Oracle\'s latest CPU advisory</a>'+(a.error?' <span class="det">(severity unavailable: '+esc(a.error)+')</span>':'')+'</p>';
+  return '<p class="help risks"><b>Severity in Oracle\'s latest CPU:</b> '+keys.map(function(k){var r=a.components[k];return esc(r.title)+' <a class="risk '+esc(r.severity)+'" href="'+esc(a.url)+'" target="_blank" rel="noopener" title="'+r.count+' fix'+(r.count===1?'':'es')+'; highest: '+esc(r.cve)+'">'+sevLabel(r.severity)+'</a>'}).join(" · ")+
     ' · <a href="'+esc(a.url)+'" target="_blank" rel="noopener">Read the advisory</a></p>'}
 function riskBadge(comp){var a=(S.pat&&S.pat.advisory&&S.pat.advisory.components)||{},r=a[comp];
   if(!r) return "";
-  return '<a class="risk '+esc(r.severity)+'" href="'+esc(S.pat.advisory.url)+'" target="_blank" rel="noopener" title="Highest CVSS score among the '+r.count+' '+esc(r.title)+' fix'+(r.count===1?'':'es')+' in Oracle\'s latest CPU ('+esc(r.cve)+')">CVSS '+r.max.toFixed(1)+'</a>'}
+  return '<a class="risk '+esc(r.severity)+'" href="'+esc(S.pat.advisory.url)+'" target="_blank" rel="noopener" title="Highest severity among the '+r.count+' '+esc(r.title)+' fix'+(r.count===1?'':'es')+' in Oracle\'s latest CPU ('+esc(r.cve)+')">'+sevLabel(r.severity)+'</a>'}
+function sevLabel(s){s=String(s||"");return esc(s.charAt(0).toUpperCase()+s.slice(1))}
 function readmeLink(it){
   if(it.component==="jdk"){var m=String(it.target||"").split(".")[0];return m?'<a class="link sm" href="https://www.oracle.com/java/technologies/javase/'+encodeURIComponent(m)+'u-relnotes.html" target="_blank" rel="noopener">Release notes</a>':""}
   if(it.patch_number) return '<a class="link sm" href="https://updates.oracle.com/Orion/SimpleSearch/process_form?search_type=patch&patch_number='+encodeURIComponent(it.patch_number)+'&plat_lang='+encodeURIComponent(it.platform||"226P")+'" target="_blank" rel="noopener" title="Oracle Support page for patch '+esc(it.patch_number)+', with its readme">Readme</a>';
