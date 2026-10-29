@@ -254,8 +254,7 @@ def prepare_stage_root(ctx, t, ssh_user, root, out):
                            "dedicated staging folder such as /u01/app/oracle/staging/cpu.")
     out(f"    {owner} can't write to {root}; creating it with sudo and giving it to {owner}\n")
     fix = (f"sudo -n mkdir -p {q(root)} && sudo -n chown -R {q(owner)}:\"$(id -gn {q(owner)})\" {q(root)} && "
-           f"sudo -n chmod 755 {q(root)} && sudo -n find {q(root)} -type d -exec chmod 755 {{}} + && "
-           f"sudo -n find {q(root)} -type f -exec chmod 644 {{}} + && echo PSFIXED")
+           f"sudo -n chmod -R u=rwX,go=rX {q(root)} && echo PSFIXED")
     code, text = ctx.sh(t, fix, timeout=120)
     if "PSFIXED" not in text:
         raise RuntimeError(f"{owner} can't write to {root}, and sudo as {ssh_user} didn't work either "
@@ -889,8 +888,11 @@ def host_reboot(c, ctx, out, wait_minutes=20):
         out(f"{t['host']}: couldn't read the boot id, so the reboot can't be confirmed; not rebooting.\n")
         return 1, {"rebooted": False}
     out(f"{t['host']}: rebooting.\n")
-    ctx.sh(t, "sudo -n sh -c 'nohup sh -c \"sleep 3; systemctl reboot || /sbin/shutdown -r now\" >/dev/null 2>&1 &'; "
-              "echo PEGASUS_REBOOT_SENT", timeout=60)
+    try:        # --no-block queues the reboot and returns at once; the connection may still drop as sshd stops
+        ctx.sh(t, "sudo -n systemctl --no-block reboot || sudo -n /sbin/shutdown -r now; echo PEGASUS_REBOOT_SENT",
+               timeout=60)
+    except Exception:
+        pass
     deadline = time.time() + wait_minutes * 60
     time.sleep(min(30, ctx.poll_interval * 6))
     while time.time() < deadline:

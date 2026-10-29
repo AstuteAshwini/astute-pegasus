@@ -105,8 +105,20 @@ passphrase, set `PEGASUS_SSH_PASSPHRASE`.
 The connector needs outbound HTTPS to the control plane, and SSH (22) to the PeopleSoft servers. The servers'
 host keys must already be in the connector user's `known_hosts`.
 
-If the PeopleSoft owner (`os_user`, e.g. psadm2) differs from the SSH user, commands run with
-`sudo -n -iu <os_user>`, so the SSH user needs a passwordless sudo rule for it. Patches are applied as the owner of
+Any SSH user works (`opc` on OCI, or a dedicated account the client creates). If the PeopleSoft owner (`os_user`,
+e.g. psadm2) differs from the SSH user, commands run with `sudo -n -iu <os_user>`, so the SSH user needs a
+passwordless sudo rule for it. The complete rule set, for a dedicated user named `pegasus`:
+
+```
+# /etc/sudoers.d/pegasus  (check with: visudo -cf /etc/sudoers.d/pegasus)
+Defaults:pegasus !requiretty
+pegasus ALL=(psadm1,psadm2) NOPASSWD: ALL                     # run psadmin and patches as the PeopleSoft owners
+# OS patching only; leave these out if Pegasus shouldn't patch Linux
+pegasus ALL=(root) NOPASSWD: /usr/bin/yum, /usr/bin/dnf, /usr/bin/needs-restarting, \
+                             /usr/bin/systemctl --no-block reboot, /usr/sbin/shutdown -r now
+```
+
+Create the staging folder once, owned by the PeopleSoft owner, and Pegasus needs no other root rights for staging. Patches are applied as the owner of
 each home (e.g. psadm1 for the JDK and WebLogic), and SSH keys are added for the account you choose, the same way.
 
 The connector runs up to 4 jobs at once (`PEGASUS_WORKERS`), so a status check doesn't wait behind a long download.
