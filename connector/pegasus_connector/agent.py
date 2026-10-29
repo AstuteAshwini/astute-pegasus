@@ -286,7 +286,7 @@ class Agent:
             sink(f"Refused by the connector: {e}\n")
             sink.flush({"done": True, "status": "rejected", "results": []})
             return
-        results, ok, failed_at = [], True, None
+        results, ok, failed_at, gated = [], True, None, False
         stop_on_failure = bool(job["params"].get("stop_on_failure"))
         ctx = patching.Context(self.runner, self.config_path, self.cache_dir, job["id"], self.poll_interval)
         flusher_stop = threading.Event()
@@ -300,7 +300,7 @@ class Agent:
             for n, (st, (kind, plan)) in enumerate(zip(steps, plans), start=1):
                 t = st.get("target") or {}
                 where = f" on {t.get('host') or t.get('ip')}" if t else ""
-                if failed_at is not None and not st.get("always"):
+                if gated or (failed_at is not None and not st.get("always")):
                     continue                              # skipped after an earlier failure
                 sink(f"\n--- [{n}/{len(steps)}] {st.get('label') or st['op']}{where}\n")
                 started, captured, data = time.time(), [], None
@@ -326,6 +326,10 @@ class Agent:
                 results.append(r)
                 if code != 0 and not st.get("ignore_failure"):
                     ok = False
+                    if st.get("gate") and failed_at is None:      # a pre-flight check: nothing has been touched yet
+                        gated = True
+                        sink("That check failed before anything was changed, so the rest of this job won't run.\n")
+                        continue
                     if stop_on_failure and failed_at is None and not st.get("independent"):
                         failed_at = n
                         if any(x.get("always") for x in steps[n:]):

@@ -9,6 +9,7 @@ Operations
   patch.download download patches into the connector's cache (all from Oracle Support)
   patch.stage    copy cached patches to a server's staging folder, checksum-verified
   host.idle      fail if WebLogic or Tuxedo processes are still running (checked before patching binaries)
+  space.check    before the window: is there enough free disk for the backups, unpacking and OPatch's copies?
   patch.apply    back up a home and apply a staged patch as the software owner, detached on the server
   access.check / access.add / access.remove   a person's SSH public key in an account's authorized_keys
   os.check       Linux package updates available on a server (read-only)
@@ -18,6 +19,7 @@ Operations
 """
 import base64
 import hashlib
+import posixpath
 import re
 import secrets
 import shlex
@@ -37,7 +39,7 @@ MAJOR = re.compile(r"^\d{1,3}$")
 COMPONENTS = ("jdk", "weblogic", "dbclient", "tuxedo")
 PROTECTED_DIRS = {"/", "/u01", "/u01/app", "/u01/app/oracle", "/u01/app/oracle/product", "/home", "/root", "/etc",
                   "/usr", "/var", "/opt", "/tmp", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/dev", "/proc", "/sys"}
-HANDLED = ("catalog", "patch.download", "patch.stage", "patch.apply", "host.idle",
+HANDLED = ("catalog", "patch.download", "patch.stage", "patch.apply", "host.idle", "space.check",
            "access.check", "access.add", "access.remove", "discover", "hostkey.trust",
            "os.check", "os.download", "os.update", "host.reboot")
 
@@ -103,6 +105,8 @@ def validate(op, step, ssh_user):
     t = check_target(step.get("target"))
     if op == "host.idle":
         return {"t": t}
+    if op == "space.check":
+        return validate_space(step)
     if op in ("os.check", "os.download", "os.update"):
         return {"t": t}
     if op == "host.reboot":
@@ -206,6 +210,8 @@ def run(op, c, ctx, out):
         return 0, {"running": []}
     if op == "patch.apply":
         return apply(c, ctx, out)
+    if op == "space.check":
+        return space_check(c, ctx, out)
     if op == "os.check":
         return os_check(c, ctx, out)
     if op == "os.download":
@@ -283,16 +289,41 @@ def stage_file(ctx, t, ssh_user, local, stage_dir, out):
     out(f"    {name}: staged and verified (sha256 {digest[:12]}...)\n")
 
 
+def check_stage_space(ctx, t, ssh_user, root, plan, out):
+    """Before copying anything: is there room in the staging folder for every file that isn't there already?"""
+    dests = [(f"{d}/{f.name}", f.stat().st_size) for d, files in plan for f in files]
+    probe = ("echo STAGECHK; " + "".join(f"stat -c 'SZ|%s|%n' {q(p)} 2>/dev/null; " for p, _ in dests)
+             + f"df -Pk {q(root)} | tail -1")
+    code, text = ctx.sh(t, as_owner(t["os_user"], ssh_user, probe), timeout=120)
+    there = {m.group(2).strip(): int(m.group(1)) for m in re.finditer(r"^SZ\|(\d+)\|(.+)$", text, re.M)}
+    need = sum(size for p, size in dests if there.get(p) != size)
+    m = re.search(r"\s(\d+)\s+\d+%\s+(\S+)\s*$", text, re.M)
+    if not need:
+        return
+    if not m:
+        out(f"    (couldn't read the free space in {root}; checking file by file instead)\n")
+        return
+    free, mount = int(m.group(1)) * 1024, m.group(2)
+    out(f"    {mb(need)} to copy, {mb(free)} free on {mount}\n")
+    if free < need + 200 * 1048576:
+        raise RuntimeError(f"Not enough space to stage on {t['host']}: {root} (on {mount}) has {mb(free)} free, and "
+                           f"these updates need {mb(need)} plus 200 MB to spare. Nothing was copied. Free up space "
+                           "or choose another staging folder in the patching settings.")
+
+
 def stage(c, ctx, out):
     t, ssh_user = c["t"], ctx.runner.user
     staged = {}
     prepare_stage_root(ctx, t, ssh_user, c["root"], out)
+    plan = []
     for it in c["items"]:
         patch, platform, filt = it["key"]
         local = oracle.cached_files(ctx.cache_dir, oracle.cache_folder(patch, platform), filt)
         if not local:
             raise RuntimeError(f"{patch} isn't in the connector's cache. Download it first.")
-        stage_dir = f"{c['root']}/{it['label']}"
+        plan.append((f"{c['root']}/{it['label']}", local))
+    check_stage_space(ctx, t, ssh_user, c["root"], plan, out)
+    for it, (stage_dir, local) in zip(c["items"], plan):
         out(f"  {it['label']} -> {stage_dir}\n")
         for f in local:
             stage_file(ctx, t, ssh_user, f, stage_dir, out)
@@ -307,6 +338,146 @@ def processes_running(ctx, t):
                    "'[w]eblogic[.]Server|[B]BL -|[P]SAPPSRV|[P]SPRCSRV|[P]SMSTPRC|[P]SDSTSRV' || true")
     code, text = ctx.sh(t, cmd, timeout=60)
     return [l.strip() for l in text.splitlines() if re.match(r"^\s*\d+\s", l)]
+
+
+# ---------------------------------------------------------------- disk space, checked before the window starts
+GB = 1048576           # in KB
+SPACE_COMPONENTS = COMPONENTS + ("os",)
+TITLES = {"jdk": "JDK", "weblogic": "WebLogic", "dbclient": "Database client", "tuxedo": "Tuxedo"}
+
+
+def mb(nbytes):
+    return f"{nbytes / 1073741824:.1f} GB" if nbytes >= 1073741824 else f"{max(nbytes // 1048576, 1)} MB"
+
+
+def validate_space(step):
+    t = check_target(step.get("target"))
+    items = []
+    for it in step.get("items") or []:
+        comp = str(it.get("component") or "")
+        if comp not in SPACE_COMPONENTS:
+            raise OperationError("unknown component")
+        if comp == "os":
+            items.append({"component": "os", "kernel": bool(it.get("kernel"))})
+            continue
+        owner = str(it.get("owner") or "")
+        if not SAFE_NAME.match(owner) or owner == "root":
+            raise OperationError("the software owner has unexpected characters")
+        home = abs_path(it.get("home"), "the home", allow_empty=False)
+        if home.rstrip("/") in PROTECTED_DIRS or home.count("/") < 2:
+            raise OperationError(f"{home} is too general a folder")
+        staged = it.get("staged") or {}
+        files = [str(f) for f in staged.get("files") or []]
+        if not all(SAFE_FILE.match(f) for f in files):
+            raise OperationError("staged file names have unexpected characters")
+        sdir = abs_path(staged.get("dir"), "the staging folder")
+        items.append({"component": comp, "owner": owner, "home": home,
+                      "staged": [f"{sdir}/{f}" for f in files] if sdir else []})
+    if not items or len(items) > 20:
+        raise OperationError("nothing to check")
+    return {"t": t, "items": items}
+
+
+def space_paths(it):
+    """(folder the backup copies, folder the backup and new files go in, folder the patch is unpacked in), matching
+    what the apply scripts below do."""
+    home = it["home"]
+    parent = posixpath.dirname(home)
+    if it["component"] == "tuxedo":                  # the backup is of the Tuxedo Oracle home, one level up
+        return parent, posixpath.dirname(parent), parent
+    return home, parent, parent
+
+
+SPACE_PROBE = r'''
+echo SPACECHK
+for d in __DU__; do [ -n "$d" ] && echo "DU|$d|$(du -sk "$d" 2>/dev/null | tail -1 | cut -f1)"; done
+S=0; for f in __FILES__; do s=$(stat -c %s "$f" 2>/dev/null || echo 0); S=$((S + s)); done; echo "ST|$S"
+for d in __DF__; do x="$d"; while [ ! -e "$x" ] && [ "$x" != / ]; do x=$(dirname "$x"); done
+  df -Pk "$x" 2>/dev/null | tail -1 | awk -v d="$d" '{print "DF|" d "|" $6 "|" $4}'; done
+'''
+
+
+def probe_space(ctx, t, owner, du, df, files):
+    """Sizes (KB) of the `du` folders, (mount, free KB) for each `df` folder, and the staged files' total (KB)."""
+    script = (SPACE_PROBE.replace("__DU__", " ".join(q(d) for d in du) or "''")
+              .replace("__FILES__", " ".join(q(f) for f in files)).replace("__DF__", " ".join(q(d) for d in df)))
+    code, text = ctx.sh(t, owner_shell(owner, ctx.runner.user), stdin=script, timeout=900)
+    sizes, mounts, staged = {}, {}, 0
+    for line in text.splitlines():
+        parts = line.strip().split("|")
+        if parts[0] == "DU" and len(parts) == 3:
+            sizes[parts[1]] = int(parts[2]) if parts[2].isdigit() else None
+        elif parts[0] == "DF" and len(parts) == 4 and parts[3].isdigit():
+            mounts[parts[1]] = (parts[2], int(parts[3]))
+        elif parts[0] == "ST" and len(parts) == 2 and parts[1].isdigit():
+            staged = int(parts[1]) // 1024
+    return sizes, mounts, staged
+
+
+def space_check(c, ctx, out):
+    """Add up what the apply will write on each filesystem (backups it keeps, the largest unpack folder, OPatch's own
+    copies of replaced files, a new JDK) and compare it with what df says is free. Fails before anything is stopped
+    if any filesystem is short. The estimates are on the generous side; the apply scripts still check as they go."""
+    t, user = c["t"], ctx.runner.user
+    fs = {}                  # mount -> {"free": KB, "keep": [(KB, why)], "temp": [(KB, why)], "margin": KB}
+    problems = []
+
+    def need(mount_info, kb, why, kind="keep", margin=256 * 1024):
+        mount, free = mount_info
+        f = fs.setdefault(mount, {"free": free, "keep": [], "temp": [], "margin": 0})
+        f[kind].append((int(kb), why))
+        f["margin"] = max(f["margin"], margin)
+
+    for it in c["items"]:
+        comp = it["component"]
+        if comp == "os":
+            wanted = [("/var/cache", GB, "OS packages downloaded by yum"), ("/usr", GB, "OS packages installed")]
+            if it["kernel"]:
+                wanted.append(("/boot", 150 * 1024, "the new kernel"))
+            _, mounts, _ = probe_space(ctx, t, user, [], [d for d, _, _ in wanted], [])
+            for d, kb, why in wanted:
+                if d in mounts:
+                    need(mounts[d], kb, why)
+                else:
+                    problems.append(f"OS updates: couldn't read the free space in {d}")
+            continue
+        src, bdir, work = space_paths(it)
+        home, title = it["home"], TITLES[comp]
+        sizes, mounts, staged = probe_space(ctx, t, it["owner"], [src], [bdir, work, home, "/tmp"], it["staged"])
+        size = sizes.get(src)
+        if not size or not all(d in mounts for d in (bdir, work, home)):
+            problems.append(f"{title}: couldn't read the size of {src} or the free space around it as {it['owner']}")
+            continue
+        if comp == "jdk":
+            need(mounts[bdir], size * 115 // 100, f"new JDK unpacked next to {home} (the current one is kept)")
+            continue
+        need(mounts[bdir], size // 2, f"{title} backup of {src} ({mb(size * 1024)} before compression)", margin=GB)
+        need(mounts[work], max(staged * 3, 256 * 1024), f"{title} patch unpacked in {work}", kind="temp")
+        need(mounts[home], max(staged * 2, 512 * 1024), f"OPatch's copies of the {title} files it replaces")
+        if "/tmp" in mounts:
+            need(mounts["/tmp"], 512 * 1024, "OPatch working files", kind="temp")
+
+    ok = not problems
+    report = []
+    out(f"Disk space on {t['host']}:\n")
+    for mount, f in sorted(fs.items()):
+        total = sum(kb for kb, _ in f["keep"]) + max([kb for kb, _ in f["temp"]] or [0]) + f["margin"]
+        enough = f["free"] >= total
+        ok = ok and enough
+        out(f"  {mount}: {mb(f['free'] * 1024)} free, about {mb(total * 1024)} needed"
+            + ("" if enough else f"  <-- NOT ENOUGH, short by {mb((total - f['free']) * 1024)}") + "\n")
+        for kb, why in f["keep"] + f["temp"]:
+            out(f"      {mb(kb * 1024):>8}  {why}\n")
+        out(f"      {mb(f['margin'] * 1024):>8}  to spare\n")
+        report.append({"mount": mount, "free_mb": f["free"] // 1024, "need_mb": total // 1024, "ok": enough})
+    for p in problems:
+        out(f"  {p}\n")
+    if ok:
+        out("Enough space for this maintenance window.\n")
+    else:
+        out("Not enough disk space, so nothing was stopped or changed. Free up space where marked above (backups "
+            "and .bak folders from earlier patching are usually the quickest win), then apply again.\n")
+    return (0 if ok else 1), {"ok": ok, "filesystems": report, "problems": problems}
 
 
 # ---------------------------------------------------------------- apply scripts (run on the server as the owner)

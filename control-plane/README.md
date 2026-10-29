@@ -152,10 +152,17 @@ On a client's **Patching** tab, per environment:
    **Look up latest again** asks Oracle afresh.
 2. **Download.** The connector downloads each update once into its cache and copies it to the staging folder
    (Settings tab, default `/u01/app/oracle/staging/cpu`) on each server, checking the SHA-256. Nothing is installed.
+   Before downloading, the connector checks its own disk has room for each file; before copying, it checks the
+   staging folder has room for all of them (plus 200 MB), so a short disk fails before anything is copied.
 3. **Request approval** (when Jira approval is on): Pegasus raises a ticket describing exactly what changes, the
    outage and the backout. Apply unlocks once someone other than the Pegasus account approves it; Pegasus asks
    Jira again at the moment Apply is clicked. An approval covers one exact plan, once.
-4. **Apply.** One maintenance window: stop every domain, check no WebLogic or Tuxedo process is left, back up and
+4. **Apply.** First, before anything is stopped, a disk-space check on each server adds up what the window will
+   write on each filesystem (backups, the new JDK, the unpacked patch, OPatch's copies of replaced files, OS
+   packages and /boot for a new kernel) and compares it with `df`. If any filesystem is short, the job stops there:
+   no domain is stopped or started, the job log shows what's needed where, and an approved Jira ticket gets a comment
+   and stays usable for the same plan. (Needs connector 0.6.0; older connectors apply without this check.)
+   Then one maintenance window: stop every domain, check no WebLogic or Tuxedo process is left, back up and
    patch each home as its owner (JDK first, then WebLogic, Database client, Tuxedo), start every domain again even
    if a step failed, check status and read the levels again. The result is posted to the Jira ticket.
 

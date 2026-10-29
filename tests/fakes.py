@@ -30,6 +30,8 @@ class FakeServers:
         self.boot = {}            # host -> boot id; changes when the host reboots
         self.reboot_needed = set()
         self.os_downloaded = set()
+        self.free_kb = {}          # mount -> free KB that df reports (default: plenty)
+        self.home_kb = 3000000     # what du reports for a home
 
     def run(self, target, command, stdin=None, on_output=None, timeout=900, stdin_path=None):
         self.calls.append((target["host"], command))
@@ -52,6 +54,17 @@ class FakeServers:
         elif "shutdown" in command or "-p stop" in command:
             self.state[target["domain"]] = False
             out = "stopped\n"
+        elif "SPACECHK" in stdin:                                    # space.check
+            m = re.search(r"for d in (.*?); do \[", stdin)
+            out = "SPACECHK\n" + "".join(f"DU|{d}|{self.home_kb}\n" for d in re.findall(r"'?([^' ]+)'?", m.group(1))
+                                         if d.startswith("/"))
+            out += "ST|104857600\n"
+            m = re.search(r"for d in (.*?); do x=", stdin)
+            for d in re.findall(r"'?([^' ]+)'?", m.group(1)):
+                mount = "/" if d in ("/tmp", "/usr", "/var/cache", "/boot") else "/u01"
+                out += f"DF|{d}|{mount}|{self.free_kb.get(mount, 99999000)}\n"
+        elif "STAGECHK" in command:                                  # free space before staging
+            out = f"STAGECHK\n/dev/sda1 100000000 1000 {self.free_kb.get('/u01', 99999000)} 1% /u01\n"
         elif "test -w" in command:
             out = "PSOK\n"
         elif "cat >" in command and stdin_path:

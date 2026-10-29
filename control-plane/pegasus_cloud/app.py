@@ -1197,7 +1197,7 @@ def plan_steps(servers, action):
 
 
 # what each action needs from the connector, for actions newer connectors added
-NEEDS_VERSION = {"clearcache": "0.4.0", "os": "0.5.0"}
+NEEDS_VERSION = {"clearcache": "0.4.0", "os": "0.5.0", "space": "0.6.0"}
 OS_VERSION = NEEDS_VERSION["os"]
 
 
@@ -1205,6 +1205,12 @@ def os_capable(cid):
     """True when every connector of the client can check and apply Linux OS updates."""
     cons = db().execute("SELECT version FROM connectors WHERE client_id=? AND revoked=0", (cid,)).fetchall()
     return bool(cons) and not any(is_newer(OS_VERSION, c["version"] or "0") for c in cons)
+
+
+def can_all(cid, action):
+    """True when every connector of the client is new enough for the action."""
+    cons = db().execute("SELECT version FROM connectors WHERE client_id=? AND revoked=0", (cid,)).fetchall()
+    return bool(cons) and not any(is_newer(NEEDS_VERSION[action], c["version"] or "0") for c in cons)
 
 
 def levels_steps(cid, servers):
@@ -1836,8 +1842,20 @@ def finalize(j):
                                  (cid, env, hk, key, v.get("dir", ""), json.dumps(v.get("files") or []), time.time()))
         audit("patches_staged", cid, actor=j["created_by"], job=j["id"], environment=env, result=j["status"])
     if kind == "apply":
-        audit("patches_applied", cid, actor=j["created_by"], job=j["id"], environment=env, result=j["status"])
-        if meta.get("cr"):
+        short = space_refused(pairs)
+        audit("patches_applied", cid, actor=j["created_by"], job=j["id"], environment=env, result=j["status"],
+              not_started="not enough disk space" if short is not None else None)
+        if meta.get("cr") and short is not None:
+            # nothing was stopped or changed, so the approval still stands for the same plan
+            db().execute("UPDATE change_requests SET status='approved', job_id=NULL WHERE id=?", (meta["cr"],))
+            cr = db().execute("SELECT * FROM change_requests WHERE id=?", (meta["cr"],)).fetchone()
+            tail = "\n".join(l for l in short.splitlines() if l.strip())[-3000:]
+            jira_later(cid, cr["jira_key"],
+                       f"Pegasus did NOT start this change on {now_text()}: there isn't enough free disk space on "
+                       f"the server(s). Nothing was stopped or changed, and this approval can still be used once "
+                       f"space has been freed. Job {j['id']}.\n\n{{noformat}}\n"
+                       + tail.replace("{noformat}", "{ noformat}") + "\n{noformat}")
+        elif meta.get("cr"):
             ok = j["status"] == "succeeded"
             db().execute("UPDATE change_requests SET status=?, finished_at=? WHERE id=?",
                          ("applied" if ok else "failed", time.time(), meta["cr"]))
@@ -2394,7 +2412,8 @@ def apply_steps(cid, servers, plan, reboot=True):
     each middleware update, reboot the servers where Linux says it's needed, then start everything once (even after
     a failure), check status and read the levels again."""
     by_key = {host_key(s): s for s in unique_hosts(servers)}
-    steps = domain_steps(servers, "stop", ignore_failure=True)
+    steps = space_steps(cid, by_key, plan)
+    steps += domain_steps(servers, "stop", ignore_failure=True)
     for hk in dict.fromkeys(p["host_key"] for p in plan):
         steps.append({"op": "host.idle", "target": target_of(by_key[hk]), "label": "Check nothing is still running"})
     for p in plan:
@@ -2416,6 +2435,32 @@ def apply_steps(cid, servers, plan, reboot=True):
     steps += domain_steps(servers, "status", always=True, ignore_failure=True)
     steps += [dict(s, always=True, ignore_failure=True) for s in levels_steps(cid, servers)]
     return steps
+
+
+def space_steps(cid, by_key, plan):
+    """Before anything is stopped: one disk-space check per server for everything the window will write there. A
+    'gate' step: if it fails, the connector skips the rest of the job, including the domain starts, since nothing was
+    stopped. Left out for connectors older than 0.6.0, which don't know the check."""
+    if not can_all(cid, "space"):
+        return []
+    per_host = {}
+    for p in plan:
+        if p["component"] == "os":
+            item = {"component": "os", "kernel": bool(p.get("kernel_update"))}
+        else:
+            item = {"component": p["component"], "owner": p["owner"], "home": p["home"],
+                    "staged": {"dir": p["staged"]["dir"], "files": p["staged"]["files"]}}
+        per_host.setdefault(p["host_key"], []).append(item)
+    return [{"op": "space.check", "target": target_of(by_key[hk]), "items": items, "gate": True,
+             "label": "Check there's enough free disk space"} for hk, items in per_host.items()]
+
+
+def space_refused(pairs):
+    """The space check output of a job that stopped at it (nothing was changed), or None."""
+    for st, r in pairs:
+        if st["op"] == "space.check" and r and r.get("exit_code") != 0:
+            return str(r.get("output") or "")
+    return None
 
 
 def groups_for_scope(hosts, scope):

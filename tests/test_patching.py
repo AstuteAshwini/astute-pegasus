@@ -415,3 +415,100 @@ def test_os_updates_in_one_window_with_reboot_when_needed(env):
     assert after["status"] == "ok" and after["reboot_pending"] and "reboot is pending" in after["detail"]
     fake.os_updates = False
     fake.reboot_needed.clear()
+
+
+def outstanding_again(env):
+    fake = env["fake"]
+    fake.applied = {x for x in fake.applied if x[1] not in ("jdk", "weblogic")}
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/check"), json={"environment": "HRDEV"})
+    drain(env)
+    wait_job(env, r.json()["job"])
+    assert patching(env)["outstanding"] >= 1
+
+
+def test_not_enough_disk_space_stops_the_window_before_anything_changes(env, jira):
+    """The space check runs first; when a filesystem is short, no domain is stopped or started, nothing is patched,
+    and the approved ticket stays usable."""
+    fake = env["fake"]
+    outstanding_again(env)
+    enable_jira(env)
+    r = env["admin"].post(url(env, "/api/clients/{cid}/change-requests"), json={"environment": "HRDEV", "scope": "all"})
+    cr = r.json()["request"]
+    jira.tickets[cr["jira_key"]].update(state="approved", approver="Change Manager")
+    fake.free_kb["/u01"] = 2000000                       # ~1.9 GB free; the homes are ~2.9 GB each
+    try:
+        r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"),
+                              json={"environment": "HRDEV", "scope": "all", "change_request": cr["id"]})
+        assert r.ok, r.text
+        fake.calls.clear()
+        drain(env)
+        j = wait_job(env, r.json()["job"])
+    finally:
+        fake.free_kb.clear()
+    assert j["status"] == "failed"
+    assert "NOT ENOUGH" in j["text"] and "nothing was stopped or changed" in j["text"]
+    assert "/u01: 1.9 GB free" in j["text"] and "backup of /u01/pt/bea" in j["text"]
+    assert {s["op"] for s in j["steps"] if s["done"]} == {"space.check"}
+    assert not any("stop" in c or "boot" in c or "shutdown" in c for _, c in fake.calls)
+    for _ in range(50):
+        if any("did NOT start" in c for _, c in jira.comments):
+            break
+        time.sleep(0.05)
+    assert any(k == cr["jira_key"] and "did NOT start" in c for k, c in jira.comments)
+    assert {c["jira_key"]: c for c in patching(env)["change_requests"]}[cr["jira_key"]]["status"] == "approved"
+    # with space freed, the same approval goes through
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"),
+                          json={"environment": "HRDEV", "scope": "all", "change_request": cr["id"]})
+    assert r.ok, r.text
+    drain(env)
+    j = wait_job(env, r.json()["job"])
+    assert j["status"] == "succeeded", j["text"][-800:]
+    assert "Enough space for this maintenance window" in j["text"]
+    env["admin"].put(url(env, "/api/clients/{cid}/jira"), json={"enabled": False})
+
+
+def test_staging_checks_the_total_before_copying(env):
+    fake = env["fake"]
+    outstanding_again(env)
+    cp.connect().execute("DELETE FROM staged")
+    before = dict(fake.files)
+    fake.files.clear()
+    fake.free_kb["/u01"] = 100
+    try:
+        r = env["admin"].post(url(env, "/api/clients/{cid}/patching/stage"), json={"environment": "HRDEV", "all": True})
+        assert r.ok, r.text
+        drain(env)
+        j = wait_job(env, r.json()["job"])
+    finally:
+        fake.free_kb.clear()
+    assert j["status"] == "failed" and "Not enough space to stage" in j["text"] and "Nothing was copied" in j["text"]
+    assert fake.files == {}
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/stage"), json={"environment": "HRDEV", "all": True})
+    drain(env)
+    assert wait_job(env, r.json()["job"])["status"] == "succeeded"
+    fake.files.update(before)
+
+
+def test_older_connectors_apply_without_the_space_check(env):
+    outstanding_again(env)
+    db = cp.connect()
+    db.execute("UPDATE connectors SET version='0.5.0'")
+    try:
+        r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"), json={"environment": "HRDEV",
+                                                                                   "scope": "all"})
+        assert r.ok, r.text
+        params = __import__("json").loads(db.execute("SELECT params FROM jobs WHERE id=?",
+                                                     (r.json()["job"],)).fetchone()["params"])
+        assert "space.check" not in [s["op"] for s in params["steps"]]
+    finally:
+        db.execute("UPDATE connectors SET version='0.6.0'")
+    drain(env)
+    wait_job(env, r.json()["job"])
+
+
+def test_connector_download_refuses_when_its_disk_is_full(tmp_path, monkeypatch):
+    import shutil as sh
+    monkeypatch.setattr(sh, "disk_usage", lambda p: type("U", (), {"free": 100 * 1048576})())
+    with pytest.raises(oracle.MOSError, match="Not enough space on the connector"):
+        oracle.ensure_free(tmp_path, 2 * 1073741824, "p38000002_141200_Generic.zip")
+    oracle.ensure_free(tmp_path, 0, "unknown size")          # no Content-Length: can't tell, so it goes ahead

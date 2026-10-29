@@ -12,6 +12,7 @@ import html as htmlmod
 import json
 import os
 import re
+import shutil
 import tarfile
 import time
 import zipfile
@@ -149,6 +150,7 @@ class MOSClient:
             raise MOSError("Oracle Support returned a web page instead of the file. The session may have expired, "
                            "or the license agreement for this patch hasn't been accepted.")
         total = int(r.headers.get("Content-Length") or 0)
+        ensure_free(dest.parent, total, dest.name)
         done, next_mark = 0, 0
         with open(part, "wb") as f:
             for chunk in r.iter_content(1024 * 1024):
@@ -161,6 +163,16 @@ class MOSClient:
             part.unlink()
             raise MOSError(f"{dest.name} isn't a valid zip file. The download was probably an error page.")
         os.replace(part, dest)
+
+
+def ensure_free(folder, nbytes, what, spare=500 * 1048576):
+    """Refuse to start writing `what` when the connector's own disk can't hold it (plus some to spare)."""
+    Path(folder).mkdir(parents=True, exist_ok=True)
+    free = shutil.disk_usage(folder).free
+    if nbytes and free < nbytes + spare:
+        raise MOSError(f"Not enough space on the connector for {what}: {nbytes // 1048576} MB to download, "
+                       f"{free // 1048576} MB free in {folder}. Free up space there (old patch folders in the cache "
+                       "can be deleted) and try again.")
 
 
 def mos_client(config_path):
@@ -529,6 +541,7 @@ def extract_jdk_tarball(zips, dest_dir, version, log):
             if not re.match(r"^[A-Za-z0-9_.+\-]{1,200}$", name):
                 name = f"jdk-{version}_linux-x64_bin.tar.gz"
             dest_dir.mkdir(parents=True, exist_ok=True)
+            ensure_free(dest_dir, zf.getinfo(member).file_size, name, spare=100 * 1048576)
             part = dest_dir / (name + ".part")
             log(f"  Taking {name} out of {z.name}\n")
             with zf.open(member) as src, open(part, "wb") as out:

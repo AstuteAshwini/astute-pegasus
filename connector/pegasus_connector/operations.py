@@ -121,6 +121,7 @@ OPERATIONS = {
     "patch.download": "Download patches into the connector's cache (all from Oracle Support)",
     "patch.stage": "Copy downloaded patches to a server's staging folder",
     "host.idle": "Check no WebLogic or Tuxedo processes are running",
+    "space.check": "Check there's enough free disk space for a patching window (df and du, read-only)",
     "patch.apply": "Back up a home and apply a staged patch as its owner",
     "access.check": "Check for a person's SSH public key in an account",
     "access.add": "Add a person's SSH public key to an account",
@@ -134,7 +135,7 @@ OPERATIONS = {
 }
 # allowed when local policy is read_only: nothing here changes a server
 READ_ONLY_OPERATIONS = {"ping", "domain.status", "levels", "catalog", "host.idle", "access.check", "discover",
-                        "os.check"}
+                        "os.check", "space.check"}
 
 
 class OperationError(Exception):
