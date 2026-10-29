@@ -2,8 +2,9 @@
 
 Each quarter Oracle publishes an advisory page (https://www.oracle.com/security-alerts/cpu<mon><year>.html) with a
 risk matrix per product family: one row per CVE, with the product, the component and a CVSS base score. Pegasus reads
-the page for the latest CPU and keeps, per component it patches, the highest score, the CVE behind it and how many
-fixes there are, so people can see how urgent an update is before they apply it.
+the page for the latest CPU and keeps, per component it patches, the highest score, the CVE behind it, how many
+fixes there are and the full list of CVEs (each linked to its cve.org record), so people can see how urgent an update
+is and exactly what it fixes before they apply it.
 
 Pure parsing here; the control plane fetches the page (it has internet access) and caches the result.
 """
@@ -22,6 +23,10 @@ PRODUCTS = [("weblogic", re.compile(r"^oracle weblogic server", re.I)),
             ("peopletools", re.compile(r"peopletools", re.I))]
 TITLES = {"weblogic": "WebLogic", "tuxedo": "Tuxedo", "jdk": "JDK", "dbclient": "Oracle Database",
           "peopletools": "PeopleTools"}
+
+
+def cve_url(cve):
+    return f"https://www.cve.org/CVERecord?id={cve}"
 
 
 def advisory_url(cpu_iso_date):
@@ -44,7 +49,9 @@ def _rows(chunk):
 
 
 def parse(page):
-    """{component: {"max": 9.8, "cve": "CVE-…", "count": 7, "product": "Oracle WebLogic Server"}} from an advisory."""
+    """{component: {"max": 9.8, "cve": "CVE-…", "count": 7, "product": "Oracle WebLogic Server",
+    "cves": [{"cve": "CVE-…", "score": 9.8, "product": "…", "component": "Core"}, …]}} from an advisory, the CVEs
+    highest score first. A CVE listed more than once for a component counts once, at its highest score."""
     out = {}
     # split at each risk matrix heading so a row can be told apart by the family it's listed under
     parts = re.split(r"(<h[1-6][^>]*>[^<]*?Risk Matrix[^<]*?</h[1-6]>)", page, flags=re.I)
@@ -58,10 +65,18 @@ def parse(page):
             comp = comp or next((c for c, rx in PRODUCTS if rx.search(product)), None)
             if not comp:
                 continue
-            cur = out.setdefault(comp, {"max": 0.0, "cve": "", "count": 0, "product": product})
-            cur["count"] += 1
+            cur = out.setdefault(comp, {"max": 0.0, "cve": "", "count": 0, "product": product, "cves": []})
+            seen = next((x for x in cur["cves"] if x["cve"] == cve), None)
+            if seen:
+                if score > seen["score"]:
+                    seen.update(score=score, product=product, component=component)
+            else:
+                cur["cves"].append({"cve": cve, "score": score, "product": product, "component": component})
             if score > cur["max"]:
                 cur.update(max=score, cve=cve, product=product)
+    for cur in out.values():
+        cur["cves"].sort(key=lambda x: (-x["score"], x["cve"]))
+        cur["count"] = len(cur["cves"])
     return out
 
 

@@ -257,8 +257,29 @@ def wiki(text):
     return re.sub(r"([{}\[\]|*_^~+\-!#])", r"\\\1", str(text or ""))
 
 
-def describe_plan(env, client_name, tier, plan, notes, who, when, window=None):
-    """Jira wiki-markup description of a patch plan: what changes, impact, backout, request details."""
+def describe_cves(plan, adv):
+    """The CVEs Oracle's latest CPU fixes in the components this plan updates, each linked to cve.org."""
+    comps = (adv or {}).get("components") or {}
+    lines = []
+    for comp in dict.fromkeys(p["component"] for p in plan):
+        a = comps.get(comp)
+        if not a or not a.get("cves"):
+            continue
+        cves = a["cves"]
+        lines.append(f"*{wiki(COMP_TITLE.get(comp, comp))}*: {len(cves)} CVE{'' if len(cves) == 1 else 's'}, "
+                     f"highest CVSS {a['max']:.1f}")
+        for x in cves[:25]:
+            lines.append(f"* [{x['cve']}|https://www.cve.org/CVERecord?id={x['cve']}] CVSS {x['score']:.1f} "
+                         f"({wiki(x.get('component') or x.get('product') or '')})")
+        if len(cves) > 25:
+            lines.append(f"* and {len(cves) - 25} more in the advisory")
+    if not lines:
+        return []
+    return ["h3. Security fixes", f"From Oracle's Critical Patch Update advisory: [{adv.get('url')}]", *lines, ""]
+
+
+def describe_plan(env, client_name, tier, plan, notes, who, when, window=None, adv=None):
+    """Jira wiki-markup description of a patch plan: what changes, security fixes, impact, backout, request."""
     comps = []
     for comp in dict.fromkeys(p["component"] for p in plan):
         steps = [p for p in plan if p["component"] == comp]
@@ -287,6 +308,7 @@ def describe_plan(env, client_name, tier, plan, notes, who, when, window=None):
         "||Component||Update||Servers||",
         rows,
         "",
+        *describe_cves(plan, adv),
         "h3. Impact",
         f"{wiki(env)} is unavailable for the whole window. Pegasus stops every domain (web, process scheduler, app "
         f"server), confirms no WebLogic or Tuxedo processes are left, patches the servers one at a time, then starts "

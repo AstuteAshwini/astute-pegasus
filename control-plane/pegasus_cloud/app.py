@@ -2145,9 +2145,10 @@ def refresh_advisory(now=None, force=False):
     cpu = ev.cpu_dates()["last"]
     cur = get_setting("_global", "cpu_advisory", {}) or {}
     if not force:
-        if cur.get("cpu") == cpu and not cur.get("error") and now - cur.get("fetched", 0) < 24 * 3600:
+        fresh = all("cves" in v for v in (cur.get("components") or {}).values())   # cached before CVE lists were kept
+        if cur.get("cpu") == cpu and not cur.get("error") and fresh and now - cur.get("fetched", 0) < 24 * 3600:
             return cur
-        if now - cur.get("tried", 0) < 3600:
+        if fresh and now - cur.get("tried", 0) < 3600:
             return cur
     url = advisory.advisory_url(cpu)
     try:
@@ -2176,7 +2177,9 @@ def advisory_loop():
 
 def advisory_view():
     a = get_setting("_global", "cpu_advisory", {}) or {}
-    comps = {k: dict(v, severity=advisory.severity(v["max"]), title=advisory.TITLES.get(k, k))
+    comps = {k: dict(v, severity=advisory.severity(v["max"]), title=advisory.TITLES.get(k, k),
+                     cves=[dict(x, severity=advisory.severity(x["score"]), url=advisory.cve_url(x["cve"]))
+                           for x in v.get("cves") or []])
              for k, v in (a.get("components") or {}).items()}
     return {"cpu": a.get("cpu"), "url": a.get("url") or advisory.advisory_url(ev.cpu_dates()["last"]),
             "components": comps, "checked": iso(a.get("fetched")), "error": a.get("error") or ""}
@@ -2524,7 +2527,7 @@ def create_change_request(cid):
     try:
         jc = jiramod.Jira(jcfg, box().open(get_setting(cid, "jira_token", "")))
         key = jc.create(summary, ev.describe_plan(env, client["name"], env_tier(servers), plan, notes, who(),
-                                                 now_text(), window), window)
+                                                 now_text(), window, advisory_view()), window)
     except jiramod.JiraError as e:
         return jsonify(error=str(e)), 502
     note = None

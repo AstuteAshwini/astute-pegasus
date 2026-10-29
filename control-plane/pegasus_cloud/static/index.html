@@ -59,8 +59,10 @@ main{margin-left:var(--side);padding:28px 28px 340px;max-width:1280px}
 .tag{display:inline-block;font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--accent)}.tag.prd{background:var(--spark-bg);color:var(--spark-ink);box-shadow:inset 0 0 0 1px var(--spark)}.tag.warn{background:var(--warn-bg);color:var(--warn)}
 table.weekplan{width:auto;margin:0 0 10px}table.weekplan td,table.weekplan th{padding:4px 14px 4px 0}table.weekplan input{width:130px;padding:5px 8px}
 .apply-row a.link,.risks a:not(.risk){font-size:12.5px;font-weight:600;margin-left:4px}
-a.risk{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 7px;border-radius:999px;text-decoration:none;vertical-align:1px}
-a.risk.critical{background:var(--stop);color:#fff}a.risk.high{background:var(--spark);color:#2a1503}a.risk.medium{background:var(--warn-bg);color:var(--warn)}a.risk.low{background:var(--unk-bg);color:var(--unk)}
+.risk{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 7px;border-radius:999px;text-decoration:none;vertical-align:1px}
+details.cves{display:inline-block;margin-left:6px;font-size:12.5px;vertical-align:top}details.cves[open]{display:block;margin:6px 0 2px}
+details.cves summary{cursor:pointer;color:var(--accent,inherit);font-weight:600}details.cves ul{margin:6px 0 0;padding-left:18px;columns:2 260px}details.cves li{margin:2px 0;break-inside:avoid}
+.risk.critical{background:var(--stop);color:#fff}.risk.high{background:var(--spark);color:#2a1503}.risk.medium{background:var(--warn-bg);color:var(--warn)}.risk.low{background:var(--unk-bg);color:var(--unk)}
 .st.deferred{background:var(--unk-bg);color:var(--unk)}
 .watch{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;padding:10px 12px;margin:0 0 12px;background:var(--sunk);border:1px solid var(--line);border-radius:var(--r);font-size:13px}.watch label.inline{margin:0}.watch select{width:auto;padding:4px 8px;font-size:13px}
 .st{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;white-space:nowrap}
@@ -572,10 +574,14 @@ function applyCell(scope,ready,applyBtn,notReady){
 function advisoryLine(a){if(!a)return"";var keys=["jdk","weblogic","tuxedo","dbclient","peopletools"].filter(function(k){return a.components[k]});
   if(!keys.length) return '<p class="help"><a href="'+esc(a.url)+'" target="_blank" rel="noopener">Read Oracle\'s latest CPU advisory</a>'+(a.error?' <span class="det">(risk scores unavailable: '+esc(a.error)+')</span>':'')+'</p>';
   return '<p class="help risks"><b>Risk in Oracle\'s latest CPU:</b> '+keys.map(function(k){var r=a.components[k];return esc(r.title)+' <a class="risk '+esc(r.severity)+'" href="'+esc(a.url)+'" target="_blank" rel="noopener" title="'+r.count+' fix'+(r.count===1?'':'es')+'; highest: '+esc(r.cve)+'">CVSS '+r.max.toFixed(1)+'</a>'}).join(" · ")+
-    ' · <a href="'+esc(a.url)+'" target="_blank" rel="noopener">Read the advisory</a></p>'}
+    ' · <a href="'+esc(a.url)+'" target="_blank" rel="noopener">Read the advisory</a>'+
+    keys.map(function(k){var r=a.components[k];return cveList(r,r.title+": "+r.cves.length+" CVE"+(r.cves.length===1?"":"s"))}).join("")+'</p>'}
+function cveList(r,label){if(!r||!r.cves||!r.cves.length)return"";
+  return '<details class="cves"><summary>'+esc(label||(r.cves.length+' CVE'+(r.cves.length===1?'':'s')))+'</summary><ul>'+r.cves.map(function(x){
+    return '<li><a href="'+esc(x.url)+'" target="_blank" rel="noopener" class="mono">'+esc(x.cve)+'</a> <span class="risk '+esc(x.severity)+'">CVSS '+Number(x.score).toFixed(1)+'</span> <span class="det">'+esc(x.component||x.product||"")+'</span></li>'}).join("")+'</ul></details>'}
 function riskBadge(comp){var a=(S.pat&&S.pat.advisory&&S.pat.advisory.components)||{},r=a[comp];
   if(!r) return "";
-  return '<a class="risk '+esc(r.severity)+'" href="'+esc(S.pat.advisory.url)+'" target="_blank" rel="noopener" title="Highest CVSS score among the '+r.count+' '+esc(r.title)+' fix'+(r.count===1?'':'es')+' in Oracle\'s latest CPU ('+esc(r.cve)+')">CVSS '+r.max.toFixed(1)+'</a>'}
+  return '<a class="risk '+esc(r.severity)+'" href="'+esc(S.pat.advisory.url)+'" target="_blank" rel="noopener" title="Highest CVSS score among the '+r.count+' '+esc(r.title)+' fix'+(r.count===1?'':'es')+' in Oracle\'s latest CPU ('+esc(r.cve)+')">CVSS '+r.max.toFixed(1)+'</a>'+cveList(r)}
 function readmeLink(it){
   if(it.component==="jdk"){var m=String(it.target||"").split(".")[0];return m?'<a class="link sm" href="https://www.oracle.com/java/technologies/javase/'+encodeURIComponent(m)+'u-relnotes.html" target="_blank" rel="noopener">Release notes</a>':""}
   if(it.patch_number) return '<a class="link sm" href="https://updates.oracle.com/Orion/SimpleSearch/process_form?search_type=patch&patch_number='+encodeURIComponent(it.patch_number)+'&plat_lang='+encodeURIComponent(it.platform||"226P")+'" target="_blank" rel="noopener" title="Oracle Support page for patch '+esc(it.patch_number)+', with its readme">Readme</a>';

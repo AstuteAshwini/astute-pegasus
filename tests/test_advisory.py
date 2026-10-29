@@ -25,7 +25,10 @@ PAGE = """<html><body><h2>Critical Patch Update Advisory - October 2026</h2>
 
 def test_parse_takes_the_highest_score_per_component():
     found = advisory.parse(PAGE)
-    assert found["weblogic"] == {"max": 9.8, "cve": "CVE-2026-21001", "count": 2, "product": "Oracle WebLogic Server"}
+    wl = found["weblogic"]
+    assert (wl["max"], wl["cve"], wl["count"], wl["product"]) == (9.8, "CVE-2026-21001", 2, "Oracle WebLogic Server")
+    assert [(x["cve"], x["score"], x["component"]) for x in wl["cves"]] == [("CVE-2026-21001", 9.8, "Core"),
+                                                                          ("CVE-2026-21002", 7.5, "Web Container")]
     assert found["tuxedo"]["max"] == 5.9 and found["jdk"]["max"] == 7.4 and found["jdk"]["count"] == 2
     assert found["dbclient"]["max"] == 6.5 and found["peopletools"]["count"] == 1
     assert "Oracle HTTP Server" not in str(found)
@@ -44,6 +47,8 @@ def test_refresh_caches_and_shows_in_patching(env, monkeypatch):
     r = env["admin"].get(env["url"] + f"/api/clients/{env['cid']}/patching", params={"environment": "HRDEV"})
     adv = r.json()["advisory"]
     assert adv["components"]["weblogic"]["severity"] == "critical" and adv["url"].startswith("https://www.oracle.com/")
+    first = adv["components"]["weblogic"]["cves"][0]
+    assert first["url"] == "https://www.cve.org/CVERecord?id=CVE-2026-21001" and first["severity"] == "critical"
 
     def broken(url):
         raise OSError("no route")
@@ -73,3 +78,32 @@ def test_cadence_setting(env):
     assert env["admin"].put(base, json={"cadence": "quarterly"}).json()["cadence"] == "quarterly"
     assert env["admin"].put(base, json={"cadence": "weekly"}).status_code == 400
     env["admin"].put(base, json={"cadence": "monthly"})
+
+
+def test_cve_listed_twice_counts_once_and_old_cache_refetches(env, monkeypatch):
+    page = PAGE.replace("</tbody></table>\n<h3>Oracle Java SE",
+                        "<tr><td>CVE-2026-21001</td><td>Oracle WebLogic Server</td><td>Console</td><td>HTTP</td>"
+                        "<td>No</td><td>6.1</td></tr></tbody></table>\n<h3>Oracle Java SE", 1)
+    wl = advisory.parse(page)["weblogic"]
+    assert wl["count"] == 2 and wl["cves"][0]["score"] == 9.8
+    monkeypatch.setattr(cp, "fetch_advisory_page", lambda url: PAGE)
+    import time as t
+    from pegasus_cloud import evaluate as ev
+    with cp.app.app_context():                    # cached today, but from before CVE lists were kept
+        cp.put_setting("_global", "cpu_advisory", {"cpu": ev.cpu_dates()["last"], "fetched": t.time(), "tried": t.time(),
+                                                   "error": "", "components": {"weblogic": {"max": 9.8, "cve": "x",
+                                                                                            "count": 1, "product": "p"}}})
+        assert cp.refresh_advisory()["components"]["weblogic"]["cves"]
+
+
+def test_jira_ticket_lists_the_cves():
+    from pegasus_cloud import evaluate as ev
+    found = advisory.parse(PAGE)
+    plan = [{"component": "weblogic", "label": "14.1.2.0.251015", "host": "hrdevapp01"},
+            {"component": "os", "label": "3 updates", "host": "hrdevapp01"}]
+    text = ev.describe_plan("HRDEV", "MCC", "DEV", plan, "", "Ashwini", "today", None,
+                            {"url": "https://www.oracle.com/security-alerts/cpuoct2026.html", "components": found})
+    assert "h3. Security fixes" in text and "2 CVEs, highest CVSS 9.8" in text
+    assert "[CVE-2026-21001|https://www.cve.org/CVERecord?id=CVE-2026-21001] CVSS 9.8" in text
+    assert "CVE-2026-21100" not in text                         # the JDK isn't in this plan
+    assert "Security fixes" not in ev.describe_plan("HRDEV", "MCC", "DEV", plan[1:], "", "A", "today")
