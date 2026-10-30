@@ -176,11 +176,23 @@ server (the backup is kept). The client's **time zone** (Settings) is the defaul
 The apply scripts live in the connector and are built there from validated values; the control plane only sends
 which update goes where. **CPU targets** (Settings) pin a level for releases Oracle Support searches don't cover.
 
-## Jira change approval
+## Change approval: Jira or ServiceNow
 
-Per client, under Settings. Jira Cloud signs in with an account email and API token; Data Center with a personal
-access token. The token is stored encrypted. **Test connection** shows which Change fields Pegasus fills in and
-which required fields still need values under Additional fields.
+Per client, under Settings: pick the **Ticketing system**, then fill in its panel. Patching and SSH access approvals
+both go through it, and the rest of Pegasus works the same either way (`jira.py` and `servicenow.py` share one
+contract: create, check approval, comment, move). Switching is refused while tickets are open in the current system.
+
+* **Jira:** Jira Cloud signs in with an account email and API token; Data Center with a personal access token.
+  **Test connection** shows which Change fields Pegasus fills in and which required fields still need values under
+  Additional fields.
+* **ServiceNow:** an integration user with the itil role (user and password, or an OAuth token). Pegasus creates a
+  change request (type, optional assignment group and category, planned start and end in UTC, the plan as plain
+  text), moves it to the state that asks for approval (Assess), and treats it as approved when ServiceNow's approval
+  says so, or it reaches an approved state, and an approver other than the integration user signed it off. Results
+  go in as work notes; the apply moves it to Implement and, when it succeeds, to Review (all configurable). For
+  pre-approved Standard changes, turn off "Don't accept approval by the integration user".
+
+Passwords and tokens are stored encrypted.
 
 ## SSH access
 

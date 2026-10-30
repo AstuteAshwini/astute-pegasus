@@ -33,7 +33,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory, session
 
-from . import __version__, advisory, auth, evaluate as ev, jira as jiramod, protocol, sshkeys
+from . import __version__, advisory, auth, evaluate as ev, jira as jiramod, protocol, servicenow as snmod, sshkeys
 
 DATA_DIR = Path(os.environ.get("PEGASUS_DATA", Path(__file__).resolve().parent.parent / "data"))
 DB_PATH = DATA_DIR / "pegasus.db"
@@ -834,7 +834,7 @@ def client_detail(cid):
     oci = oci_console(cid)
     return jsonify(id=c["id"], name=c["name"], connectors=cons, environments=list(envs.values()), oci_console=oci,
                    jobs=recent_jobs(cid), connector_updates=get_setting(cid, "connector_updates", "manual"),
-                   time_zone=get_setting(cid, "time_zone", ""),
+                   time_zone=get_setting(cid, "time_zone", ""), ticketing=ticket_name(cid),
                    latest_release=release_view(rel) if rel else None)
 
 
@@ -1909,19 +1909,47 @@ def finalize(j):
         record_access(j, pairs)
 
 
-def jira_for(cid):
-    cfg = jiramod.config(get_setting(cid, "jira", {}))
-    return jiramod.Jira(cfg, box().open(get_setting(cid, "jira_token", "")))
+# ---------------------------------------------------------------- ticketing: Jira or ServiceNow, per client
+TICKETING = {"jira": ("Jira", jiramod), "servicenow": ("ServiceNow", snmod)}
+
+
+def ticketing(cid):
+    """Which system this client's change approvals go through: jira or servicenow."""
+    v = get_setting(cid, "ticketing", "jira")
+    return v if v in TICKETING else "jira"
+
+
+def ticket_cfg(cid, system=None):
+    system = system or ticketing(cid)
+    return TICKETING[system][1].config(get_setting(cid, system, {}))
+
+
+def ticket_client_of(system, cfg, token):
+    return snmod.ServiceNow(cfg, token) if system == "servicenow" else jiramod.Jira(cfg, token)
+
+
+def ticket_client(cid, cfg=None):
+    """A Jira or ServiceNow client for this client, with the same methods either way. Raises JiraError."""
+    system = ticketing(cid)
+    return ticket_client_of(system, cfg or ticket_cfg(cid, system), box().open(get_setting(cid, f"{system}_token", "")))
+
+
+def ticket_name(cid):
+    return TICKETING[ticketing(cid)][0]
+
+
+jira_for = ticket_client
 
 
 def jira_later(cid, key, comment, transition_field=None):
     """Comment on (and optionally move) a ticket without holding up the request that triggered it."""
-    cfg = jiramod.config(get_setting(cid, "jira", {}))
-    token = box().open(get_setting(cid, "jira_token", ""))
+    system = ticketing(cid)
+    cfg = ticket_cfg(cid, system)
+    token = box().open(get_setting(cid, f"{system}_token", ""))
 
     def work():
         try:
-            j = jiramod.Jira(cfg, token)
+            j = ticket_client_of(system, cfg, token)
             j.comment(key, comment)
             if transition_field:
                 j.transition(key, cfg.get(transition_field))
@@ -2022,7 +2050,7 @@ def change_request_view(cr):
 
 
 def approval_required(cid, tier):
-    c = jiramod.config(get_setting(cid, "jira", {}))
+    c = ticket_cfg(cid)
     return bool(c["enabled"]) and (c["require"] == "all" or is_prd(tier))
 
 
@@ -2052,7 +2080,7 @@ def patching_view(cid):
     for c in crs:
         latest.setdefault(c["scope"], c)
     jira_error = None
-    jcfg = jiramod.config(get_setting(cid, "jira", {}))
+    jcfg = ticket_cfg(cid)
     if request.args.get("refresh") and jcfg["enabled"]:
         try:
             jc = None
@@ -2067,7 +2095,7 @@ def patching_view(cid):
                    catalog_checked=p["catalog_checked"], oracle_error=(cat.get("oracle") or {}).get("error"),
                    infra_dpk=(cat.get("oracle") or {}).get("infra_dpk"), settings=patch_settings(cid),
                    approval={"enabled": bool(jcfg["enabled"]), "required": approval_required(cid, tier),
-                             "error": jira_error},
+                             "error": jira_error, "system": ticket_name(cid)},
                    change_requests=[change_request_view(c) for c in latest.values()],
                    outstanding=len(outstanding_groups(p["hosts"])), advisory=advisory_view())
 
@@ -2561,7 +2589,7 @@ def create_change_request(cid):
     servers = env_servers(cid, env)
     if not servers:
         return jsonify(error="That environment has no servers."), 404
-    jcfg = jiramod.config(get_setting(cid, "jira", {}))
+    jcfg = ticket_cfg(cid)
     if not jcfg["enabled"]:
         return jsonify(error="Change approval isn't switched on for this client."), 400
     groups, err = groups_for_scope(posture(cid, env)["hosts"], body.get("scope"))
@@ -2606,7 +2634,7 @@ def create_change_request(cid):
     if change_type:
         jcfg["change_type"] = change_type
     try:
-        jc = jiramod.Jira(jcfg, box().open(get_setting(cid, "jira_token", "")))
+        jc = ticket_client(cid, jcfg)
         key = jc.create(summary, ev.describe_plan(env, client["name"], env_tier(servers), plan, notes, who(),
                                                  now_text(), window, advisory_view()), window)
     except jiramod.JiraError as e:
@@ -2668,7 +2696,7 @@ def claim_approval(cid, env, cr_id, plan):
     try:
         state, name, approver = jira_for(cid).approval_state(c["jira_key"])
     except jiramod.JiraError as e:
-        return None, f"Couldn't confirm the approval of {c['jira_key']} with Jira: {e}"
+        return None, f"Couldn't confirm the approval of {c['jira_key']} with {ticket_name(cid)}: {e}"
     new_status = {"approved": "applying", "rejected": "rejected"}.get(state, c["status"])
     r = db().execute("UPDATE change_requests SET status=?, approval=?, jira_status=?, approver=?, checked_at=? "
                      "WHERE id=? AND status IN ('pending','approved')",
@@ -2741,55 +2769,95 @@ def patching_apply(cid):
     return jsonify(job=jid, steps=len(plan), change_request=cr["jira_key"] if cr else None)
 
 
-# ---------------------------------------------------------------- Jira settings (per client)
-@app.get("/api/clients/<cid>/jira")
+# ---------------------------------------------------------------- ticketing settings (per client)
+@app.get("/api/clients/<cid>/ticketing")
 @need("viewer")
-def get_jira(cid):
+def get_ticketing(cid):
     get_client(cid)
-    return jsonify(config=jiramod.config(get_setting(cid, "jira", {})),
-                   has_token=bool(get_setting(cid, "jira_token", "")))
+    return jsonify(system=ticketing(cid), systems={k: v[0] for k, v in TICKETING.items()})
 
 
-@app.put("/api/clients/<cid>/jira")
+@app.put("/api/clients/<cid>/ticketing")
 @need("admin")
-def put_jira(cid):
+def put_ticketing(cid):
+    """Choose Jira or ServiceNow. Pending requests stay with the system they were raised in until they finish."""
     get_client(cid)
+    system = str((request.get_json(silent=True) or {}).get("system") or "")
+    if system not in TICKETING:
+        return jsonify(error="Choose Jira or ServiceNow."), 400
+    open_crs = db().execute("SELECT count(*) FROM change_requests WHERE client_id=? AND status IN "
+                            "('pending','approved','applying')", (cid,)).fetchone()[0]
+    open_access = db().execute("SELECT count(*) FROM access_requests WHERE client_id=? AND status='pending' AND "
+                               "jira_key IS NOT NULL", (cid,)).fetchone()[0]
+    if system != ticketing(cid) and (open_crs or open_access):
+        return jsonify(error=f"There are {open_crs + open_access} open tickets in {ticket_name(cid)}. Let them "
+                             "finish, or withdraw them, before switching."), 409
+    put_setting(cid, "ticketing", system)
+    audit("ticketing_changed", cid, system=system)
+    return jsonify(system=system)
+
+
+def ticketing_route(system):
+    if system not in TICKETING:
+        abort(404)
+    return TICKETING[system][1]
+
+
+@app.get("/api/clients/<cid>/<any(jira, servicenow):system>")
+@need("viewer")
+def get_jira(cid, system):
+    get_client(cid)
+    return jsonify(config=ticketing_route(system).config(get_setting(cid, system, {})),
+                   has_token=bool(get_setting(cid, f"{system}_token", "")), active=ticketing(cid) == system)
+
+
+@app.put("/api/clients/<cid>/<any(jira, servicenow):system>")
+@need("admin")
+def put_jira(cid, system):
+    get_client(cid)
+    mod = ticketing_route(system)
     body = request.get_json(silent=True) or {}
     token = str(body.get("token") or "").strip()
-    has = bool(token or get_setting(cid, "jira_token", ""))
-    new, problems = jiramod.validate(body, jiramod.config(get_setting(cid, "jira", {})), has)
+    has = bool(token or get_setting(cid, f"{system}_token", ""))
+    new, problems = mod.validate(body, mod.config(get_setting(cid, system, {})), has)
     if problems:
         return jsonify(error=" ".join(problems)), 400
     if token:
-        put_setting(cid, "jira_token", box().seal(token))
-    put_setting(cid, "jira", new)
-    audit("jira_settings_updated", cid, enabled=new["enabled"], project=new["project"], token_changed=bool(token))
+        put_setting(cid, f"{system}_token", box().seal(token))
+    put_setting(cid, system, new)
+    audit(f"{system}_settings_updated", cid, enabled=new["enabled"], project=new.get("project") or new.get("url"),
+          token_changed=bool(token))
     return jsonify(config=new, has_token=has)
 
 
-@app.delete("/api/clients/<cid>/jira/token")
+@app.delete("/api/clients/<cid>/<any(jira, servicenow):system>/token")
 @need("admin")
-def forget_jira_token(cid):
+def forget_jira_token(cid, system):
     get_client(cid)
-    put_setting(cid, "jira_token", "")
-    cfg = jiramod.config(get_setting(cid, "jira", {}))
+    put_setting(cid, f"{system}_token", "")
+    cfg = ticketing_route(system).config(get_setting(cid, system, {}))
     if cfg["enabled"]:
         cfg["enabled"] = False
-        put_setting(cid, "jira", cfg)
-    audit("jira_token_removed", cid)
+        put_setting(cid, system, cfg)
+    audit(f"{system}_token_removed", cid)
     return jsonify(ok=True, has_token=False)
 
 
-@app.post("/api/clients/<cid>/jira/test")
+@app.post("/api/clients/<cid>/<any(jira, servicenow):system>/test")
 @need("admin")
-def test_jira(cid):
+def test_jira(cid, system):
     get_client(cid)
+    mod = ticketing_route(system)
     try:
-        j = jira_for(cid)
+        j = ticket_client_of(system, mod.config(get_setting(cid, system, {})),
+                             box().open(get_setting(cid, f"{system}_token", "")))
         me = j.myself()
         proj = j.project()
     except jiramod.JiraError as e:
         return jsonify(error=str(e)), 400
+    if system == "servicenow":
+        return jsonify(ok=True, user=me.get("displayName"), project="change requests", issue_types=[], filled=[],
+                       warning=None)
     warn, filled = None, []
     try:
         meta = j.create_meta()
@@ -2996,7 +3064,7 @@ def access_run(cid):
                 try:
                     key, url = raise_access_ticket(cid, plan)
                 except jiramod.JiraError as e:
-                    return jsonify(error=f"Couldn't raise the Jira ticket: {e}"), 502
+                    return jsonify(error=f"Couldn't raise the {ticket_name(cid)} ticket: {e}"), 502
                 jstatus = "raised"
             db().execute("INSERT INTO access_requests (id, client_id, mode, body, summary, environments, note, "
                          "expires_on, requested_by, requested_by_id, requested_at, status, jira_key, jira_url, "
@@ -3041,7 +3109,7 @@ def access_requests(cid):
     rows = db().execute("SELECT * FROM access_requests WHERE client_id=? ORDER BY status='pending' DESC, "
                         "requested_at DESC LIMIT 60", (cid,)).fetchall()
     return jsonify(requests=[access_request_view(r) for r in rows], approval=access_approval_required(cid),
-                   jira=access_uses_jira(cid))
+                   jira=access_uses_jira(cid), system=ticket_name(cid))
 
 
 def pending_access_request(rid):
@@ -3115,12 +3183,12 @@ def withdraw_access_request(rid):
 
 def access_uses_jira(cid):
     """SSH access changes are approved in Jira when the client has Jira change approval switched on."""
-    return bool(access_approval_required(cid) and jiramod.config(get_setting(cid, "jira", {}))["enabled"])
+    return bool(access_approval_required(cid) and ticket_cfg(cid)["enabled"])
 
 
 def raise_access_ticket(cid, plan):
     """Raise a Jira ticket describing the SSH access change exactly. Returns (key, url). Raises JiraError."""
-    jcfg = jiramod.config(get_setting(cid, "jira", {}))
+    jcfg = ticket_cfg(cid)
     extra = dict(jcfg.get("extra_fields") or {})
     if isinstance(extra.get("labels"), list):
         extra["labels"] = [x for x in extra["labels"] if x != "cpu-patching"] + ["ssh-access"]
@@ -3142,7 +3210,7 @@ def raise_access_ticket(cid, plan):
     lines += ["", f"*Servers ({len(servers)}):*"] + [f"* {env}: {host}" for env, host in servers]
     lines += ["", "When this ticket is approved by someone other than the account that raised it, Pegasus makes "
                   "the change on these servers by itself and comments here with the result."]
-    jc = jiramod.Jira(jcfg, box().open(get_setting(cid, "jira_token", "")))
+    jc = ticket_client(cid, jcfg)
     key = jc.create(summary, "\n".join(lines))
     try:
         jc.transition(key, jcfg["submit_transition"])
@@ -3167,8 +3235,7 @@ def check_access_jira(cid=None, now=None, force=False):
         c = r["client_id"]
         try:
             if c not in clients:
-                clients[c] = jiramod.Jira(jiramod.config(get_setting(c, "jira", {})),
-                                          box().open(get_setting(c, "jira_token", "")))
+                clients[c] = ticket_client(c)
             state, jstatus, approver = clients[c].approval_state(r["jira_key"])
         except jiramod.JiraError as e:
             db().execute("UPDATE access_requests SET jira_status=?, checked_at=? WHERE id=?",

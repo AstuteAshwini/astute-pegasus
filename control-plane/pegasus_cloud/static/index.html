@@ -594,13 +594,13 @@ function renderPat(){var j=S.pat,h="",env=j.environment;
   if(!checked){$("pOut").innerHTML='<div class="empty">Not checked yet.'+(can("operator")?' Click Check patch levels: the connector reads JDK, WebLogic, Tuxedo and Database client levels on every server, then looks up Oracle\'s latest releases.':'')+'</div>';return}
   if(j.oracle_error){var noAcct=/oracle-login/.test(j.oracle_error);
     h+='<div class="msg info">'+(noAcct?'<b>Oracle Support isn\'t set up on this client\'s connector</b>, so only the JDK can be compared. On the connector, run:<div class="cmd">python -m pegasus_connector oracle-login --user name@client.com</div>The account stays on the connector; Pegasus never sees it. Then click Look up latest again.':esc(j.oracle_error))+'</div>'}
-  if(j.approval.error) h+='<div class="msg">Jira: '+esc(j.approval.error)+'</div>';
+  if(j.approval.error) h+='<div class="msg">'+esc(TS())+': '+esc(j.approval.error)+'</div>';
   var groups={},order=[];
   j.hosts.forEach(function(host){(host.items||[]).forEach(function(it){if(it.status!=="needed"||!it.key)return;
     var g=groups[it.key];if(!g){g=groups[it.key]={component:it.component,target:it.target,label:it.latest_label||it.target,key:it.key,hosts:[],ready:0,item:it};order.push(it.key)}
     g.hosts.push(host.host);if(it.staged||it.component==="os")g.ready++})});      // OS updates install straight from yum
   if(order.length){
-    if(j.approval.required) h+='<p class="help">Patching '+esc(env)+' needs an approved Jira ticket. Request approval, then Apply unlocks once someone other than the Pegasus account approves it.</p>';
+    if(j.approval.required) h+='<p class="help">Patching '+esc(env)+' needs an approved '+esc(TS())+' ticket. Request approval, then Apply unlocks once someone other than the Pegasus account approves it.</p>';
     if(order.length>1){var allReady=order.every(function(k){return groups[k].ready===groups[k].hosts.length});
       var names=order.map(function(k){return NM[groups[k].component]});
       h+='<div class="apply-row apply-all"><span><b>All '+order.length+' outstanding updates</b> ('+esc(names.join(", "))+') in one maintenance window</span>'+
@@ -655,7 +655,8 @@ function requestApproval(scope){var env=S.penv,by={},order=[];
   S.pat.hosts.forEach(function(host){(host.items||[]).forEach(function(it){if(it.status!=="needed"||!it.key)return;if(scope!=="all"&&it.component+"~"+it.key!==scope)return;
     if(!by[it.component]){by[it.component]={label:it.latest_label||it.target,hosts:[]};order.push(it.component)}by[it.component].hosts.push(host.host)})});
   reqScope=scope;$("reqTitle").textContent="Request approval to patch "+env;
-  $("reqText").textContent="Raises a Jira ticket for: "+order.map(function(c){return NM[c]+" "+by[c].label+" on "+by[c].hosts.join(", ")}).join("; ")+". The ticket describes the outage and backout. Nothing changes until it's approved and you click Apply.";
+  $("reqGo").textContent="Raise "+TS()+" ticket";
+  $("reqText").textContent="Raises a "+TS()+" ticket for: "+order.map(function(c){return NM[c]+" "+by[c].label+" on "+by[c].hosts.join(", ")}).join("; ")+". The ticket describes the outage and backout. Nothing changes until it's approved and you click Apply.";
   var d=new Date();d.setDate(d.getDate()+((6-d.getDay()+7)%7||7));d.setHours(20,0,0,0);
   var local=function(x){var p=function(n){return String(n).padStart(2,"0")};return x.getFullYear()+"-"+p(x.getMonth()+1)+"-"+p(x.getDate())+"T"+p(x.getHours())+":"+p(x.getMinutes())};
   $("reqStart").value=local(d);d.setHours(23);$("reqEnd").value=local(d);
@@ -668,7 +669,7 @@ $("reqForm").addEventListener("submit",function(e){e.preventDefault();var b=$("r
   b.disabled=true;b.textContent="Raising ticket…";
   api("/api/clients/"+S.cid+"/change-requests",{method:"POST",body:{environment:S.penv,scope:reqScope,notes:$("reqNotes").value,change_type:$("reqType").value,window:{start:$("reqStart").value,end:$("reqEnd").value,tz:$("reqTz").value}}})
   .then(function(j){$("reqDlg").close();if(j.note)alert(j.note);loadPatching(false)}).catch(function(j){msg("reqMsg",j.error||"Couldn't raise the ticket.")})
-  .finally(function(){b.disabled=false;b.textContent="Raise Jira ticket"})});
+  .finally(function(){b.disabled=false;b.textContent="Raise "+TS()+" ticket"})});
 
 $("main").addEventListener("change",function(e){
   if(e.target.id==="pEnv"){S.penv=e.target.value;$("pOut").innerHTML='<div class="empty">Loading…</div>';loadPatching()}});
@@ -700,18 +701,18 @@ function renderAccess(){var d=S.detail,h='<div>';
 var REQ_STATE={pending:"waiting for approval",approved:"approved, running",done:"done",failed:"approved, but the job failed",rejected:"rejected",withdrawn:"withdrawn"};
 function loadAccessRequests(){api("/api/clients/"+S.cid+"/access-requests").then(function(j){if(S.tab!=="access")return;S.acc.approval=j.approval;
   var ap=$("aApproval");if(ap)ap.checked=j.approval;
-  var n=$("aApprovalNote");if(n)n.textContent=!j.approval?"Changes run straight away (approval is turned off for this client).":j.jira?"Add and Remove raise a Jira ticket. Pegasus makes the change by itself once someone other than the Pegasus account approves it in Jira (it checks every couple of minutes). Check runs straight away.":"Add and Remove send a request: the change runs once another admin approves it. Check runs straight away.";
+  var n=$("aApprovalNote");if(n)n.textContent=!j.approval?"Changes run straight away (approval is turned off for this client).":j.jira?"Add and Remove raise a "+TS()+" ticket. Pegasus makes the change by itself once someone other than the Pegasus account approves it in Jira (it checks every couple of minutes). Check runs straight away.":"Add and Remove send a request: the change runs once another admin approves it. Check runs straight away.";
   var hasJira=j.requests.some(function(r){return r.jira_key&&r.status==="pending"});
   if(!j.requests.length){$("aReqs").innerHTML='<div class="empty">No requests yet.</div>';return}
   $("aReqs").innerHTML='<div class="scroll"><table><thead><tr><th>Request</th><th>Who and why</th><th>Status</th><th></th></tr></thead><tbody>'+j.requests.map(function(r){
     return '<tr><td><b>'+esc(r.summary)+'</b><br><span class="det">'+esc(r.environments.join(", "))+(r.expires_on?' · until '+esc(r.expires_on):'')+'</span>'+(r.fingerprint?'<br><span class="mono det">'+esc(r.fingerprint)+'</span>':'')+'</td>'+
       '<td>'+esc(r.note||"")+'<br><span class="det">Asked by '+esc(r.requested_by)+' '+esc(ago(r.requested_at))+'</span></td>'+
-      '<td><span class="tag'+(r.status==="pending"?" warn":r.status==="rejected"||r.status==="failed"?" prd":"")+'">'+esc(r.status==="pending"&&r.jira_key?"waiting for Jira approval":REQ_STATE[r.status]||r.status)+'</span>'+
+      '<td><span class="tag'+(r.status==="pending"?" warn":r.status==="rejected"||r.status==="failed"?" prd":"")+'">'+esc(r.status==="pending"&&r.jira_key?"waiting for "+TS()+" approval":REQ_STATE[r.status]||r.status)+'</span>'+
       (r.jira_key?'<br><a href="'+esc(r.jira_url)+'" target="_blank" rel="noopener">'+esc(r.jira_key)+'</a>'+(r.jira_status&&r.status==="pending"?' <span class="det">'+esc(r.jira_status)+(r.checked_at?', checked '+esc(ago(r.checked_at)):'')+'</span>':''):'')+(r.decided_by?'<br><span class="det">'+esc(r.decided_by)+' '+esc(ago(r.decided_at))+(r.decision_note?': '+esc(r.decision_note):'')+'</span>':'')+'</td><td>'+
       (r.can_decide?'<button type="button" class="primary sm" data-areq="approve" data-id="'+esc(r.id)+'">Approve</button> <button type="button" class="link sm danger" data-areq="reject" data-id="'+esc(r.id)+'">Reject</button>':'')+
       (r.can_withdraw?' <button type="button" class="link sm" data-areq="withdraw" data-id="'+esc(r.id)+'">Withdraw</button>':'')+
       (r.job?' <button type="button" class="link sm" data-areqjob="'+esc(r.job)+'">Job</button>':'')+'</td></tr>'}).join("")+'</tbody></table></div>'+
-    (hasJira?'<div class="toolbar" style="margin-top:8px"><button type="button" class="sm" id="aJiraCheck">Check Jira now</button></div>':'')})}
+    (hasJira?'<div class="toolbar" style="margin-top:8px"><button type="button" class="sm" id="aJiraCheck">Check '+esc(TS())+' now</button></div>':'')})}
 function loadAccess(){api("/api/clients/"+S.cid+"/access").then(function(j){if(S.tab!=="access")return;
   if(!j.keys.length){$("aReg").innerHTML='<div class="empty">None yet.</div>';return}
   $("aReg").innerHTML='<div class="scroll"><table><thead><tr><th>Key</th><th>Account</th><th>Servers</th><th></th></tr></thead><tbody>'+j.keys.map(function(k){
@@ -723,7 +724,11 @@ $("main").addEventListener("input",function(e){if(e.target.id!=="aKey")return;cl
     api("/api/access/parse",{method:"POST",body:{key:v}}).then(function(k){S.acc.key=v;$("aKeyInfo").innerHTML='<div class="msg ok">'+esc(k.type)+(k.bits?" "+k.bits+" bits":"")+' key'+(k.comment?' for '+esc(k.comment):'')+' · '+esc(k.fingerprint)+'</div>'})
     .catch(function(j){S.acc.key=null;$("aKeyInfo").innerHTML='<div class="msg">'+esc(j.error)+'</div>'})},300)});
 $("main").addEventListener("change",function(e){var c=e.target.closest("[data-accenv]");if(c)S.acc.sel[c.dataset.accenv]=c.checked});
-$("main").addEventListener("change",function(e){var id=e.target.id;if(id!=="sTz"&&id!=="sPar"&&id!=="sKeep")return;
+$("main").addEventListener("change",function(e){var id=e.target.id;
+  if(id==="snAuth")return snUi();
+  if(id==="tSys")return api("/api/clients/"+S.cid+"/ticketing",{method:"PUT",body:{system:e.target.value}}).then(function(j){sysUi();$("tSysMsg").innerHTML='<span class="st ok">Saved</span>';
+    if(S.detail)S.detail.ticketing=j.system==="servicenow"?"ServiceNow":"Jira"}).catch(function(j){alert(j.error);api("/api/clients/"+S.cid+"/ticketing").then(function(r){$("tSys").value=r.system;sysUi()})});
+  if(id!=="sTz"&&id!=="sPar"&&id!=="sKeep")return;
   var body=id==="sTz"?{time_zone:e.target.value}:id==="sPar"?{parallel:+e.target.value}:{keep_backups:+e.target.value};
   api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:body}).then(function(j){$(id+"Msg").innerHTML='<span class="st ok">Saved</span>';
     if(S.detail)S.detail.time_zone=j.time_zone}).catch(function(j){alert(j.error)})});
@@ -736,7 +741,7 @@ $("main").addEventListener("change",function(e){if(e.target.id!=="aApproval")ret
   api("/api/clients/"+S.cid+"/access-settings",{method:"PUT",body:{approval:on}}).then(loadAccessRequests).catch(function(j){alert(j.error);e.target.checked=!on})});
 function accessRun(body,label){
   var go=function(typed){if(typed)body.confirm=typed;api("/api/clients/"+S.cid+"/access",{method:"POST",body:body}).then(function(j){
-      if(j.pending){loadAccessRequests();var txt=j.jira_key?"Raised "+j.jira_key+" in Jira. Pegasus makes the change on "+j.servers+" server"+(j.servers===1?"":"s")+" once it's approved there.":"Sent for approval. It runs on "+j.servers+" server"+(j.servers===1?"":"s")+" once another admin approves it.";
+      if(j.pending){loadAccessRequests();var txt=j.jira_key?"Raised "+j.jira_key+" in "+TS()+". Pegasus makes the change on "+j.servers+" server"+(j.servers===1?"":"s")+" once it's approved there.":"Sent for approval. It runs on "+j.servers+" server"+(j.servers===1?"":"s")+" once another admin approves it.";
         var m=$("aMsg");if(m)msg("aMsg",txt,"ok");else alert(txt);return}
       watch(j.job,label,loadAccess)})
     .catch(function(j){if(j.need_confirm) return confirmBox(label+" on production?","This changes authorized_keys on production servers ("+j.prd.join(", ")+").",j.expected,go,"Continue");alert(j.error||"Couldn't start.")})};
@@ -763,7 +768,21 @@ function renderSettings(){var ro=!can("admin")?" disabled":"",oc=S.detail.oci_co
   $("tabBody").innerHTML='<div class="panel" id="ociPanel"><h2>OCI Console</h2><p class="help">The client\'s OCI tenancy and home region. <b>Open OCI Console</b> at the top of this client\'s page then opens their console in a new tab, where you sign in with your own OCI account and can use Console AI. Pegasus stores no OCI credentials.</p>'+
     '<div class="grid3"><label>Tenancy name<input id="ociTen" placeholder="e.g. miracostaoci" value="'+esc(oc.tenancy||"")+'"'+ro+'></label><label>Region<input id="ociReg" list="ociRegions" placeholder="e.g. us-phoenix-1" value="'+esc(oc.region||"")+'"'+ro+'></label></div>'+
     '<datalist id="ociRegions">'+["us-ashburn-1","us-phoenix-1","us-chicago-1","us-sanjose-1","ca-toronto-1","ca-montreal-1","uk-london-1","eu-frankfurt-1","eu-amsterdam-1","ap-mumbai-1","ap-hyderabad-1","ap-tokyo-1","ap-osaka-1","ap-sydney-1","sa-saopaulo-1","me-riyadh-1"].map(function(r){return '<option value="'+r+'">'}).join("")+'</datalist>'+
-    '<div id="ociMsg"></div>'+(can("admin")?'<div class="toolbar"><button type="button" class="primary" id="ociSave">Save</button>'+(oc.url?'<a class="btn" href="'+esc(oc.url)+'" target="_blank" rel="noopener noreferrer">Try it</a>':'')+'</div>':'')+'</div>'+'<div class="panel"><h2>Change approval (Jira)</h2><p class="help">When this is on, Apply doesn\'t patch anything by itself: Pegasus raises a ticket describing exactly what will change, and Apply unlocks only after someone other than the Pegasus account approves it. The token is stored encrypted.</p>'+
+    '<div id="ociMsg"></div>'+(can("admin")?'<div class="toolbar"><button type="button" class="primary" id="ociSave">Save</button>'+(oc.url?'<a class="btn" href="'+esc(oc.url)+'" target="_blank" rel="noopener noreferrer">Try it</a>':'')+'</div>':'')+'</div>'+'<div class="panel"><h2>Ticketing system</h2><p class="help">Where change approvals for patching and SSH access go. Switch when there are no open tickets.</p>'+
+    '<div class="toolbar"><select id="tSys" style="max-width:420px"'+ro+'><option value="jira">Jira</option><option value="servicenow">ServiceNow</option></select><span id="tSysMsg"></span></div></div>'+
+    '<div class="panel" id="snPanel" hidden><h2>Change approval (ServiceNow)</h2><p class="help">When this is on, Apply doesn\'t patch anything by itself: Pegasus raises a change request describing exactly what will change and sends it for approval. Apply unlocks once someone other than the integration user approves it. The password or token is stored encrypted. The user needs the itil role.</p>'+
+    '<label class="inline"><input type="checkbox" id="snEnabled"'+ro+'>Require an approved ServiceNow change before patching</label>'+
+    '<div class="grid3"><label>Needed for<select id="snRequire"'+ro+'><option value="all">Every environment</option><option value="prd">Production only</option></select></label>'+
+    '<label>ServiceNow URL<input id="snUrl" placeholder="https://yourcompany.service-now.com"'+ro+'></label>'+
+    '<label>Sign in with<select id="snAuth"'+ro+'><option value="basic">User and password</option><option value="oauth">OAuth token</option></select></label></div>'+
+    '<div class="grid3"><label>Integration user<input id="snUser" placeholder="svc_pegasus"'+ro+'></label><label><span id="snTokL">Password</span><input id="snToken" type="password" autocomplete="off"'+ro+'></label>'+
+    '<label>Change type<select id="snType"'+ro+'><option>Normal</option><option>Standard</option><option>Emergency</option></select></label></div>'+
+    '<div class="grid3"><label>Assignment group (optional)<input id="snGroup"'+ro+'></label><label>Category (optional)<input id="snCat"'+ro+'></label><label>State that asks for approval<input id="snSubmit" placeholder="Assess"'+ro+'></label></div>'+
+    '<div class="grid3"><label>State when the apply starts<input id="snStart" placeholder="Implement"'+ro+'></label><label>State when it succeeds<input id="snDone" placeholder="Review"'+ro+'></label><label>Additional fields (JSON)<input id="snExtra" class="mono"'+ro+'></label></div>'+
+    '<div class="grid2"><label>States that mean approved<input id="snApproved"'+ro+'></label><label>States that mean rejected<input id="snRejected"'+ro+'></label></div>'+
+    '<label class="inline"><input type="checkbox" id="snSelf"'+ro+'>Don\'t accept approval by the integration user (turn off for pre-approved Standard changes)</label>'+
+    '<div id="snMsg"></div>'+(can("admin")?'<div class="toolbar"><button type="button" class="primary" id="snSave">Save</button><button type="button" id="snTest">Test connection</button><button type="button" class="danger" id="snForget" hidden>Remove password</button></div>':'')+'</div>'+
+    '<div class="panel" id="jPanel"><h2>Change approval (Jira)</h2><p class="help">When this is on, Apply doesn\'t patch anything by itself: Pegasus raises a ticket describing exactly what will change, and Apply unlocks only after someone other than the Pegasus account approves it. The token is stored encrypted.</p>'+
     '<label class="inline"><input type="checkbox" id="jEnabled"'+ro+'>Require an approved Jira ticket before patching</label>'+
     '<div class="grid3"><label>Needed for<select id="jRequire"'+ro+'><option value="all">Every environment</option><option value="prd">Production only</option></select></label>'+
     '<label>Jira<select id="jDeploy"'+ro+'><option value="cloud">Jira Cloud</option><option value="datacenter">Jira Data Center</option></select></label>'+
@@ -778,7 +797,7 @@ function renderSettings(){var ro=!can("admin")?" disabled":"",oc=S.detail.oci_co
     '<div id="jMsg"></div>'+(can("admin")?'<div class="toolbar"><button type="button" class="primary" id="jSave">Save</button><button type="button" id="jTest">Test connection</button><button type="button" class="danger" id="jForget" hidden>Remove token</button></div>':'')+'</div>'+
     '<div class="panel"><h2>Patch plan</h2><p class="help">What this client signed up for. On quarterly CPUs only, releases Oracle ships between CPUs are shown as coming with the next CPU, and can\'t be downloaded or applied.</p>'+
     '<div class="toolbar"><select id="sCadence" style="max-width:420px"'+ro+'><option value="monthly">Every release, as Oracle ships it (monthly)</option><option value="quarterly">Quarterly Critical Patch Updates only</option></select><span id="sCadMsg"></span></div></div>'+
-    '<div class="panel"><h2>Time zone</h2><p class="help">The client\'s time zone. Patch windows on Jira tickets and new schedules use it unless someone picks another. Not set: each person\'s own time zone.</p>'+
+    '<div class="panel"><h2>Time zone</h2><p class="help">The client\'s time zone. Patch windows on change tickets and new schedules use it unless someone picks another. Not set: each person\'s own time zone.</p>'+
     '<div class="toolbar"><select id="sTz" style="max-width:420px"'+ro+'><option value="">Not set (each person\'s own)</option>'+tzList().map(function(z){return '<option>'+esc(z)+'</option>'}).join("")+'</select><span id="sTzMsg"></span></div></div>'+
     '<div class="panel"><h2>Servers at once</h2><p class="help">How many servers a job works on at the same time (patching, start, stop, status). Each server\'s own steps stay in order, and domains keep the web, scheduler, app order. 1 = one server after another.</p>'+
     '<div class="toolbar"><select id="sPar" style="max-width:420px"'+ro+'>'+[1,2,3,4,6,8,10].map(function(n){return '<option value="'+n+'">'+n+(n===1?' (one after another)':'')+'</option>'}).join("")+'</select><span id="sParMsg"></span></div><div id="sParNote"></div></div>'+
@@ -795,9 +814,17 @@ function renderSettings(){var ro=!can("admin")?" disabled":"",oc=S.detail.oci_co
     $("jStart").value=c.start_transition||"";$("jDone").value=c.done_transition||"";$("jApproved").value=(c.approved_statuses||[]).join(", ");$("jRejected").value=(c.rejected_statuses||[]).join(", ");
     $("jExtra").value=c.extra_fields&&Object.keys(c.extra_fields).length?JSON.stringify(c.extra_fields):"";$("jSelf").checked=c.block_self_approval!==false;
     $("jToken").placeholder=j.has_token?"saved (leave blank to keep)":"";if($("jForget"))$("jForget").hidden=!j.has_token;jiraUi()});
+  api("/api/clients/"+S.cid+"/ticketing").then(function(j){$("tSys").value=j.system;sysUi()});
+  api("/api/clients/"+S.cid+"/servicenow").then(function(j){var c=j.config;
+    $("snEnabled").checked=!!c.enabled;$("snRequire").value=c.require;$("snUrl").value=c.url;$("snAuth").value=c.auth;$("snUser").value=c.user;$("snType").value=c.change_type||"Normal";
+    $("snGroup").value=c.assignment_group||"";$("snCat").value=c.category||"";$("snSubmit").value=c.submit_transition||"";$("snStart").value=c.start_transition||"";$("snDone").value=c.done_transition||"";
+    $("snApproved").value=(c.approved_statuses||[]).join(", ");$("snRejected").value=(c.rejected_statuses||[]).join(", ");$("snExtra").value=c.extra_fields&&Object.keys(c.extra_fields).length?JSON.stringify(c.extra_fields):"";
+    $("snSelf").checked=c.block_self_approval!==false;$("snToken").placeholder=j.has_token?"saved (leave blank to keep)":"";if($("snForget"))$("snForget").hidden=!j.has_token;snUi()});
   api("/api/clients/"+S.cid+"/patch-settings").then(function(j){$("sRoot").value=j.staging_root;$("sCadence").value=j.cadence||"monthly";S.targets=j.targets;renderTargets();
     $("sTz").value=j.time_zone||"";$("sPar").value=String(j.parallel||1);$("sKeep").value=String(j.keep_backups);
     $("sParNote").innerHTML=j.parallel>1&&!j.parallel_ready?'<p class="det">Jobs run one server after another until every connector of this client is on version 0.7.0 or newer.</p>':""})}
+function sysUi(){var sn=$("tSys").value==="servicenow";$("snPanel").hidden=!sn;$("jPanel").hidden=sn}
+function snUi(){var b=$("snAuth").value==="basic";$("snTokL").textContent=b?"Password":"OAuth token"}
 function jiraUi(){var cloud=$("jDeploy").value==="cloud";$("jUserL").hidden=!cloud;$("jTokL").textContent=cloud?"API token":"Personal access token"}
 function renderTargets(){var ro=!can("admin")?" disabled":"";
   if(!S.targets.length){$("tBody").innerHTML='<tr><td colspan="8" class="det">No targets. Pegasus uses Oracle\'s latest releases.</td></tr>';return}
@@ -813,6 +840,14 @@ $("main").addEventListener("click",function(e){if(S.tab!=="settings")return;var 
     return api("/api/clients/"+S.cid+"/jira",{method:"PUT",body:body}).then(function(j){$("jToken").value="";$("jToken").placeholder=j.has_token?"saved (leave blank to keep)":"";$("jForget").hidden=!j.has_token;msg("jMsg","Saved.","ok")}).catch(function(j){msg("jMsg",j.error||"Couldn't save.")})}
   if(t.id==="jTest"){msg("jMsg","Testing…","info");return api("/api/clients/"+S.cid+"/jira/test",{method:"POST",body:{}}).then(function(j){
     msg("jMsg","Connected as "+j.user+" to project "+j.project+"."+(j.filled&&j.filled.length?" Pegasus fills in: "+j.filled.join(", ")+".":"")+(j.warning?" "+j.warning:""),j.warning?"":"ok")}).catch(function(j){msg("jMsg",(j.error||"Couldn't connect.")+" Save first if you just changed the settings.")})}
+  if(t.id==="snSave"){var sb={enabled:$("snEnabled").checked,require:$("snRequire").value,url:$("snUrl").value,auth:$("snAuth").value,user:$("snUser").value,change_type:$("snType").value,
+      assignment_group:$("snGroup").value,category:$("snCat").value,submit_transition:$("snSubmit").value,start_transition:$("snStart").value,done_transition:$("snDone").value,
+      approved_statuses:$("snApproved").value,rejected_statuses:$("snRejected").value,extra_fields:$("snExtra").value,block_self_approval:$("snSelf").checked};
+    if($("snToken").value)sb.token=$("snToken").value;
+    return api("/api/clients/"+S.cid+"/servicenow",{method:"PUT",body:sb}).then(function(j){$("snToken").value="";$("snToken").placeholder=j.has_token?"saved (leave blank to keep)":"";$("snForget").hidden=!j.has_token;msg("snMsg","Saved.","ok")}).catch(function(j){msg("snMsg",j.error||"Couldn't save.")})}
+  if(t.id==="snTest"){msg("snMsg","Testing…","info");return api("/api/clients/"+S.cid+"/servicenow/test",{method:"POST",body:{}}).then(function(j){msg("snMsg","Connected as "+j.user+"; change requests can be read.","ok")})
+    .catch(function(j){msg("snMsg",(j.error||"Couldn't connect.")+" Save first if you just changed the settings.")})}
+  if(t.id==="snForget") return confirmBox("Remove the ServiceNow password?","Change approval is switched off until one is added again.",null,function(){api("/api/clients/"+S.cid+"/servicenow/token",{method:"DELETE"}).then(function(){renderSettings()})},"Remove");
   if(t.id==="jForget") return confirmBox("Remove the Jira token?","Change approval is switched off until a token is added again.",null,function(){api("/api/clients/"+S.cid+"/jira/token",{method:"DELETE"}).then(function(){renderSettings()})},"Remove");
   if(t.id==="ociSave") return api("/api/clients/"+S.cid+"/oci-console",{method:"PUT",body:{tenancy:$("ociTen").value,region:$("ociReg").value}}).then(function(j){S.detail.oci_console=j.oci_console;render()}).catch(function(j){msg("ociMsg",j.error)});
   if(t.id==="sSave") return api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:{staging_root:$("sRoot").value}}).then(function(j){$("sRoot").value=j.staging_root;msg("sMsg","Saved.","ok")}).catch(function(j){msg("sMsg",j.error)});
@@ -824,6 +859,7 @@ $("main").addEventListener("click",function(e){if(S.tab!=="settings")return;var 
 var DAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],ACT={start:"Start all",stop:"Stop all",restart:"Restart all",clearcache:"Clear cache and restart"};
 function myTz(){try{return Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC"}catch(e){return "UTC"}}
 function defTz(){return (S.detail&&S.detail.time_zone)||myTz()}
+function TS(){return (S.detail&&S.detail.ticketing)||"Jira"}
 function tzList(){var l=[];try{l=Intl.supportedValuesOf("timeZone")}catch(e){}
   ["America/Los_Angeles","America/Denver","America/Chicago","America/New_York","UTC","Asia/Kolkata"].forEach(function(z){if(l.indexOf(z)<0)l.push(z)});return l.sort()}
 function dayText(d){if(d.join()==="0,1,2,3,4")return "Mon–Fri";if(d.length===7)return "Every day";if(d.join()==="5,6")return "Weekends";return d.map(function(x){return DAYS[x]}).join(", ")}
@@ -891,8 +927,9 @@ $("main").addEventListener("click",function(e){var t=e.target;
 
 /* ---------- activity ---------- */
 var EVT={signed_in:"Signed in",sign_in_failed:"Sign-in failed",mfa_failed:"Wrong MFA code",mfa_enrolled:"Set up MFA",job_queued:"Started a job",apply_queued:"Started patching",
-  patches_applied:"Patching finished",patches_staged:"Download finished",change_request_raised:"Raised a Jira ticket",change_request_withdrawn:"Withdrew a Jira ticket",
-  jira_settings_updated:"Changed Jira settings",jira_token_removed:"Removed the Jira token",jira_update_failed:"Couldn't update Jira",inventory_imported:"Imported inventory",
+  patches_applied:"Patching finished",patches_staged:"Download finished",change_request_raised:"Raised a change ticket",change_request_withdrawn:"Withdrew a change ticket",ticketing_changed:"Changed the ticketing system",
+  servicenow_settings_updated:"Changed ServiceNow settings",servicenow_token_removed:"Removed the ServiceNow password",
+  jira_settings_updated:"Changed Jira settings",jira_token_removed:"Removed the Jira token",jira_update_failed:"Couldn't update the ticket",inventory_imported:"Imported inventory",
   connector_token_created:"Created a connector token",connector_registered:"A connector registered",connector_removed:"Removed a connector",
   connector_certificate_issued:"A connector got a certificate",connector_certificate_renewed:"A connector renewed its certificate",connector_update_requested:"Asked a connector to update",
   connector_updated:"A connector updated itself",oci_console_changed:"Changed the OCI Console link",schedule_created:"Added a schedule",schedule_changed:"Changed a schedule",schedule_deleted:"Deleted a schedule",
