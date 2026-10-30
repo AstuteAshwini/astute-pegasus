@@ -172,6 +172,12 @@ dialog::backdrop{background:#00222fa0}.row{display:flex;gap:8px;justify-content:
     <div class="codes" id="codesList"></div>
     <div class="toolbar"><button type="button" id="codesCopy">Copy codes</button><button type="button" class="primary" id="codesDone">I've saved them</button></div>
   </div>
+  <form class="panel" id="inviteForm" hidden>
+    <h2>Choose your password</h2><p class="help" id="invText"></p>
+    <label>New password (at least 12 characters)<input id="invPw" type="password" autocomplete="new-password" required></label>
+    <label>Type it again<input id="invPw2" type="password" autocomplete="new-password" required></label>
+    <div id="invMsg"></div><button class="primary" type="submit">Save password</button>
+  </form>
   <form class="panel" id="pwForm" hidden>
     <h2>Choose a new password</h2><p class="help">You signed in with a temporary password. Choose your own to continue.</p>
     <label>Temporary password<input id="pwCur" type="password" autocomplete="current-password" required></label>
@@ -225,6 +231,7 @@ dialog::backdrop{background:#00222fa0}.row{display:flex;gap:8px;justify-content:
   <label>Name<input id="uName" required></label><label>Email<input id="uEmail" type="email" required></label>
   <div class="grid2"><label>Role<select id="uRole"><option value="viewer">Viewer: sees everything, changes nothing</option><option value="operator">Operator: runs jobs, patches, manages SSH keys</option><option value="admin">Admin: also settings, connectors, people</option></select></label>
   <label>Works for<select id="uClient"></select></label></div>
+  <label class="inline" id="uMailL" hidden><input type="checkbox" id="uMail" checked>Email them a link to choose their password (otherwise you get a temporary password to pass on)</label>
   <div id="userMsg"></div>
   <div class="row"><button type="button" id="userCancel">Cancel</button><button class="primary" type="submit" id="userGo">Add</button></div></form></dialog>
 
@@ -274,7 +281,7 @@ function staffAdmin(){return S.me&&S.me.role==="admin"&&!S.me.client_id}
 
 /* ---------- sign-in ---------- */
 function gate(which){$("shell").hidden=true;$("gate").hidden=false;
-  ["setupForm","loginForm","mfaForm","enrollForm","codesPanel","pwForm"].forEach(function(id){$(id).hidden=id!==which});
+  ["setupForm","loginForm","mfaForm","enrollForm","codesPanel","pwForm","inviteForm"].forEach(function(id){$(id).hidden=id!==which});
   var f=$(which).querySelector("input");if(f)setTimeout(function(){f.focus()},30)}
 function loginOptions(s){var g=!!s.google;$("googleBlock").hidden=!g;$("pwBlock").hidden=g;
   $("pwToggle").textContent=s.password_signin==="admins"?"Admin? Sign in with a password":"Sign in with a password instead";
@@ -282,7 +289,17 @@ function loginOptions(s){var g=!!s.google;$("googleBlock").hidden=!g;$("pwBlock"
   var m=/[?&]sso_error=([^&]*)/.exec(location.search);
   if(m){msg("loginMsg",decodeURIComponent(m[1].replace(/\+/g," ")));try{history.replaceState(null,"",location.pathname)}catch(e){}}
   if(g)setTimeout(function(){var a=document.querySelector(".google-btn");if(a)a.focus()},40)}
-function boot(){api("/api/session").then(function(s){
+var INVITE=(/[?&]invite=([A-Za-z0-9_\-]+)/.exec(location.search)||[])[1]||"";
+function inviteGate(){api("/api/invite?token="+encodeURIComponent(INVITE)).then(function(j){
+    $("invText").textContent="Welcome, "+(j.name||j.email)+". Choose a password for "+j.email+". Next you'll sign in and set up an authenticator app.";gate("inviteForm")})
+  .catch(function(j){INVITE="";try{history.replaceState(null,"",location.pathname)}catch(e){}gate("loginForm");msg("loginMsg",j.error||"That link doesn't work any more.")})}
+$("inviteForm").addEventListener("submit",function(e){e.preventDefault();
+  if($("invPw").value!==$("invPw2").value) return msg("invMsg","The two passwords don't match.");
+  api("/api/invite",{method:"POST",body:{token:INVITE,password:$("invPw").value}}).then(function(j){INVITE="";$("invPw").value=$("invPw2").value="";
+    try{history.replaceState(null,"",location.pathname)}catch(e){}
+    api("/api/session").then(function(s){gate("loginForm");loginOptions(s);$("pwBlock").hidden=false;$("loginEmail").value=j.email;msg("loginMsg","Password saved. Sign in to finish setting up your account.","ok")})})
+  .catch(function(j){msg("invMsg",j.error||"Couldn't save the password.")})});
+function boot(){if(INVITE)return inviteGate();api("/api/session").then(function(s){
   $("keyFp").textContent=s.signing_key;
   if(s.setup_needed){$("setupPwL").hidden=!s.setup_needs_password;return gate("setupForm")}
   if(!s.auth){gate("loginForm");loginOptions(s);return}
@@ -929,7 +946,7 @@ $("main").addEventListener("click",function(e){var t=e.target;
 var EVT={signed_in:"Signed in",sign_in_failed:"Sign-in failed",mfa_failed:"Wrong MFA code",mfa_enrolled:"Set up MFA",job_queued:"Started a job",apply_queued:"Started patching",
   patches_applied:"Patching finished",patches_staged:"Download finished",change_request_raised:"Raised a change ticket",change_request_withdrawn:"Withdrew a change ticket",ticketing_changed:"Changed the ticketing system",
   servicenow_settings_updated:"Changed ServiceNow settings",servicenow_token_removed:"Removed the ServiceNow password",
-  jira_settings_updated:"Changed Jira settings",jira_token_removed:"Removed the Jira token",jira_update_failed:"Couldn't update the ticket",inventory_imported:"Imported inventory",
+  jira_settings_updated:"Changed Jira settings",jira_token_removed:"Removed the Jira token",jira_update_failed:"Couldn't update the ticket",sign_in_link_emailed:"Emailed a sign-in link",password_set_from_link:"Chose a password from the emailed link",mail_settings_updated:"Changed email settings",inventory_imported:"Imported inventory",
   connector_token_created:"Created a connector token",connector_registered:"A connector registered",connector_removed:"Removed a connector",
   connector_certificate_issued:"A connector got a certificate",connector_certificate_renewed:"A connector renewed its certificate",connector_update_requested:"Asked a connector to update",
   connector_updated:"A connector updated itself",oci_console_changed:"Changed the OCI Console link",schedule_created:"Added a schedule",schedule_changed:"Changed a schedule",schedule_deleted:"Deleted a schedule",
@@ -952,19 +969,33 @@ $("navUsers").addEventListener("click",function(){S.view="users";renderClientLis
 function showUsers(){api("/api/users").then(function(j){S.users=j.users;var cn={};S.clients.forEach(function(c){cn[c.id]=c.name});
   var h='<div class="head"><h1>People and access</h1><button type="button" class="primary" id="uAdd">Add a person</button></div><div class="panel"><p class="help">Everyone signs in with a password and an authenticator app. Astute staff see every client; a client\'s own people see only that client and can be operators or viewers.</p>'+
     '<div class="scroll"><table><thead><tr><th>Person</th><th>Role</th><th>Works for</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead><tbody>'+j.users.map(function(u){
-      var st=u.disabled?'<span class="st down">Disabled</span>':u.locked?'<span class="st busy">Locked</span>':!u.mfa?'<span class="st queued">MFA not set up</span>':u.must_change?'<span class="st queued">Temporary password</span>':'<span class="st up">Active</span>';
+      var st=u.disabled?'<span class="st down">Disabled</span>':u.locked?'<span class="st busy">Locked</span>':u.invite_pending?'<span class="st queued">Sign-in link sent</span>':!u.mfa?'<span class="st queued">MFA not set up</span>':u.must_change?'<span class="st queued">Temporary password</span>':'<span class="st up">Active</span>';
       return '<tr><td><b>'+esc(u.name)+'</b><br><span class="det">'+esc(u.email)+'</span></td><td><select data-urole="'+esc(u.id)+'" style="width:auto">'+["viewer","operator","admin"].map(function(r){return '<option'+(r===u.role?' selected':'')+'>'+r+'</option>'}).join("")+'</select></td><td>'+esc(u.client_id?cn[u.client_id]||u.client_id:"Astute (all clients)")+'</td><td>'+st+'</td><td class="det">'+esc(u.last_login?ago(u.last_login):"never")+'</td>'+
         '<td><button type="button" class="link sm" data-upw="'+esc(u.id)+'">Reset password</button> <button type="button" class="link sm" data-umfa="'+esc(u.id)+'">Reset MFA</button> <button type="button" class="link sm'+(u.disabled?'':' danger')+'" data-udis="'+esc(u.id)+'" data-v="'+(u.disabled?0:1)+'">'+(u.disabled?"Enable":"Disable")+'</button></td></tr>'}).join("")+'</tbody></table></div><div id="uMsg"></div></div>'+
+    '<div class="panel"><h2>Email</h2><p class="help">When this is on, new people and password resets get an email with a one-time link to choose their password (valid 3 days), instead of you passing on a temporary password. Any SMTP server works, e.g. OCI Email Delivery (smtp.email.&lt;region&gt;.oci.oraclecloud.com, port 587) or Google Workspace. The password is stored encrypted.</p>'+
+    '<label class="inline"><input type="checkbox" id="mOn">Email sign-in links</label>'+
+    '<div class="grid3"><label>SMTP server<input id="mHost" placeholder="smtp.email.us-phoenix-1.oci.oraclecloud.com"></label><label>Port<input id="mPort" inputmode="numeric"></label>'+
+    '<label>Security<select id="mSec"><option value="starttls">STARTTLS (port 587)</option><option value="ssl">SSL (port 465)</option><option value="none">None</option></select></label></div>'+
+    '<div class="grid2"><label>SMTP user<input id="mUser" autocomplete="off"></label><label>SMTP password<input id="mPw" type="password" autocomplete="off"></label></div>'+
+    '<div class="grid2"><label>From address<input id="mFrom" placeholder="pegasus@beastute.com"></label><label>From name<input id="mName"></label></div>'+
+    '<div id="mMsg"></div><div class="toolbar"><button type="button" class="primary" id="mSave">Save</button><button type="button" id="mTest">Send me a test email</button></div></div>'+
     '<div class="panel"><h2>Audit log</h2><div id="uAudit"><div class="empty">Loading…</div></div></div>';
-  $("main").innerHTML=h;api("/api/audit").then(function(a){$("uAudit").innerHTML=auditTable(a.events.slice(0,150))})}).catch(function(j){$("main").innerHTML='<div class="msg">'+esc(j.error||"Couldn't load people.")+'</div>'})}
+  $("main").innerHTML=h;
+  api("/api/mail").then(function(m){var c=m.config;S.mailOn=!!c.enabled;$("mOn").checked=!!c.enabled;$("mHost").value=c.host;$("mPort").value=c.port;$("mSec").value=c.security;$("mUser").value=c.user;
+    $("mFrom").value=c.from_email;$("mName").value=c.from_name;$("mPw").placeholder=m.has_password?"saved (leave blank to keep)":""});
+  api("/api/audit").then(function(a){$("uAudit").innerHTML=auditTable(a.events.slice(0,150))})}).catch(function(j){$("main").innerHTML='<div class="msg">'+esc(j.error||"Couldn't load people.")+'</div>'})}
 function tempShow(title,email,pw){$("tempTitle").textContent=title;$("tempText").textContent="Give this to "+email+" privately. They'll choose their own password and set up an authenticator app when they first sign in.";$("tempPw").textContent=pw;$("tempDlg").showModal()}
 $("tempCopy").addEventListener("click",function(){navigator.clipboard&&navigator.clipboard.writeText($("tempPw").textContent);this.textContent="Copied"});
 $("tempClose").addEventListener("click",function(){$("tempDlg").close();$("tempCopy").textContent="Copy";showUsers()});
 $("main").addEventListener("click",function(e){if(S.view!=="users")return;var t=e.target;
-  if(t.id==="uAdd"){$("uName").value=$("uEmail").value="";$("uRole").value="operator";$("uClient").innerHTML='<option value="">Astute (all clients)</option>'+S.clients.map(function(c){return '<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>'}).join("");msg("userMsg","");$("userDlg").showModal();return}
+  if(t.id==="uAdd"){$("uMailL").hidden=!S.mailOn;$("uMail").checked=true;$("uName").value=$("uEmail").value="";$("uRole").value="operator";$("uClient").innerHTML='<option value="">Astute (all clients)</option>'+S.clients.map(function(c){return '<option value="'+esc(c.id)+'">'+esc(c.name)+'</option>'}).join("");msg("userMsg","");$("userDlg").showModal();return}
   var u=function(id){return S.users.filter(function(x){return x.id===id})[0]};
-  var p=t.closest("[data-upw]");if(p) return confirmBox("Reset "+u(p.dataset.upw).name+"'s password?","They're signed out and get a temporary password to change at their next sign-in.",null,function(){
-    api("/api/users/"+p.dataset.upw+"/reset-password",{method:"POST",body:{}}).then(function(j){tempShow("New temporary password",u(p.dataset.upw).email,j.temporary_password)}).catch(function(j){msg("uMsg",j.error)})},"Reset");
+  var p=t.closest("[data-upw]");if(p) return confirmBox("Reset "+u(p.dataset.upw).name+"'s password?",S.mailOn?"They're signed out and get an email with a link to choose a new password.":"They're signed out and get a temporary password to change at their next sign-in.",null,function(){
+    api("/api/users/"+p.dataset.upw+"/reset-password",{method:"POST",body:{}}).then(function(j){handedOver(j,"New temporary password")}).catch(function(j){msg("uMsg",j.error)})},"Reset");
+  if(t.id==="mSave"){var mb={enabled:$("mOn").checked,host:$("mHost").value,port:+$("mPort").value,security:$("mSec").value,user:$("mUser").value,from_email:$("mFrom").value,from_name:$("mName").value};
+    if($("mPw").value)mb.password=$("mPw").value;
+    return api("/api/mail",{method:"PUT",body:mb}).then(function(j){$("mPw").value="";$("mPw").placeholder=j.has_password?"saved (leave blank to keep)":"";S.mailOn=!!j.config.enabled;msg("mMsg","Saved.","ok")}).catch(function(j){msg("mMsg",j.error||"Couldn't save.")})}
+  if(t.id==="mTest"){msg("mMsg","Sending…","info");return api("/api/mail/test",{method:"POST",body:{}}).then(function(j){msg("mMsg","Sent a test email to "+j.to+".","ok")}).catch(function(j){msg("mMsg",(j.error||"Couldn't send.")+" Save first if you just changed the settings.")})}
   var m=t.closest("[data-umfa]");if(m) return confirmBox("Reset "+u(m.dataset.umfa).name+"'s authenticator?","Use this when they've lost their phone and their recovery codes. They set up a new authenticator at their next sign-in.",null,function(){
     api("/api/users/"+m.dataset.umfa+"/reset-mfa",{method:"POST",body:{}}).then(showUsers).catch(function(j){msg("uMsg",j.error)})},"Reset");
   var d=t.closest("[data-udis]");if(d) return api("/api/users/"+d.dataset.udis,{method:"PATCH",body:{disabled:d.dataset.v==="1"}}).then(showUsers).catch(function(j){msg("uMsg",j.error)})});
@@ -972,8 +1003,10 @@ $("main").addEventListener("change",function(e){var r=e.target.closest("[data-ur
   api("/api/users/"+r.dataset.urole,{method:"PATCH",body:{role:r.value}}).then(showUsers).catch(function(j){msg("uMsg",j.error);showUsers()})});
 $("userCancel").addEventListener("click",function(){$("userDlg").close()});
 $("userForm").addEventListener("submit",function(e){e.preventDefault();
-  api("/api/users",{method:"POST",body:{name:$("uName").value,email:$("uEmail").value,role:$("uRole").value,client_id:$("uClient").value||null}})
-  .then(function(j){$("userDlg").close();tempShow("Temporary password",j.user.email,j.temporary_password)}).catch(function(j){msg("userMsg",j.error||"Couldn't add them.")})});
+  api("/api/users",{method:"POST",body:{name:$("uName").value,email:$("uEmail").value,role:$("uRole").value,client_id:$("uClient").value||null,email_link:S.mailOn&&$("uMail").checked}})
+  .then(function(j){$("userDlg").close();handedOver(j,"Temporary password")}).catch(function(j){msg("userMsg",j.error||"Couldn't add them.")})});
+function handedOver(j,title){if(j.emailed){showUsers();return setTimeout(function(){msg("uMsg","Emailed "+j.user.email+" a link to choose their password. It works once, for 3 days.","ok")},300)}
+  tempShow(title,j.user.email,j.temporary_password);if(j.email_error)$("tempText").textContent="The email couldn't be sent ("+j.email_error+"). Give this temporary password to "+j.user.email+" privately instead."}
 
 /* ---- Console AI chat. It talks to the Console AI helper on this computer, never to the Pegasus server: the
    OCI sign-in, the questions and the answers stay on this computer. ---- */

@@ -18,6 +18,7 @@ import csv
 import datetime as dt
 import functools
 import hashlib
+import html as htmlmod
 import hmac
 import io
 import json
@@ -33,7 +34,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory, session
 
-from . import __version__, advisory, auth, evaluate as ev, jira as jiramod, protocol, servicenow as snmod, sshkeys
+from . import __version__, advisory, auth, evaluate as ev, jira as jiramod, mailer, protocol, servicenow as snmod, sshkeys
 
 DATA_DIR = Path(os.environ.get("PEGASUS_DATA", Path(__file__).resolve().parent.parent / "data"))
 DB_PATH = DATA_DIR / "pegasus.db"
@@ -157,6 +158,7 @@ MIGRATIONS = {"jobs": [("kind", "TEXT"), ("meta", "TEXT"), ("finalized", "INTEGE
                              ("update_detail", "TEXT"), ("update_at", "REAL"), ("can_update", "INTEGER"),
                              ("update_requested_at", "REAL")],
               "access_keys": [("expires_on", "TEXT")],
+              "users": [("invite_hash", "TEXT"), ("invite_expires", "REAL")],
               "schedules": [("plan", "TEXT")],
               "access_requests": [("jira_key", "TEXT"), ("jira_url", "TEXT"), ("jira_status", "TEXT"),
                                   ("checked_at", "REAL")]}
@@ -280,7 +282,7 @@ def is_local_request():
 
 
 OPEN_PATHS = ("/api/login", "/api/login/mfa", "/api/mfa/enroll", "/api/session", "/api/setup", "/api/logout",
-              "/api/sso/google/start", "/api/sso/google/callback")
+              "/api/sso/google/start", "/api/sso/google/callback", "/api/invite")
 MUST_CHANGE_PATHS = ("/api/password",)
 
 
@@ -356,6 +358,7 @@ def get_client(cid):
 def user_view(u):
     return {"id": u["id"], "email": u["email"], "name": u["name"], "role": u["role"], "client_id": u["client_id"],
             "mfa": bool(u["mfa_enabled"]), "disabled": bool(u["disabled"]), "must_change": bool(u["must_change"]),
+            "invite_pending": bool(u["invite_hash"] and (u["invite_expires"] or 0) > time.time()),
             "locked": u["locked_until"] > time.time(), "last_login": iso(u["last_login"]),
             "created_at": iso(u["created_at"]), "recovery_left": len(jload(u["recovery"], []))}
 
@@ -597,7 +600,7 @@ def google_callback():
         return sso_fail(f"{email} doesn't have a Pegasus account. Ask a Pegasus admin to add you.", email)
     if u["must_change"]:
         # a temporary password from an admin is no longer needed: retire it rather than leave it usable
-        db().execute("UPDATE users SET must_change=0, pw_hash=? WHERE id=?",
+        db().execute("UPDATE users SET must_change=0, pw_hash=?, invite_hash='', invite_expires=0 WHERE id=?",
                      (auth.hash_password(secrets.token_urlsafe(32)), u["id"]))
     signed_in(u)
     audit("signed_in_with_google", actor=u["email"])
@@ -677,6 +680,135 @@ def list_users():
     return jsonify(users=[user_view(u) for u in us])
 
 
+# ---------------------------------------------------------------- email: sign-in links for new people and resets
+INVITE_DAYS = 3
+
+
+def mail_cfg():
+    return mailer.config(get_setting("_global", "mail", {}))
+
+
+def mail_ready():
+    c = mail_cfg()
+    return bool(c["enabled"] and c["host"] and c["from_email"])
+
+
+def send_mail(to, subject, text, html=None):
+    mailer.send(mail_cfg(), box().open(get_setting("_global", "mail_password", "")), to, subject, text, html)
+
+
+def invite_link(uid):
+    """A one-time link to set a password, valid INVITE_DAYS. Only its hash is stored. The account's old password
+    stops working at once."""
+    token = secrets.token_urlsafe(32)
+    db().execute("UPDATE users SET invite_hash=?, invite_expires=?, pw_hash=?, must_change=1, failed=0, "
+                 "locked_until=0, session_ver=session_ver+1 WHERE id=?",
+                 (hashlib.sha256(token.encode()).hexdigest(), time.time() + INVITE_DAYS * 86400,
+                  auth.hash_password(secrets.token_urlsafe(32)), uid))
+    return f"{PUBLIC_URL or request.host_url.rstrip('/')}/?invite={token}"
+
+
+def email_invite(u, reset=False):
+    """Email a sign-in link. Returns None when sent, or the reason it couldn't be (the caller falls back to a
+    temporary password, which also cancels the link)."""
+    link = invite_link(u["id"])
+    by = actor_label()
+    first = (u["name"] or "").split(" ")[0] or "there"
+    what = "reset your Pegasus password" if reset else "set up a Pegasus account for you"
+    text = (f"Hi {first},\n\n{by} has {what}. Choose your password here (the link works once, for "
+            f"{INVITE_DAYS} days):\n\n{link}\n\nAfter that you'll set up an authenticator app (Microsoft or Google "
+            f"Authenticator, Duo or similar) for the second step at sign-in.\n\nIf you weren't expecting this, "
+            f"ignore this email.\n\nPegasus, by Astute\n")
+    html = (f"<p>Hi {htmlmod.escape(first)},</p><p>{htmlmod.escape(by)} has {what}. Choose your password here (the "
+            f"link works once, for {INVITE_DAYS} days):</p><p><a href=\"{htmlmod.escape(link)}\">Set my Pegasus "
+            f"password</a></p><p>After that you'll set up an authenticator app (Microsoft or Google Authenticator, Duo "
+            f"or similar) for the second step at sign-in.</p><p>If you weren't expecting this, ignore this email.</p>"
+            f"<p>Pegasus, by Astute</p>")
+    try:
+        send_mail(u["email"], "Your Pegasus password" if reset else "Your Pegasus account", text, html)
+    except mailer.MailError as e:
+        return str(e)
+    audit("sign_in_link_emailed", u["client_id"], email=u["email"], reason="reset" if reset else "new")
+    return None
+
+
+def temporary_instead(uid):
+    temp = auth.temporary_password()
+    db().execute("UPDATE users SET pw_hash=?, must_change=1, failed=0, locked_until=0, invite_hash='', "
+                 "invite_expires=0, session_ver=session_ver+1 WHERE id=?", (auth.hash_password(temp), uid))
+    return temp
+
+
+def invited_user(token):
+    if not token or len(token) > 100:
+        return None
+    u = db().execute("SELECT * FROM users WHERE invite_hash=?", (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+    if not u or u["disabled"] or (u["invite_expires"] or 0) < time.time():
+        return None
+    return u
+
+
+@app.route("/api/invite", methods=["GET", "POST"])
+def invite():
+    """GET ?token=: who the link is for. POST {token, password}: set the password; the link is then used up."""
+    body = request.get_json(silent=True) or {} if request.method == "POST" else {}
+    token = str(body.get("token") or request.args.get("token") or "")
+    u = invited_user(token)
+    if not u:
+        time.sleep(0.5)
+        return jsonify(error="This link has expired or was already used. Ask a Pegasus admin for a new one."), 404
+    if request.method == "GET":
+        return jsonify(email=u["email"], name=u["name"])
+    pw = str(body.get("password") or "")
+    problem = auth.password_problem(pw, u["email"], u["name"] or "")
+    if problem:
+        return jsonify(error=problem), 400
+    db().execute("UPDATE users SET pw_hash=?, must_change=0, invite_hash='', invite_expires=0, failed=0, "
+                 "locked_until=0, session_ver=session_ver+1 WHERE id=?", (auth.hash_password(pw), u["id"]))
+    audit("password_set_from_link", u["client_id"], actor=u["email"], email=u["email"])
+    return jsonify(ok=True, email=u["email"])
+
+
+@app.get("/api/mail")
+@need("admin")
+def get_mail():
+    if not staff():
+        return jsonify(error="Only Astute staff manage email."), 403
+    return jsonify(config=mail_cfg(), has_password=bool(get_setting("_global", "mail_password", "")))
+
+
+@app.put("/api/mail")
+@need("admin")
+def put_mail():
+    if not staff():
+        return jsonify(error="Only Astute staff manage email."), 403
+    body = request.get_json(silent=True) or {}
+    pw = str(body.get("password") or "")
+    has = bool(pw or get_setting("_global", "mail_password", ""))
+    new, problems = mailer.validate(body, mail_cfg(), has)
+    if problems:
+        return jsonify(error=" ".join(problems)), 400
+    if pw:
+        put_setting("_global", "mail_password", box().seal(pw))
+    put_setting("_global", "mail", new)
+    audit("mail_settings_updated", enabled=new["enabled"], host=new["host"], password_changed=bool(pw))
+    return jsonify(config=new, has_password=has)
+
+
+@app.post("/api/mail/test")
+@need("admin")
+def test_mail():
+    if not staff():
+        return jsonify(error="Only Astute staff manage email."), 403
+    to = current_user()["email"]
+    try:
+        send_mail(to, "Pegasus test email", "Email from Pegasus works. New people and password resets will get "
+                                            "their sign-in link this way.\n")
+    except mailer.MailError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, to=to)
+
+
 @app.post("/api/users")
 @need("admin")
 def create_user():
@@ -699,8 +831,24 @@ def create_user():
                  "VALUES (?,?,?,?,?,?,1,?)", (uid, email, name, auth.hash_password(temp), fields["role"],
                                               fields["client_id"], time.time()))
     audit("user_created", fields["client_id"], email=email, role=fields["role"])
-    return jsonify(user=user_view(db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()),
-                   temporary_password=temp)
+    return jsonify(**hand_over(uid, body, reset=False))
+
+
+def hand_over(uid, body, reset):
+    """Email a sign-in link when email is set up (and wasn't turned off for this one); otherwise, or if sending
+    fails, a temporary password for the admin to pass on."""
+    u = db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    out, err = {}, None
+    if mail_ready() and body.get("email_link", True) is not False:
+        err = email_invite(u, reset=reset)
+        if not err:
+            out["emailed"] = True
+    if not out.get("emailed"):
+        out["temporary_password"] = temporary_instead(uid)
+        if err:
+            out["email_error"] = err
+    out["user"] = user_view(db().execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone())
+    return out
 
 
 def target_user(uid):
@@ -735,11 +883,9 @@ def update_user(uid):
 @need("admin")
 def reset_password(uid):
     u = target_user(uid)
-    temp = auth.temporary_password()
-    db().execute("UPDATE users SET pw_hash=?, must_change=1, failed=0, locked_until=0, session_ver=session_ver+1 "
-                 "WHERE id=?", (auth.hash_password(temp), uid))
-    audit("password_reset", u["client_id"], email=u["email"])
-    return jsonify(temporary_password=temp)
+    out = hand_over(uid, request.get_json(silent=True) or {}, reset=True)
+    audit("password_reset", u["client_id"], email=u["email"], emailed=bool(out.get("emailed")))
+    return jsonify(**out)
 
 
 @app.post("/api/users/<uid>/reset-mfa")

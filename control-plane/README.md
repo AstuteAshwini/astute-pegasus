@@ -176,6 +176,14 @@ server (the backup is kept). The client's **time zone** (Settings) is the defaul
 The apply scripts live in the connector and are built there from validated values; the control plane only sends
 which update goes where. **CPU targets** (Settings) pin a level for releases Oracle Support searches don't cover.
 
+## People: sign-in links by email
+
+People and access, **Email**: with an SMTP server set up (OCI Email Delivery, Google Workspace or any relay), adding a
+person or resetting a password emails them a one-time link to choose their password, valid 3 days; only its hash is
+stored, and a new link or a temporary password cancels the old one. They then sign in and set up their
+authenticator app as before. With email off, or if sending fails, the admin gets a temporary password to pass on, as
+before. Set `PEGASUS_PUBLIC_URL` (e.g. https://pegasus.beastute.com) so links point at the right address.
+
 ## Change approval: Jira or ServiceNow
 
 Per client, under Settings: pick the **Ticketing system**, then fill in its panel. Patching and SSH access approvals
