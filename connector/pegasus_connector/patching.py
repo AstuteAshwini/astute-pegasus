@@ -145,7 +145,7 @@ def validate(op, step, ssh_user):
                  "files": files, "version": version, "ids": ids,
                  "level": re.sub(r"\D", "", str(step.get("level") or "")) or "0",
                  "opatch_zip": abs_path(step.get("opatch_zip"), "the OPatch zip"),
-                 "cleanup": step.get("cleanup") is True}
+                 "cleanup": step.get("cleanup") is True, "keep": keep_count(step.get("keep"))}
         if comp == "jdk" and not JDK_VERSION.match(version):
             raise OperationError("a JDK update needs the exact new version")
         if home.rstrip("/") in PROTECTED_DIRS or home.count("/") < 2:
@@ -622,6 +622,37 @@ echo "Removed the staged files for this update from __STAGEDIR__ (the backup is 
 '''
 
 
+def keep_count(v):
+    """How many of Pegasus's own backups of a home to keep after a successful apply (0 = keep them all)."""
+    if v in (None, ""):
+        return 0
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        raise OperationError("the number of backups to keep must be a number")
+    if not 0 <= n <= 20:
+        raise OperationError("keep between 1 and 20 backups (0 keeps them all)")
+    return n
+
+
+TS14 = "[0-9]" * 14        # the timestamp Pegasus puts in every backup name: YYYYmmddHHMMSS
+PRUNE = r'''
+KEEP=__KEEP__
+shopt -s nullglob
+prune() {   # the arguments are one home's backups, oldest first (the names sort by their timestamp)
+  local n=$#; local i=0
+  for old in "$@"; do i=$((i+1)); [ $((n - i)) -ge "$KEEP" ] || break
+    echo "Removing an older backup: $old"; rm -rf -- "$old"; done
+}
+'''
+PRUNE_CALLS = {
+    "jdk": f'prune "$JH".bak.{TS14}\n',
+    "weblogic": f'prune "$(dirname "$W")/$(basename "$W")".bak.{TS14}.tar.gz\nprune "$W"/OPatch.bak.{TS14}\n',
+    "dbclient": f'prune "$(dirname "$W")/$(basename "$W")".bak.{TS14}.tar.gz\nprune "$W"/OPatch.bak.{TS14}\n',
+    "tuxedo": f'prune "$(dirname "$TOH")/$(basename "$TOH")".bak.{TS14}.tar.gz\n',
+}
+
+
 def build_apply_script(c):
     paths = [f"{c['stage_dir']}/{f}" for f in c["files"]]
     work = f"{c['home'].rstrip('/').rsplit('/', 1)[0] or '/tmp'}/.pegasus_work_{secrets.token_hex(3)}"
@@ -637,6 +668,8 @@ def build_apply_script(c):
         body = (APPLY_TUXEDO.replace("__TD__", q(c["home"])).replace("__JH__", q(c["jdk_home"]))
                 .replace("__WORK__", q(work)).replace("__LEVEL__", q(c["level"])).replace("__W__", q(c["wl_home"]))
                 .replace("__FILES__", " ".join(q(p) for p in paths)))
+    if c.get("keep"):              # runs only after APPLY OK, so the backup just taken is always one of those kept
+        body += PRUNE.replace("__KEEP__", str(c["keep"])) + PRUNE_CALLS[comp]
     if c.get("cleanup"):           # runs only after APPLY OK: every failure above exits first
         body += (CLEANUP.replace("__STAGED__", " ".join(q(p) for p in paths))
                  .replace("__STAGEDIR__", q(c["stage_dir"])))

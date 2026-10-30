@@ -1200,6 +1200,7 @@ def plan_steps(servers, action):
 # what each action needs from the connector, for actions newer connectors added
 NEEDS_VERSION = {"clearcache": "0.4.0", "os": "0.5.0", "space": "0.6.0", "parallel": "0.7.0"}
 DEFAULT_PARALLEL = 4
+DEFAULT_KEEP_BACKUPS = 2
 # steps that can run on several servers at once: each is put in a phase (consecutive steps of one phase run together)
 # and a lane per server (a server's own steps stay in order). Domains keep the safe role order: all web domains, then
 # the schedulers, then the app servers (the reverse to start).
@@ -1942,7 +1943,9 @@ def patch_settings(cid):
             "cadence": get_setting(cid, "patch_cadence", "monthly"),
             "parallel": int(get_setting(cid, "max_parallel", DEFAULT_PARALLEL) or 1),
             "parallel_ready": can_all(cid, "parallel"),
-            "time_zone": get_setting(cid, "time_zone", "")}
+            "time_zone": get_setting(cid, "time_zone", ""),
+            # Pegasus's own backups of each home kept after a successful apply (0 = keep all)
+            "keep_backups": int(get_setting(cid, "keep_backups", DEFAULT_KEEP_BACKUPS))}
 
 
 def env_levels(cid, env):
@@ -2377,6 +2380,15 @@ def put_patch_settings(cid):
             return jsonify(error="Choose between 1 and 10 servers at once."), 400
         put_setting(cid, "max_parallel", n)
         audit("parallel_changed", cid, servers_at_once=n)
+    if "keep_backups" in body:
+        try:
+            n = int(body["keep_backups"])
+        except (TypeError, ValueError):
+            n = -1
+        if not 0 <= n <= 20:
+            return jsonify(error="Keep between 1 and 20 backups, or 0 to keep them all."), 400
+        put_setting(cid, "keep_backups", n)
+        audit("keep_backups_changed", cid, keep=n)
     if "time_zone" in body:
         tz = str(body.get("time_zone") or "").strip()
         if tz:
@@ -2469,6 +2481,7 @@ def build_apply_plan(cid, env, groups):
 
 
 def apply_steps(cid, servers, plan, reboot=True):
+    keep = patch_settings(cid)["keep_backups"]
     """One maintenance window: stop every domain once, check nothing is left running, install the OS updates, apply
     each middleware update, reboot the servers where Linux says it's needed, then start everything once (even after
     a failure), check status and read the levels again."""
@@ -2488,7 +2501,7 @@ def apply_steps(cid, servers, plan, reboot=True):
                       "jdk_home": p["jdk_home"], "wl_home": p["wl_home"],
                       "staged": {"dir": p["staged"]["dir"], "files": p["staged"]["files"]},
                       "version": p["version"], "ids": p["ids"], "level": p["level"], "opatch_zip": p["opatch_zip"],
-                      "cleanup": True})
+                      "cleanup": True, "keep": keep})
     if reboot:
         for hk in dict.fromkeys(p["host_key"] for p in plan if p["component"] == "os"):
             steps.append({"op": "host.reboot", "target": target_of(by_key[hk]), "if_needed": True,

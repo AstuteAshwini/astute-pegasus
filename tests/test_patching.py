@@ -627,3 +627,24 @@ def test_cleanup_runs_only_after_a_successful_apply():
     script = P.validate("patch.apply", dict(step, cleanup=True), "opc")["script"]
     assert script.index('echo "APPLY OK"') < script.index("rm -f") and "rmdir /u01/stage/wl" in script
     assert "rm -f" not in P.validate("patch.apply", step, "opc")["script"]
+
+
+def test_backups_to_keep():
+    from pegasus_connector import patching as P
+    from pegasus_connector.operations import OperationError
+    t = {"host": "h", "ip": "10.0.0.1", "os_user": "psadm1", "role": "app", "domain": "X", "ssh_port": 22}
+    step = {"target": t, "component": "weblogic", "owner": "psadm1", "home": "/u01/pt/bea", "ids": ["1"],
+            "staged": {"dir": "/u01/stage/wl", "files": ["p1.zip"]}}
+    script = P.validate("patch.apply", dict(step, keep=2), "opc")["script"]
+    assert "KEEP=2" in script and script.index('echo "APPLY OK"') < script.index("prune ")
+    assert "prune " not in P.validate("patch.apply", step, "opc")["script"]             # not sent: keep them all
+    with pytest.raises(OperationError):
+        P.validate("patch.apply", dict(step, keep=50), "opc")
+
+
+def test_keep_backups_setting(env):
+    base = url(env, "/api/clients/{cid}/patch-settings")
+    assert env["admin"].get(base).json()["keep_backups"] == 2
+    assert env["admin"].put(base, json={"keep_backups": 99}).status_code == 400
+    assert env["admin"].put(base, json={"keep_backups": 3}).json()["keep_backups"] == 3
+    env["admin"].put(base, json={"keep_backups": 2})

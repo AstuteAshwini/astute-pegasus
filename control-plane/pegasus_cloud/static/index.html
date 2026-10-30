@@ -723,9 +723,9 @@ $("main").addEventListener("input",function(e){if(e.target.id!=="aKey")return;cl
     api("/api/access/parse",{method:"POST",body:{key:v}}).then(function(k){S.acc.key=v;$("aKeyInfo").innerHTML='<div class="msg ok">'+esc(k.type)+(k.bits?" "+k.bits+" bits":"")+' key'+(k.comment?' for '+esc(k.comment):'')+' · '+esc(k.fingerprint)+'</div>'})
     .catch(function(j){S.acc.key=null;$("aKeyInfo").innerHTML='<div class="msg">'+esc(j.error)+'</div>'})},300)});
 $("main").addEventListener("change",function(e){var c=e.target.closest("[data-accenv]");if(c)S.acc.sel[c.dataset.accenv]=c.checked});
-$("main").addEventListener("change",function(e){var id=e.target.id;if(id!=="sTz"&&id!=="sPar")return;
-  var body=id==="sTz"?{time_zone:e.target.value}:{parallel:+e.target.value};
-  api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:body}).then(function(j){$(id==="sTz"?"sTzMsg":"sParMsg").innerHTML='<span class="st ok">Saved</span>';
+$("main").addEventListener("change",function(e){var id=e.target.id;if(id!=="sTz"&&id!=="sPar"&&id!=="sKeep")return;
+  var body=id==="sTz"?{time_zone:e.target.value}:id==="sPar"?{parallel:+e.target.value}:{keep_backups:+e.target.value};
+  api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:body}).then(function(j){$(id+"Msg").innerHTML='<span class="st ok">Saved</span>';
     if(S.detail)S.detail.time_zone=j.time_zone}).catch(function(j){alert(j.error)})});
 $("main").addEventListener("change",function(e){if(e.target.id!=="sCadence")return;
   api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:{cadence:e.target.value}}).then(function(){$("sCadMsg").innerHTML='<span class="st ok">Saved</span>'}).catch(function(j){alert(j.error)})});
@@ -782,6 +782,8 @@ function renderSettings(){var ro=!can("admin")?" disabled":"",oc=S.detail.oci_co
     '<div class="toolbar"><select id="sTz" style="max-width:420px"'+ro+'><option value="">Not set (each person\'s own)</option>'+tzList().map(function(z){return '<option>'+esc(z)+'</option>'}).join("")+'</select><span id="sTzMsg"></span></div></div>'+
     '<div class="panel"><h2>Servers at once</h2><p class="help">How many servers a job works on at the same time (patching, start, stop, status). Each server\'s own steps stay in order, and domains keep the web, scheduler, app order. 1 = one server after another.</p>'+
     '<div class="toolbar"><select id="sPar" style="max-width:420px"'+ro+'>'+[1,2,3,4,6,8,10].map(function(n){return '<option value="'+n+'">'+n+(n===1?' (one after another)':'')+'</option>'}).join("")+'</select><span id="sParMsg"></span></div><div id="sParNote"></div></div>'+
+    '<div class="panel"><h2>Backups to keep</h2><p class="help">Before patching a home (JDK, WebLogic, Tuxedo, Database client), Pegasus backs it up next to it. After a successful apply it keeps this many of its own backups of that home, newest first, and removes older ones. Backups it didn\'t make are never touched.</p>'+
+    '<div class="toolbar"><select id="sKeep" style="max-width:420px"'+ro+'>'+[1,2,3,5,10].map(function(n){return '<option value="'+n+'">'+n+(n===1?' (only the one just taken)':'')+'</option>'}).join("")+'<option value="0">Keep them all</option></select><span id="sKeepMsg"></span></div></div>'+
     '<div class="panel"><h2>Staging folder</h2><p class="help">Where downloaded patches are copied on each server. Pegasus creates it (with sudo if it must) and gives it to the PeopleSoft owner.</p>'+
     '<div class="toolbar"><input id="sRoot" class="mono" style="max-width:420px"'+ro+'>'+(can("admin")?'<button type="button" id="sSave">Save</button>':'')+'</div><div id="sMsg"></div></div>'+
     '<div class="panel"><h2>CPU targets (optional)</h2><p class="help">Pegasus finds the latest JDK, WebLogic 14.1.2, Tuxedo 22.1 and Database 19c client patches by itself. Pin a target here only for other releases, or to hold a component at a specific level.</p>'+
@@ -794,7 +796,7 @@ function renderSettings(){var ro=!can("admin")?" disabled":"",oc=S.detail.oci_co
     $("jExtra").value=c.extra_fields&&Object.keys(c.extra_fields).length?JSON.stringify(c.extra_fields):"";$("jSelf").checked=c.block_self_approval!==false;
     $("jToken").placeholder=j.has_token?"saved (leave blank to keep)":"";if($("jForget"))$("jForget").hidden=!j.has_token;jiraUi()});
   api("/api/clients/"+S.cid+"/patch-settings").then(function(j){$("sRoot").value=j.staging_root;$("sCadence").value=j.cadence||"monthly";S.targets=j.targets;renderTargets();
-    $("sTz").value=j.time_zone||"";$("sPar").value=String(j.parallel||1);
+    $("sTz").value=j.time_zone||"";$("sPar").value=String(j.parallel||1);$("sKeep").value=String(j.keep_backups);
     $("sParNote").innerHTML=j.parallel>1&&!j.parallel_ready?'<p class="det">Jobs run one server after another until every connector of this client is on version 0.7.0 or newer.</p>':""})}
 function jiraUi(){var cloud=$("jDeploy").value==="cloud";$("jUserL").hidden=!cloud;$("jTokL").textContent=cloud?"API token":"Personal access token"}
 function renderTargets(){var ro=!can("admin")?" disabled":"";
@@ -900,7 +902,7 @@ var EVT={signed_in:"Signed in",sign_in_failed:"Sign-in failed",mfa_failed:"Wrong
   signed_in_with_google:"Signed in with Google",google_sign_in_refused:"Google sign-in refused",ssh_access_requested:"Asked for an SSH access change",
   ssh_access_approved:"Approved an SSH access change",ssh_access_rejected:"Rejected an SSH access change",ssh_access_withdrawn:"Withdrew an SSH access request",
   ssh_access_expired:"SSH access ended (removed automatically)",ssh_approval_changed:"Changed SSH approval",
-  patch_watch_ran:"Automatic patch check",environment_restored:"Restored an environment",weekly_plan_saved:"Saved a weekly plan",patch_cadence_changed:"Changed the patch plan",parallel_changed:"Changed servers at once",time_zone_changed:"Changed the time zone",patch_watch_changed:"Changed automatic patch checks",inventory_added:"Added domains"};
+  patch_watch_ran:"Automatic patch check",environment_restored:"Restored an environment",weekly_plan_saved:"Saved a weekly plan",patch_cadence_changed:"Changed the patch plan",parallel_changed:"Changed servers at once",keep_backups_changed:"Changed backups to keep",time_zone_changed:"Changed the time zone",patch_watch_changed:"Changed automatic patch checks",inventory_added:"Added domains"};
 function auditTable(events){if(!events.length)return '<div class="empty">Nothing yet.</div>';
   return '<div class="scroll"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead><tbody>'+events.map(function(e){
     var d=e.detail||{},parts=Object.keys(d).filter(function(k){return d[k]!==null&&d[k]!==""&&typeof d[k]!=="object"}).map(function(k){return k.replace(/_/g," ")+": "+d[k]});
