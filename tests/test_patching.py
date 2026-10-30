@@ -63,7 +63,8 @@ class FakeJira:
     def create(self, summary, description, window=None):
         FakeJira.n += 1
         key = f"CHG-{FakeJira.n}"
-        FakeJira.tickets[key] = {"summary": summary, "description": description, "state": "pending", "approver": ""}
+        FakeJira.tickets[key] = {"summary": summary, "description": description, "state": "pending", "approver": "",
+                                 "window": window or {}}
         return key
 
     def transition(self, key, name):
@@ -217,6 +218,7 @@ def test_failed_apply_still_starts_domains(env, jira):
     r = env["admin"].post(url(env, "/api/clients/{cid}/patching/check"), json={"environment": "HRDEV"})
     drain(env)
     assert patching(env)["outstanding"] == 2
+    restage(env)
     r = env["admin"].post(url(env, "/api/clients/{cid}/change-requests"), json={"environment": "HRDEV", "scope": "all"})
     cr = r.json()["request"]
     jira.tickets[cr["jira_key"]].update(state="approved", approver="Change Manager")
@@ -232,7 +234,8 @@ def test_failed_apply_still_starts_domains(env, jira):
         env["fake"].fail_apply = False
     assert j["status"] == "failed"
     applies = [s for s in j["steps"] if s["op"] == "patch.apply"]
-    assert applies[0]["done"] and not any(s["done"] for s in applies[1:])      # stopped at the first failure
+    # servers are patched side by side; after the first failure nothing new starts on any server
+    assert applies[0]["done"] and not any(s["done"] for s in applies if "WebLogic" in s["label"])
     starts = [s for s in j["steps"] if s["op"] == "domain.start"]
     assert starts and all(s["done"] for s in starts)                            # domains started again anyway
     assert patching(env)["change_requests"][0]["status"] == "failed"
@@ -243,6 +246,7 @@ def test_plan_change_after_approval_needs_a_new_ticket(env, jira):
     env["admin"].post(url(env, "/api/clients/{cid}/patching/check"), json={"environment": "HRDEV"})
     drain(env)
     assert item(patching(env), "hrdevweb01", "jdk")["status"] == "ok"
+    restage(env)
     r = env["admin"].post(url(env, "/api/clients/{cid}/change-requests"),
                           json={"environment": "HRDEV", "scope": "jdk~21.0.8|java|"})
     assert r.ok, r.text
@@ -424,6 +428,15 @@ def outstanding_again(env):
     drain(env)
     wait_job(env, r.json()["job"])
     assert patching(env)["outstanding"] >= 1
+    restage(env)
+
+
+def restage(env):
+    """Applying removes each update's staged files, so stage again before applying again."""
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/stage"), json={"environment": "HRDEV", "all": True})
+    if r.ok:
+        drain(env)
+        assert wait_job(env, r.json()["job"])["status"] == "succeeded"
 
 
 def test_not_enough_disk_space_stops_the_window_before_anything_changes(env, jira):
@@ -501,7 +514,8 @@ def test_older_connectors_apply_without_the_space_check(env):
                                                      (r.json()["job"],)).fetchone()["params"])
         assert "space.check" not in [s["op"] for s in params["steps"]]
     finally:
-        db.execute("UPDATE connectors SET version='0.6.0'")
+        from pegasus_connector import __version__ as current
+        db.execute("UPDATE connectors SET version=?", (current,))
     drain(env)
     wait_job(env, r.json()["job"])
 
@@ -512,3 +526,104 @@ def test_connector_download_refuses_when_its_disk_is_full(tmp_path, monkeypatch)
     with pytest.raises(oracle.MOSError, match="Not enough space on the connector"):
         oracle.ensure_free(tmp_path, 2 * 1073741824, "p38000002_141200_Generic.zip")
     oracle.ensure_free(tmp_path, 0, "unknown size")          # no Content-Length: can't tell, so it goes ahead
+
+
+def space_report(fake, items, free):
+    from pegasus_connector import patching as P
+    fake.free_kb.update(free)
+    t = {"host": "hrdevapp01", "ip": "10.0.1.21", "os_user": "psadm1", "role": "app", "domain": "HRDEV",
+         "address": "10.0.1.21", "ssh_port": 22}
+    text = []
+    try:
+        code, data = P.space_check({"t": t, "items": items}, P.Context(fake, "/tmp/x", "/tmp/x", "j1"), text.append)
+    finally:
+        for k in free:
+            fake.free_kb.pop(k, None)
+    return code, data, "".join(text)
+
+
+WL_ITEM = {"component": "weblogic", "owner": "psadm1", "home": "/u01/pt/bea", "staged": ["/u01/stage/wl/p.zip"]}
+
+
+def test_middleware_space_only_counts_the_block_volume(env):
+    """A nearly full root (boot) volume doesn't block middleware patches: only the filesystem the homes, backups and
+    unpack folder live on is checked."""
+    code, data, text = space_report(env["fake"], [WL_ITEM], {"/": 50000})
+    assert code == 0, text
+    assert [f["mount"] for f in data["filesystems"]] == ["/u01"] and "/tmp" not in text
+
+
+def test_os_space_uses_what_yum_reports(env):
+    os_item = {"component": "os", "kernel": True}
+    code, data, text = space_report(env["fake"], [WL_ITEM, os_item], {"/": 5 * 1048576})       # 5 GB free on /
+    assert code == 0, text
+    assert "343 MB  OS packages yum downloads" in text and "1.2 GB  OS packages installed" in text
+    assert "one more kernel in /boot" in text
+    code, data, text = space_report(env["fake"], [WL_ITEM, os_item], {"/": 1048576})          # 1 GB free on /
+    assert code == 1 and "/: 1.0 GB free" in text and "NOT ENOUGH" in text
+    assert next(f for f in data["filesystems"] if f["mount"] == "/u01")["ok"]
+
+
+def test_servers_are_patched_side_by_side(env):
+    """Each server is its own lane: its steps stay in order, servers run at the same time, and the domains keep the
+    web, scheduler, app order. 'Servers at once' = 1 goes back to one after another."""
+    import json as js
+    outstanding_again(env)
+    db = cp.connect()
+
+    def params_of(jid):
+        return js.loads(db.execute("SELECT params FROM jobs WHERE id=?", (jid,)).fetchone()["params"])
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"), json={"environment": "HRDEV", "scope": "all"})
+    assert r.ok, r.text
+    p = params_of(r.json()["job"])
+    assert p["parallel"] == 4
+    applies = [s for s in p["steps"] if s["op"] == "patch.apply"]
+    assert {s["phase"] for s in applies} == {"apply"} and {s["lane"] for s in applies} == {"10.0.1.11", "10.0.1.21"}
+    stops = [s["phase"] for s in p["steps"] if s["op"] == "domain.stop"]
+    assert stops == sorted(stops, key=["stop:web", "stop:prcs", "stop:app"].index)
+    drain(env)
+    j = wait_job(env, r.json()["job"])
+    assert j["status"] == "succeeded", j["text"][-800:]
+    assert "Running on 2 servers at once" in j["text"] and "[hrdevweb01] --- [" in j["text"]
+    assert db.execute("SELECT count(*) FROM staged WHERE environment='HRDEV' AND patch_key LIKE '%java%'").fetchone()[0] == 0
+    sent = [s for s in p["steps"] if s["op"] == "patch.apply"]
+    assert all(s["cleanup"] for s in sent)                       # the connector removes staged files after APPLY OK
+    base = url(env, "/api/clients/{cid}/patch-settings")
+    assert env["admin"].put(base, json={"parallel": 11}).status_code == 400
+    assert env["admin"].put(base, json={"parallel": 1}).json()["parallel"] == 1
+    outstanding_again(env)
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"), json={"environment": "HRDEV", "scope": "all"})
+    assert "parallel" not in params_of(r.json()["job"]) and "lane" not in params_of(r.json()["job"])["steps"][0]
+    drain(env)
+    assert wait_job(env, r.json()["job"])["status"] == "succeeded"
+    env["admin"].put(base, json={"parallel": 4})
+
+
+def test_patch_window_in_the_chosen_time_zone(env, jira):
+    from pegasus_cloud import evaluate as ev
+    base = url(env, "/api/clients/{cid}/patch-settings")
+    assert env["admin"].put(base, json={"time_zone": "Mars/Base"}).status_code == 400
+    assert env["admin"].put(base, json={"time_zone": "America/Los_Angeles"}).json()["time_zone"] == "America/Los_Angeles"
+    assert env["admin"].get(url(env, "/api/clients/{cid}")).json()["time_zone"] == "America/Los_Angeles"
+    outstanding_again(env)
+    enable_jira(env)
+    r = env["admin"].post(url(env, "/api/clients/{cid}/change-requests"), json={
+        "environment": "HRDEV", "scope": "all",
+        "window": {"start": "2026-11-07T22:00", "end": "2026-11-08T07:00", "tz": "America/Los_Angeles"}})
+    assert r.ok, r.text
+    ticket = jira.tickets[r.json()["request"]["jira_key"]]
+    assert ev.wiki("Sat Nov 07, 2026 22:00 to Sun Nov 08, 2026 07:00 America/Los_Angeles (PST)") in ticket["description"]
+    assert ticket["window"]["start"] == "2026-11-07T22:00:00.000-0800"           # what Jira's date field gets
+    assert ev.window_text({"start": "2026-07-04T20:00:00.000-0400"}) .startswith("Sat Jul 04, 2026 20:00")
+    env["admin"].put(base, json={"time_zone": ""})
+    env["admin"].put(url(env, "/api/clients/{cid}/jira"), json={"enabled": False})
+
+
+def test_cleanup_runs_only_after_a_successful_apply():
+    from pegasus_connector import patching as P
+    t = {"host": "h", "ip": "10.0.0.1", "os_user": "psadm1", "role": "app", "domain": "X", "ssh_port": 22}
+    step = {"target": t, "component": "weblogic", "owner": "psadm1", "home": "/u01/pt/bea", "ids": ["1"],
+            "staged": {"dir": "/u01/stage/wl", "files": ["p1.zip"]}}
+    script = P.validate("patch.apply", dict(step, cleanup=True), "opc")["script"]
+    assert script.index('echo "APPLY OK"') < script.index("rm -f") and "rmdir /u01/stage/wl" in script
+    assert "rm -f" not in P.validate("patch.apply", step, "opc")["script"]

@@ -100,6 +100,11 @@ class FakeServers:
                         + ("OS|pkg|kernel-uek.x86_64|5.15.0-210.el8uek\n" if self.os_kernel else "")
                         + "OS|sec|ELSA-2026-7001|Important/Sec.\nOS|sec|ELSA-2026-7002|Critical/Sec.\n")
             out += f"OS|reboot|{'yes' if host in self.reboot_needed else 'no'}\n"
+        elif "--assumeno" in stdin:                                  # space.check: what yum says the updates need
+            root = self.free_kb.get("/", 99999000)
+            out = ("OSZ|Total download size: 312 M\nOSZ|Installed size: 1.1 G\n"
+                   f"DF|/var/cache/dnf|/|{root}\nDF|/usr|/|{root}\nDF|/boot|/boot|{self.free_kb.get('/boot', 800000)}\n"
+                   "BOOTK|120000\nCACHE|/var/cache/dnf\n")
         elif "--downloadonly" in stdin:                              # os.download
             self.os_downloaded.add(host)
             out = "Downloading updates with yum (not installing)\nPEGASUS_DOWNLOADED\n"

@@ -158,13 +158,20 @@ On a client's **Patching** tab, per environment:
    outage and the backout. Apply unlocks once someone other than the Pegasus account approves it; Pegasus asks
    Jira again at the moment Apply is clicked. An approval covers one exact plan, once.
 4. **Apply.** First, before anything is stopped, a disk-space check on each server adds up what the window will
-   write on each filesystem (backups, the new JDK, the unpacked patch, OPatch's copies of replaced files, OS
-   packages and /boot for a new kernel) and compares it with `df`. If any filesystem is short, the job stops there:
+   write on each filesystem and compares it with `df`. For JDK, WebLogic, Tuxedo and the Database client that's the
+   filesystem their homes, backups and unpack folder live on (normally the block volume, e.g. /u01). For OS updates
+   it's the sizes yum itself reports (download and installed size) on the root volume, plus one more kernel in /boot. If any filesystem is short, the job stops there:
    no domain is stopped or started, the job log shows what's needed where, and an approved Jira ticket gets a comment
    and stays usable for the same plan. (Needs connector 0.6.0; older connectors apply without this check.)
    Then one maintenance window: stop every domain, check no WebLogic or Tuxedo process is left, back up and
    patch each home as its owner (JDK first, then WebLogic, Database client, Tuxedo), start every domain again even
    if a step failed, check status and read the levels again. The result is posted to the Jira ticket.
+
+**Servers at once** (Settings, default 4) sets how many servers a job works on at the same time: each server's own
+steps stay in order (OS updates, JDK, WebLogic, Database client, Tuxedo, reboot), domains keep the web, scheduler,
+app order, and after a failure nothing new starts on any server (domains are still started again). 1 = one server
+after another. Needs connector 0.7.0. After an update applies successfully, its staged files are removed from that
+server (the backup is kept). The client's **time zone** (Settings) is the default for patch windows and schedules.
 
 The apply scripts live in the connector and are built there from validated values; the control plane only sends
 which update goes where. **CPU targets** (Settings) pin a level for releases Oracle Support searches don't cover.

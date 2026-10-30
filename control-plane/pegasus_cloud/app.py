@@ -834,6 +834,7 @@ def client_detail(cid):
     oci = oci_console(cid)
     return jsonify(id=c["id"], name=c["name"], connectors=cons, environments=list(envs.values()), oci_console=oci,
                    jobs=recent_jobs(cid), connector_updates=get_setting(cid, "connector_updates", "manual"),
+                   time_zone=get_setting(cid, "time_zone", ""),
                    latest_release=release_view(rel) if rel else None)
 
 
@@ -1197,7 +1198,34 @@ def plan_steps(servers, action):
 
 
 # what each action needs from the connector, for actions newer connectors added
-NEEDS_VERSION = {"clearcache": "0.4.0", "os": "0.5.0", "space": "0.6.0"}
+NEEDS_VERSION = {"clearcache": "0.4.0", "os": "0.5.0", "space": "0.6.0", "parallel": "0.7.0"}
+DEFAULT_PARALLEL = 4
+# steps that can run on several servers at once: each is put in a phase (consecutive steps of one phase run together)
+# and a lane per server (a server's own steps stay in order). Domains keep the safe role order: all web domains, then
+# the schedulers, then the app servers (the reverse to start).
+LANE_PHASES = {"domain.stop": "stop", "domain.start": "start", "domain.status": "status", "domain.clearcache": "clear",
+               "space.check": "space", "host.idle": "idle", "levels": "read", "os.check": "read", "ping": "read",
+               "patch.stage": "stage", "os.download": "stage",
+               "os.update": "apply", "patch.apply": "apply", "host.reboot": "apply"}
+
+
+def add_lanes(steps):
+    out = []
+    for st in steps:
+        phase, t = LANE_PHASES.get(st.get("op")), st.get("target") or {}
+        if not phase or not t:
+            out.append(st)
+            continue
+        if st["op"].startswith("domain."):
+            phase = f"{phase}:{t.get('role')}"
+        out.append(dict(st, phase=phase, lane=t.get("ip") or t.get("host")))
+    return out
+
+
+def parallel_for(cid):
+    """How many servers a job works on at once for this client (1 = one after another)."""
+    n = int(get_setting(cid, "max_parallel", DEFAULT_PARALLEL) or 1)
+    return n if n > 1 and can_all(cid, "parallel") else 1
 OS_VERSION = NEEDS_VERSION["os"]
 
 
@@ -1251,9 +1279,13 @@ def queue_job(cid, env, kind, title, steps, stop_on_failure=False, meta=None, cr
         raise JobRefused(f"Something is already running or queued for {env}.")
     jid = "j_" + uuid.uuid4().hex[:16]
     now = time.time()
+    params = {"steps": steps, "stop_on_failure": stop_on_failure}
+    n = parallel_for(cid)
+    if n > 1 and len({(st.get("target") or {}).get("ip") for st in steps if st.get("target")}) > 1:
+        params.update(steps=add_lanes(steps), parallel=n)
     db().execute("INSERT INTO jobs (id, client_id, environment, title, params, status, created_by, created_at, "
                  "expires_at, kind, meta) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                 (jid, cid, env, title, json.dumps({"steps": steps, "stop_on_failure": stop_on_failure}),
+                 (jid, cid, env, title, json.dumps(params),
                   "queued", created_by or who(), now, now + QUEUE_TTL, kind, json.dumps(meta or {})))
     return jid
 
@@ -1842,6 +1874,11 @@ def finalize(j):
                                  (cid, env, hk, key, v.get("dir", ""), json.dumps(v.get("files") or []), time.time()))
         audit("patches_staged", cid, actor=j["created_by"], job=j["id"], environment=env, result=j["status"])
     if kind == "apply":
+        for st, r in pairs:          # the connector removed the staged files of each update it applied
+            if st["op"] == "patch.apply" and st.get("cleanup") and r and r.get("exit_code") == 0:
+                hk = st["target"].get("ip") or st["target"].get("host")
+                db().execute("DELETE FROM staged WHERE client_id=? AND environment=? AND host_key=? AND dir=?",
+                             (cid, env, hk, (st.get("staged") or {}).get("dir", "")))
         short = space_refused(pairs)
         audit("patches_applied", cid, actor=j["created_by"], job=j["id"], environment=env, result=j["status"],
               not_started="not enough disk space" if short is not None else None)
@@ -1902,7 +1939,10 @@ def patch_settings(cid):
     return {"staging_root": get_setting(cid, "staging_root", DEFAULT_STAGING),
             "targets": get_setting(cid, "cpu_targets", []),
             # monthly: every release as Oracle ships it; quarterly: only Critical Patch Updates (what the client signed up for)
-            "cadence": get_setting(cid, "patch_cadence", "monthly")}
+            "cadence": get_setting(cid, "patch_cadence", "monthly"),
+            "parallel": int(get_setting(cid, "max_parallel", DEFAULT_PARALLEL) or 1),
+            "parallel_ready": can_all(cid, "parallel"),
+            "time_zone": get_setting(cid, "time_zone", "")}
 
 
 def env_levels(cid, env):
@@ -2328,6 +2368,24 @@ def put_patch_settings(cid):
             return jsonify(error="The staging folder must be a dedicated absolute path like "
                                  "/u01/app/oracle/staging/cpu."), 400
         put_setting(cid, "staging_root", root)
+    if "parallel" in body:
+        try:
+            n = int(body["parallel"])
+        except (TypeError, ValueError):
+            n = 0
+        if not 1 <= n <= 10:
+            return jsonify(error="Choose between 1 and 10 servers at once."), 400
+        put_setting(cid, "max_parallel", n)
+        audit("parallel_changed", cid, servers_at_once=n)
+    if "time_zone" in body:
+        tz = str(body.get("time_zone") or "").strip()
+        if tz:
+            try:
+                ZoneInfo(tz)
+            except (ZoneInfoNotFoundError, ValueError):
+                return jsonify(error="Choose a time zone from the list."), 400
+        put_setting(cid, "time_zone", tz)
+        audit("time_zone_changed", cid, time_zone=tz or "not set")
     if "cadence" in body:
         if body["cadence"] not in ("monthly", "quarterly"):
             return jsonify(error="Choose monthly or quarterly."), 400
@@ -2429,7 +2487,8 @@ def apply_steps(cid, servers, plan, reboot=True):
                       "component": p["component"], "owner": p["owner"], "home": p["home"],
                       "jdk_home": p["jdk_home"], "wl_home": p["wl_home"],
                       "staged": {"dir": p["staged"]["dir"], "files": p["staged"]["files"]},
-                      "version": p["version"], "ids": p["ids"], "level": p["level"], "opatch_zip": p["opatch_zip"]})
+                      "version": p["version"], "ids": p["ids"], "level": p["level"], "opatch_zip": p["opatch_zip"],
+                      "cleanup": True})
     if reboot:
         for hk in dict.fromkeys(p["host_key"] for p in plan if p["component"] == "os"):
             steps.append({"op": "host.reboot", "target": target_of(by_key[hk]), "if_needed": True,
@@ -2510,9 +2569,18 @@ def create_change_request(cid):
         if jload(c["signature"], []) == sig:
             return jsonify(error=f"{c['jira_key']} already covers this update.", request=change_request_view(c)), 409
     notes = str(body.get("notes") or "").strip()[:2000]
-    window = {}
+    window, wb = {}, body.get("window") or {}
+    tz = str(wb.get("tz") or "").strip()
+    if tz:
+        try:
+            zone = ZoneInfo(tz)
+        except (ZoneInfoNotFoundError, ValueError):
+            return jsonify(error="Choose a time zone from the list."), 400
+        window["tz"] = tz
     for k in ("start", "end"):
-        v = str((body.get("window") or {}).get(k) or "").strip()
+        v = str(wb.get(k) or "").strip()
+        if v and tz and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", v):   # wall-clock time in the chosen zone
+            v = dt.datetime.fromisoformat(v).replace(tzinfo=zone).strftime("%Y-%m-%dT%H:%M:00.000%z")
         if v and not re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{3})?)?[+-]\d{4}$", v):
             return jsonify(error="The planned window dates aren't in a format Jira accepts."), 400
         window[k] = v

@@ -13,6 +13,7 @@ import os
 import platform
 import socket
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -117,6 +118,48 @@ def _err(r):
 
 def _day(t):
     return time.strftime("%Y-%m-%d", time.localtime(t))
+
+
+MAX_PARALLEL = 16
+
+
+class LinePrefix:
+    """Writes whole lines to the sink, each starting with "[server] ", so output from servers patched side by side
+    stays readable."""
+
+    def __init__(self, sink, tag):
+        self.sink, self.tag, self.part = sink, tag, ""
+
+    def __call__(self, text):
+        lines = (self.part + text).split("\n")
+        self.part = lines.pop()
+        if lines:
+            self.sink("".join(f"[{self.tag}] {l}\n" if l else "\n" for l in lines))
+
+    def close(self):
+        if self.part:
+            self.sink(f"[{self.tag}] {self.part}\n")
+            self.part = ""
+
+
+def phases(steps, plans):
+    """Consecutive steps that share a "phase" form one group (their lanes may run side by side); every other step
+    is a group of its own. Yields lists of (step number, step, kind, plan)."""
+    group, current = [], None
+    for n, (st, (kind, plan)) in enumerate(zip(steps, plans), start=1):
+        ph = st.get("phase")
+        if group and (ph is None or ph != current):
+            yield group
+            group = []
+        group.append((n, st, kind, plan))
+        current = ph
+    if group:
+        yield group
+
+
+def lane_tag(items):
+    t = items[0][1].get("target") or {}
+    return str(t.get("host") or t.get("ip") or "")[:40] or None
 
 
 class EventSink:
@@ -286,59 +329,96 @@ class Agent:
             sink(f"Refused by the connector: {e}\n")
             sink.flush({"done": True, "status": "rejected", "results": []})
             return
-        results, ok, failed_at, gated = [], True, None, False
         stop_on_failure = bool(job["params"].get("stop_on_failure"))
+        try:
+            parallel = max(1, min(int(job["params"].get("parallel") or 1), MAX_PARALLEL))
+        except (TypeError, ValueError):
+            parallel = 1
         ctx = patching.Context(self.runner, self.config_path, self.cache_dir, job["id"], self.poll_interval)
+        results, lock = {}, threading.Lock()
+        state = {"ok": True, "failed_at": None, "gated": False}
         flusher_stop = threading.Event()
 
         def flusher():
             while not flusher_stop.wait(1.0):
                 sink.flush()
 
+        def run_step(n, st, kind, plan, write):
+            """Run step n (1-based) unless an earlier failure means it should be skipped."""
+            with lock:
+                if state["gated"] or (state["failed_at"] is not None and not st.get("always")):
+                    return                                # skipped after an earlier failure
+            t = st.get("target") or {}
+            where = f" on {t.get('host') or t.get('ip')}" if t else ""
+            write(f"\n--- [{n}/{len(steps)}] {st.get('label') or st['op']}{where}\n")
+            started, captured, data = time.time(), [], None
+
+            def out(text):
+                captured.append(text)
+                write(text)
+            try:
+                if kind == "handler":
+                    code, data = patching.run(st["op"], plan, ctx, out)
+                else:
+                    cmd, stdin = plan
+                    code = self.runner.run(check_target(st["target"]), cmd, stdin, on_output=out)
+                    if st["op"] == "levels":
+                        data = parse_levels("".join(captured))
+            except Exception as e:                            # connection refused, auth failure, timeout...
+                code = None
+                out(f"Error: {e}\n")
+            r = {"step": n - 1, "exit_code": code, "seconds": round(time.time() - started, 1),
+                 "output": "".join(captured)[-8000:]}
+            if data is not None:
+                r["data"] = data
+            with lock:
+                results[n - 1] = r
+                if code == 0 or st.get("ignore_failure"):
+                    return
+                state["ok"] = False
+                if st.get("gate") and state["failed_at"] is None:   # a pre-flight check: nothing touched yet
+                    if not state["gated"]:
+                        write("That check failed before anything was changed, so the rest of this job won't run.\n")
+                    state["gated"] = True
+                    return
+                if stop_on_failure and state["failed_at"] is None and not st.get("independent"):
+                    state["failed_at"] = n
+                    if any(x.get("always") for x in steps[n:]):
+                        write("That step failed. Skipping the rest, except the steps that always run.\n")
+                    else:
+                        write("Stopping here because that step failed.\n")
+
+        def run_lane(items, tag):
+            write = LinePrefix(sink, tag) if tag else sink
+            try:
+                for n, st, kind, plan in items:
+                    run_step(n, st, kind, plan, write)
+            finally:
+                if tag:
+                    write.close()
+
         threading.Thread(target=flusher, daemon=True).start()
         try:
-            for n, (st, (kind, plan)) in enumerate(zip(steps, plans), start=1):
-                t = st.get("target") or {}
-                where = f" on {t.get('host') or t.get('ip')}" if t else ""
-                if gated or (failed_at is not None and not st.get("always")):
-                    continue                              # skipped after an earlier failure
-                sink(f"\n--- [{n}/{len(steps)}] {st.get('label') or st['op']}{where}\n")
-                started, captured, data = time.time(), [], None
-
-                def out(text, captured=captured):
-                    captured.append(text)
-                    sink(text)
-                try:
-                    if kind == "handler":
-                        code, data = patching.run(st["op"], plan, ctx, out)
-                    else:
-                        cmd, stdin = plan
-                        code = self.runner.run(check_target(st["target"]), cmd, stdin, on_output=out)
-                        if st["op"] == "levels":
-                            data = parse_levels("".join(captured))
-                except Exception as e:                            # connection refused, auth failure, timeout...
-                    code = None
-                    out(f"Error: {e}\n")
-                r = {"step": n - 1, "exit_code": code, "seconds": round(time.time() - started, 1),
-                     "output": "".join(captured)[-8000:]}
-                if data is not None:
-                    r["data"] = data
-                results.append(r)
-                if code != 0 and not st.get("ignore_failure"):
-                    ok = False
-                    if st.get("gate") and failed_at is None:      # a pre-flight check: nothing has been touched yet
-                        gated = True
-                        sink("That check failed before anything was changed, so the rest of this job won't run.\n")
-                        continue
-                    if stop_on_failure and failed_at is None and not st.get("independent"):
-                        failed_at = n
-                        if any(x.get("always") for x in steps[n:]):
-                            sink("That step failed. Skipping the rest, except the steps that always run.\n")
-                        else:
-                            sink("Stopping here because that step failed.\n")
+            for group in phases(steps, plans):
+                lanes = {}
+                for item in group:
+                    st = item[1]
+                    lanes.setdefault(st.get("lane") or f"#{item[0]}", []).append(item)
+                if parallel == 1 or len(lanes) == 1:
+                    for items in lanes.values():
+                        run_lane(items, None)
+                    continue
+                # one lane per server (or domain); a server's own steps stay in order, servers run side by side
+                sink(f"\nRunning on {len(lanes)} servers at once (up to {parallel} at a time); "
+                     "each line starts with the server it's from.\n")
+                with ThreadPoolExecutor(max_workers=min(parallel, len(lanes))) as pool:
+                    futures = [pool.submit(run_lane, items, lane_tag(items)) for items in lanes.values()]
+                    for f in futures:
+                        f.result()
         finally:
             flusher_stop.set()
-        sink.flush({"done": True, "status": "succeeded" if ok else "failed", "results": results})
+        sink.flush({"done": True, "status": "succeeded" if state["ok"] else "failed",
+                    "results": [results[k] for k in sorted(results)]})
 
     # ---- heartbeat and updates
     def heartbeat(self):

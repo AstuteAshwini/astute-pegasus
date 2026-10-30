@@ -278,6 +278,33 @@ def describe_cves(plan, adv):
     return ["h3. Security fixes", f"From Oracle's Critical Patch Update advisory: [{adv.get('url')}]", *lines, ""]
 
 
+def window_text(window):
+    """'Sat Nov 1, 2026 22:00 to Sun Nov 2, 2026 07:00 America/Los_Angeles (PST)' from the stored window."""
+    import datetime as dtm
+    from zoneinfo import ZoneInfo
+    tz = window.get("tz")
+
+    def one(v):
+        if not v:
+            return "not set"
+        try:
+            d = dtm.datetime.strptime(v[:19] + v[-5:], "%Y-%m-%dT%H:%M:%S%z")
+        except ValueError:
+            return v
+        if tz:
+            d = d.astimezone(ZoneInfo(tz))
+        return d.strftime("%a %b %d, %Y %H:%M")
+    text = f"{one(window.get('start'))} to {one(window.get('end'))}"
+    if tz:
+        try:
+            ref = window.get("start") or window.get("end")
+            abbr = dtm.datetime.strptime(ref[:19] + ref[-5:], "%Y-%m-%dT%H:%M:%S%z").astimezone(ZoneInfo(tz)).strftime("%Z")
+        except (ValueError, TypeError):
+            abbr = ""
+        text += f" {tz}" + (f" ({abbr})" if abbr and not abbr.startswith(("+", "-")) else "")
+    return text
+
+
 def describe_plan(env, client_name, tier, plan, notes, who, when, window=None, adv=None):
     """Jira wiki-markup description of a patch plan: what changes, security fixes, impact, backout, request."""
     comps = []
@@ -322,8 +349,7 @@ def describe_plan(env, client_name, tier, plan, notes, who, when, window=None, a
         "h3. Request",
         f"* Environment: {wiki(env)} ({wiki(client_name)}, tier {wiki(tier or 'not set')})",
         f"* Requested in Pegasus by {wiki(who)} on {when}",
-        *([f"* Planned window: {wiki(window.get('start') or 'not set')} to {wiki(window.get('end') or 'not set')}"]
-          if window.get("start") or window.get("end") else []),
+        *([f"* Planned window: {wiki(window_text(window))}"] if window.get("start") or window.get("end") else []),
         *([f"* Notes: {wiki(notes)}"] if notes else []),
         "",
         "{panel}Pegasus applies exactly this plan once, and only after this ticket is approved by someone other than "

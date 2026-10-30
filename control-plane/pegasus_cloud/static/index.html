@@ -215,6 +215,7 @@ dialog::backdrop{background:#00222fa0}.row{display:flex;gap:8px;justify-content:
 
 <dialog id="reqDlg"><form id="reqForm"><h2 id="reqTitle">Request approval</h2><p class="help" id="reqText"></p>
   <div class="grid2"><label>Planned start<input type="datetime-local" id="reqStart"></label><label>Planned end<input type="datetime-local" id="reqEnd"></label></div>
+  <label>Time zone of the window<select id="reqTz"></select></label>
   <label>Change type<select id="reqType"><option>Standard</option><option>Normal</option><option>Emergency</option></select></label>
   <label>Notes for the approver<textarea id="reqNotes" style="min-height:80px;font-family:var(--sans);font-size:14px"></textarea></label>
   <div id="reqMsg"></div>
@@ -659,13 +660,13 @@ function requestApproval(scope){var env=S.penv,by={},order=[];
   var local=function(x){var p=function(n){return String(n).padStart(2,"0")};return x.getFullYear()+"-"+p(x.getMonth()+1)+"-"+p(x.getDate())+"T"+p(x.getHours())+":"+p(x.getMinutes())};
   $("reqStart").value=local(d);d.setHours(23);$("reqEnd").value=local(d);
   var ct=(S.jira&&S.jira.change_type)||"Normal",sel=$("reqType");if(![].some.call(sel.options,function(o){return o.value===ct}))sel.add(new Option(ct));sel.value=ct;
+  $("reqTz").innerHTML=tzList().map(function(z){return '<option'+(z===defTz()?' selected':'')+'>'+esc(z)+'</option>'}).join("");
   $("reqNotes").value="";msg("reqMsg","");$("reqDlg").showModal()}
 $("reqCancel").addEventListener("click",function(){$("reqDlg").close()});
 $("reqForm").addEventListener("submit",function(e){e.preventDefault();var b=$("reqGo");
-  var jt=function(v){if(!v)return"";var d=new Date(v),p=function(n){return String(Math.abs(n)).padStart(2,"0")},o=-d.getTimezoneOffset();return v+":00.000"+(o>=0?"+":"-")+p(Math.floor(Math.abs(o)/60))+p(Math.abs(o)%60)};
   if($("reqStart").value&&$("reqEnd").value&&$("reqEnd").value<=$("reqStart").value) return msg("reqMsg","The planned end must be after the planned start.");
   b.disabled=true;b.textContent="Raising ticket…";
-  api("/api/clients/"+S.cid+"/change-requests",{method:"POST",body:{environment:S.penv,scope:reqScope,notes:$("reqNotes").value,change_type:$("reqType").value,window:{start:jt($("reqStart").value),end:jt($("reqEnd").value)}}})
+  api("/api/clients/"+S.cid+"/change-requests",{method:"POST",body:{environment:S.penv,scope:reqScope,notes:$("reqNotes").value,change_type:$("reqType").value,window:{start:$("reqStart").value,end:$("reqEnd").value,tz:$("reqTz").value}}})
   .then(function(j){$("reqDlg").close();if(j.note)alert(j.note);loadPatching(false)}).catch(function(j){msg("reqMsg",j.error||"Couldn't raise the ticket.")})
   .finally(function(){b.disabled=false;b.textContent="Raise Jira ticket"})});
 
@@ -722,6 +723,10 @@ $("main").addEventListener("input",function(e){if(e.target.id!=="aKey")return;cl
     api("/api/access/parse",{method:"POST",body:{key:v}}).then(function(k){S.acc.key=v;$("aKeyInfo").innerHTML='<div class="msg ok">'+esc(k.type)+(k.bits?" "+k.bits+" bits":"")+' key'+(k.comment?' for '+esc(k.comment):'')+' · '+esc(k.fingerprint)+'</div>'})
     .catch(function(j){S.acc.key=null;$("aKeyInfo").innerHTML='<div class="msg">'+esc(j.error)+'</div>'})},300)});
 $("main").addEventListener("change",function(e){var c=e.target.closest("[data-accenv]");if(c)S.acc.sel[c.dataset.accenv]=c.checked});
+$("main").addEventListener("change",function(e){var id=e.target.id;if(id!=="sTz"&&id!=="sPar")return;
+  var body=id==="sTz"?{time_zone:e.target.value}:{parallel:+e.target.value};
+  api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:body}).then(function(j){$(id==="sTz"?"sTzMsg":"sParMsg").innerHTML='<span class="st ok">Saved</span>';
+    if(S.detail)S.detail.time_zone=j.time_zone}).catch(function(j){alert(j.error)})});
 $("main").addEventListener("change",function(e){if(e.target.id!=="sCadence")return;
   api("/api/clients/"+S.cid+"/patch-settings",{method:"PUT",body:{cadence:e.target.value}}).then(function(){$("sCadMsg").innerHTML='<span class="st ok">Saved</span>'}).catch(function(j){alert(j.error)})});
 $("main").addEventListener("change",function(e){var t=e.target;if(t.id!=="wCheck"&&t.id!=="wStage")return;
@@ -773,6 +778,10 @@ function renderSettings(){var ro=!can("admin")?" disabled":"",oc=S.detail.oci_co
     '<div id="jMsg"></div>'+(can("admin")?'<div class="toolbar"><button type="button" class="primary" id="jSave">Save</button><button type="button" id="jTest">Test connection</button><button type="button" class="danger" id="jForget" hidden>Remove token</button></div>':'')+'</div>'+
     '<div class="panel"><h2>Patch plan</h2><p class="help">What this client signed up for. On quarterly CPUs only, releases Oracle ships between CPUs are shown as coming with the next CPU, and can\'t be downloaded or applied.</p>'+
     '<div class="toolbar"><select id="sCadence" style="max-width:420px"'+ro+'><option value="monthly">Every release, as Oracle ships it (monthly)</option><option value="quarterly">Quarterly Critical Patch Updates only</option></select><span id="sCadMsg"></span></div></div>'+
+    '<div class="panel"><h2>Time zone</h2><p class="help">The client\'s time zone. Patch windows on Jira tickets and new schedules use it unless someone picks another. Not set: each person\'s own time zone.</p>'+
+    '<div class="toolbar"><select id="sTz" style="max-width:420px"'+ro+'><option value="">Not set (each person\'s own)</option>'+tzList().map(function(z){return '<option>'+esc(z)+'</option>'}).join("")+'</select><span id="sTzMsg"></span></div></div>'+
+    '<div class="panel"><h2>Servers at once</h2><p class="help">How many servers a job works on at the same time (patching, start, stop, status). Each server\'s own steps stay in order, and domains keep the web, scheduler, app order. 1 = one server after another.</p>'+
+    '<div class="toolbar"><select id="sPar" style="max-width:420px"'+ro+'>'+[1,2,3,4,6,8,10].map(function(n){return '<option value="'+n+'">'+n+(n===1?' (one after another)':'')+'</option>'}).join("")+'</select><span id="sParMsg"></span></div><div id="sParNote"></div></div>'+
     '<div class="panel"><h2>Staging folder</h2><p class="help">Where downloaded patches are copied on each server. Pegasus creates it (with sudo if it must) and gives it to the PeopleSoft owner.</p>'+
     '<div class="toolbar"><input id="sRoot" class="mono" style="max-width:420px"'+ro+'>'+(can("admin")?'<button type="button" id="sSave">Save</button>':'')+'</div><div id="sMsg"></div></div>'+
     '<div class="panel"><h2>CPU targets (optional)</h2><p class="help">Pegasus finds the latest JDK, WebLogic 14.1.2, Tuxedo 22.1 and Database 19c client patches by itself. Pin a target here only for other releases, or to hold a component at a specific level.</p>'+
@@ -784,7 +793,9 @@ function renderSettings(){var ro=!can("admin")?" disabled":"",oc=S.detail.oci_co
     $("jStart").value=c.start_transition||"";$("jDone").value=c.done_transition||"";$("jApproved").value=(c.approved_statuses||[]).join(", ");$("jRejected").value=(c.rejected_statuses||[]).join(", ");
     $("jExtra").value=c.extra_fields&&Object.keys(c.extra_fields).length?JSON.stringify(c.extra_fields):"";$("jSelf").checked=c.block_self_approval!==false;
     $("jToken").placeholder=j.has_token?"saved (leave blank to keep)":"";if($("jForget"))$("jForget").hidden=!j.has_token;jiraUi()});
-  api("/api/clients/"+S.cid+"/patch-settings").then(function(j){$("sRoot").value=j.staging_root;$("sCadence").value=j.cadence||"monthly";S.targets=j.targets;renderTargets()})}
+  api("/api/clients/"+S.cid+"/patch-settings").then(function(j){$("sRoot").value=j.staging_root;$("sCadence").value=j.cadence||"monthly";S.targets=j.targets;renderTargets();
+    $("sTz").value=j.time_zone||"";$("sPar").value=String(j.parallel||1);
+    $("sParNote").innerHTML=j.parallel>1&&!j.parallel_ready?'<p class="det">Jobs run one server after another until every connector of this client is on version 0.7.0 or newer.</p>':""})}
 function jiraUi(){var cloud=$("jDeploy").value==="cloud";$("jUserL").hidden=!cloud;$("jTokL").textContent=cloud?"API token":"Personal access token"}
 function renderTargets(){var ro=!can("admin")?" disabled":"";
   if(!S.targets.length){$("tBody").innerHTML='<tr><td colspan="8" class="det">No targets. Pegasus uses Oracle\'s latest releases.</td></tr>';return}
@@ -810,6 +821,7 @@ $("main").addEventListener("click",function(e){if(S.tab!=="settings")return;var 
 /* ---------- schedules ---------- */
 var DAYS=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"],ACT={start:"Start all",stop:"Stop all",restart:"Restart all",clearcache:"Clear cache and restart"};
 function myTz(){try{return Intl.DateTimeFormat().resolvedOptions().timeZone||"UTC"}catch(e){return "UTC"}}
+function defTz(){return (S.detail&&S.detail.time_zone)||myTz()}
 function tzList(){var l=[];try{l=Intl.supportedValuesOf("timeZone")}catch(e){}
   ["America/Los_Angeles","America/Denver","America/Chicago","America/New_York","UTC","Asia/Kolkata"].forEach(function(z){if(l.indexOf(z)<0)l.push(z)});return l.sort()}
 function dayText(d){if(d.join()==="0,1,2,3,4")return "Mon–Fri";if(d.length===7)return "Every day";if(d.join()==="5,6")return "Weekends";return d.map(function(x){return DAYS[x]}).join(", ")}
@@ -820,7 +832,7 @@ function renderSchedules(){var d=S.detail,op=can("operator");
   if(op&&d.environments.length){
     h+='<div class="panel"><h2>Weekly plan</h2><p class="help">A start and stop time for each day of the week. Leave a day blank to leave the environment as it is that day. Saving replaces this environment\'s weekly plan; schedules added below are kept.</p>'+
       '<div class="grid3"><label>Environment<select id="wpEnv">'+d.environments.map(function(e){return '<option value="'+esc(e.name)+'">'+esc(e.name)+(isPrd(e.tier)?' (production)':'')+'</option>'}).join("")+'</select></label>'+
-      '<label>Time zone<select id="wpTz">'+tzList().map(function(z){return '<option'+(z===myTz()?' selected':'')+'>'+esc(z)+'</option>'}).join("")+'</select></label></div>'+
+      '<label>Time zone<select id="wpTz">'+tzList().map(function(z){return '<option'+(z===defTz()?' selected':'')+'>'+esc(z)+'</option>'}).join("")+'</select></label></div>'+
       '<div class="toolbar" style="margin:4px 0 8px"><span class="det">Fill in:</span><button type="button" class="sm" data-wpfill="office">Weekdays 7am–7pm, weekends off</button><button type="button" class="sm" data-wpfill="nights">Stop every night at 8pm, start at 6am</button><button type="button" class="sm" data-wpfill="clear">Clear</button></div>'+
       '<table class="weekplan"><thead><tr><th>Day</th><th>Start at</th><th>Stop at</th></tr></thead><tbody>'+DAYS.map(function(n,i){return '<tr><td>'+n+'</td><td><input type="time" data-wp="start" data-day="'+i+'"></td><td><input type="time" data-wp="stop" data-day="'+i+'"></td></tr>'}).join("")+'</tbody></table>'+
       '<div id="wpMsg"></div><div class="toolbar"><button type="button" class="primary" id="wpSave">Save weekly plan</button></div></div>';
@@ -831,7 +843,7 @@ function renderSchedules(){var d=S.detail,op=can("operator");
       '<label id="scT1L"><span id="scT1N">Start at</span><input id="scT1" type="time" value="07:00"></label>'+
       '<label id="scT2L">Stop at<input id="scT2" type="time" value="19:00"></label>'+
       '<label id="scDateL" hidden>Date<input id="scDate" type="date"></label>'+
-      '<label>Time zone<select id="scTz">'+tzList().map(function(z){return '<option'+(z===myTz()?' selected':'')+'>'+esc(z)+'</option>'}).join("")+'</select></label>'+
+      '<label>Time zone<select id="scTz">'+tzList().map(function(z){return '<option'+(z===defTz()?' selected':'')+'>'+esc(z)+'</option>'}).join("")+'</select></label>'+
       '<label>Note (optional)<input id="scNote" placeholder="e.g. save OCI cost overnight" maxlength="200"></label></div>'+
       '<div id="scDays" class="envpick" style="margin:6px 0 4px">'+DAYS.map(function(n,i){return '<label class="inline"><input type="checkbox" data-scday="'+i+'"'+(i<5?' checked':'')+'>'+n+'</label>'}).join("")+'</div>'+
       '<div id="scMsg"></div><div class="toolbar"><button type="button" class="primary" id="scAdd">Add schedule</button></div></div>'}
@@ -888,7 +900,7 @@ var EVT={signed_in:"Signed in",sign_in_failed:"Sign-in failed",mfa_failed:"Wrong
   signed_in_with_google:"Signed in with Google",google_sign_in_refused:"Google sign-in refused",ssh_access_requested:"Asked for an SSH access change",
   ssh_access_approved:"Approved an SSH access change",ssh_access_rejected:"Rejected an SSH access change",ssh_access_withdrawn:"Withdrew an SSH access request",
   ssh_access_expired:"SSH access ended (removed automatically)",ssh_approval_changed:"Changed SSH approval",
-  patch_watch_ran:"Automatic patch check",environment_restored:"Restored an environment",weekly_plan_saved:"Saved a weekly plan",patch_cadence_changed:"Changed the patch plan",patch_watch_changed:"Changed automatic patch checks",inventory_added:"Added domains"};
+  patch_watch_ran:"Automatic patch check",environment_restored:"Restored an environment",weekly_plan_saved:"Saved a weekly plan",patch_cadence_changed:"Changed the patch plan",parallel_changed:"Changed servers at once",time_zone_changed:"Changed the time zone",patch_watch_changed:"Changed automatic patch checks",inventory_added:"Added domains"};
 function auditTable(events){if(!events.length)return '<div class="empty">Nothing yet.</div>';
   return '<div class="scroll"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead><tbody>'+events.map(function(e){
     var d=e.detail||{},parts=Object.keys(d).filter(function(k){return d[k]!==null&&d[k]!==""&&typeof d[k]!=="object"}).map(function(k){return k.replace(/_/g," ")+": "+d[k]});

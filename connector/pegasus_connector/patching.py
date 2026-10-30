@@ -144,7 +144,8 @@ def validate(op, step, ssh_user):
                  "stage_dir": abs_path(staged.get("dir"), "the staging folder", allow_empty=False),
                  "files": files, "version": version, "ids": ids,
                  "level": re.sub(r"\D", "", str(step.get("level") or "")) or "0",
-                 "opatch_zip": abs_path(step.get("opatch_zip"), "the OPatch zip")}
+                 "opatch_zip": abs_path(step.get("opatch_zip"), "the OPatch zip"),
+                 "cleanup": step.get("cleanup") is True}
         if comp == "jdk" and not JDK_VERSION.match(version):
             raise OperationError("a JDK update needs the exact new version")
         if home.rstrip("/") in PROTECTED_DIRS or home.count("/") < 2:
@@ -413,13 +414,47 @@ def probe_space(ctx, t, owner, du, df, files):
     return sizes, mounts, staged
 
 
+OS_SIZE_PROBE = r'''
+PM=$(command -v yum) || { echo "OSZ|error|yum is not installed"; exit 0; }
+sudo -n "$PM" -y update --assumeno 2>&1 | grep -E "^(Total download size|Total size|Installed size)" | sed 's/^/OSZ|/'
+C=/var/cache/dnf; [ -d "$C" ] || C=/var/cache/yum
+for d in "$C" /usr /boot; do x="$d"; while [ ! -e "$x" ] && [ "$x" != / ]; do x=$(dirname "$x"); done
+  df -Pk "$x" 2>/dev/null | tail -1 | awk -v d="$d" '{print "DF|" d "|" $6 "|" $4}'; done
+echo "BOOTK|$(du -ck /boot/*"$(uname -r)"* 2>/dev/null | tail -1 | cut -f1)"
+echo "CACHE|$C"
+'''
+SIZE_RE = re.compile(r"^OSZ\|(Total download size|Total size|Installed size)\s*:\s*([\d.]+)\s*([kKMG])", re.M)
+
+
+def os_space(ctx, t, it, need, notes):
+    """What yum itself says the updates need: the download (in its cache) and the installed size (under /usr), plus
+    room for one more kernel in /boot. Unknown sizes are noted, not guessed."""
+    code, text = ctx.sh(t, "bash -s", stdin=OS_SIZE_PROBE, timeout=600)
+    kb = {"k": 1, "K": 1, "M": 1024, "G": 1024 * 1024}
+    sizes = {m.group(1): float(m.group(2)) * kb[m.group(3)] for m in SIZE_RE.finditer(text)}
+    mounts = {m.group(1): (m.group(2), int(m.group(3))) for m in re.finditer(r"^DF\|(\S+)\|(\S+)\|(\d+)$", text, re.M)}
+    cache = (re.findall(r"^CACHE\|(\S+)$", text, re.M) or ["/var/cache/dnf"])[0]
+    download = sizes.get("Total download size", sizes.get("Total size"))
+    installed = sizes.get("Installed size")
+    if download is None and installed is None:
+        notes.append("couldn't read the size of the OS updates from yum, so they aren't counted")
+        return
+    if download and cache in mounts:
+        need(mounts[cache], download * 1.1, "OS packages yum downloads", margin=200 * 1024)
+    if installed and "/usr" in mounts:
+        need(mounts["/usr"], installed * 1.1, "OS packages installed", margin=200 * 1024)
+    if it["kernel"] and "/boot" in mounts:
+        bk = int((re.findall(r"^BOOTK\|(\d+)$", text, re.M) or ["0"])[0]) or 100 * 1024
+        need(mounts["/boot"], bk * 1.2, "one more kernel in /boot", margin=20 * 1024)
+
+
 def space_check(c, ctx, out):
     """Add up what the apply will write on each filesystem (backups it keeps, the largest unpack folder, OPatch's own
     copies of replaced files, a new JDK) and compare it with what df says is free. Fails before anything is stopped
     if any filesystem is short. The estimates are on the generous side; the apply scripts still check as they go."""
     t, user = c["t"], ctx.runner.user
     fs = {}                  # mount -> {"free": KB, "keep": [(KB, why)], "temp": [(KB, why)], "margin": KB}
-    problems = []
+    problems, notes = [], []
 
     def need(mount_info, kb, why, kind="keep", margin=256 * 1024):
         mount, free = mount_info
@@ -430,19 +465,11 @@ def space_check(c, ctx, out):
     for it in c["items"]:
         comp = it["component"]
         if comp == "os":
-            wanted = [("/var/cache", GB, "OS packages downloaded by yum"), ("/usr", GB, "OS packages installed")]
-            if it["kernel"]:
-                wanted.append(("/boot", 150 * 1024, "the new kernel"))
-            _, mounts, _ = probe_space(ctx, t, user, [], [d for d, _, _ in wanted], [])
-            for d, kb, why in wanted:
-                if d in mounts:
-                    need(mounts[d], kb, why)
-                else:
-                    problems.append(f"OS updates: couldn't read the free space in {d}")
+            os_space(ctx, t, it, need, notes)
             continue
         src, bdir, work = space_paths(it)
         home, title = it["home"], TITLES[comp]
-        sizes, mounts, staged = probe_space(ctx, t, it["owner"], [src], [bdir, work, home, "/tmp"], it["staged"])
+        sizes, mounts, staged = probe_space(ctx, t, it["owner"], [src], [bdir, work, home], it["staged"])
         size = sizes.get(src)
         if not size or not all(d in mounts for d in (bdir, work, home)):
             problems.append(f"{title}: couldn't read the size of {src} or the free space around it as {it['owner']}")
@@ -453,8 +480,6 @@ def space_check(c, ctx, out):
         need(mounts[bdir], size // 2, f"{title} backup of {src} ({mb(size * 1024)} before compression)", margin=GB)
         need(mounts[work], max(staged * 3, 256 * 1024), f"{title} patch unpacked in {work}", kind="temp")
         need(mounts[home], max(staged * 2, 512 * 1024), f"OPatch's copies of the {title} files it replaces")
-        if "/tmp" in mounts:
-            need(mounts["/tmp"], 512 * 1024, "OPatch working files", kind="temp")
 
     ok = not problems
     report = []
@@ -471,6 +496,8 @@ def space_check(c, ctx, out):
         report.append({"mount": mount, "free_mb": f["free"] // 1024, "need_mb": total // 1024, "ok": enough})
     for p in problems:
         out(f"  {p}\n")
+    for n in notes:
+        out(f"  Note: {n}\n")
     if ok:
         out("Enough space for this maintenance window.\n")
     else:
@@ -588,6 +615,13 @@ echo "APPLY OK"
 '''
 
 
+CLEANUP = r'''
+for f in __STAGED__; do rm -f "$f"; done
+rmdir __STAGEDIR__ 2>/dev/null
+echo "Removed the staged files for this update from __STAGEDIR__ (the backup is kept)."
+'''
+
+
 def build_apply_script(c):
     paths = [f"{c['stage_dir']}/{f}" for f in c["files"]]
     work = f"{c['home'].rstrip('/').rsplit('/', 1)[0] or '/tmp'}/.pegasus_work_{secrets.token_hex(3)}"
@@ -603,6 +637,9 @@ def build_apply_script(c):
         body = (APPLY_TUXEDO.replace("__TD__", q(c["home"])).replace("__JH__", q(c["jdk_home"]))
                 .replace("__WORK__", q(work)).replace("__LEVEL__", q(c["level"])).replace("__W__", q(c["wl_home"]))
                 .replace("__FILES__", " ".join(q(p) for p in paths)))
+    if c.get("cleanup"):           # runs only after APPLY OK: every failure above exits first
+        body += (CLEANUP.replace("__STAGED__", " ".join(q(p) for p in paths))
+                 .replace("__STAGEDIR__", q(c["stage_dir"])))
     return APPLY_COMMON + body
 
 
