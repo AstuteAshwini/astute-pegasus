@@ -390,7 +390,13 @@ def space_paths(it):
 
 SPACE_PROBE = r'''
 echo SPACECHK
-for d in __DU__; do [ -n "$d" ] && echo "DU|$d|$(du -sk "$d" 2>/dev/null | tail -1 | cut -f1)"; done
+E=$(mktemp 2>/dev/null || echo /tmp/.pegasus_du_$$)
+for d in __DU__; do [ -n "$d" ] || continue
+  r=$(readlink -f -- "$d" 2>/dev/null); r=${r:-$d}          # a symlinked home is measured at its target
+  if [ ! -e "$r" ]; then echo "DUERR|$d|$d doesn't exist (as $(id -un))"; continue; fi
+  echo "DU|$d|$(du -sk -- "$r" 2>"$E" | tail -1 | cut -f1)"
+  [ -s "$E" ] && echo "DUERR|$d|$(head -1 "$E")"; done
+rm -f "$E"
 S=0; for f in __FILES__; do s=$(stat -c %s "$f" 2>/dev/null || echo 0); S=$((S + s)); done; echo "ST|$S"
 for d in __DF__; do x="$d"; while [ ! -e "$x" ] && [ "$x" != / ]; do x=$(dirname "$x"); done
   df -Pk "$x" 2>/dev/null | tail -1 | awk -v d="$d" '{print "DF|" d "|" $6 "|" $4}'; done
@@ -402,7 +408,7 @@ def probe_space(ctx, t, owner, du, df, files):
     script = (SPACE_PROBE.replace("__DU__", " ".join(q(d) for d in du) or "''")
               .replace("__FILES__", " ".join(q(f) for f in files)).replace("__DF__", " ".join(q(d) for d in df)))
     code, text = ctx.sh(t, owner_shell(owner, ctx.runner.user), stdin=script, timeout=900)
-    sizes, mounts, staged = {}, {}, 0
+    sizes, mounts, staged, errors = {}, {}, 0, {}
     for line in text.splitlines():
         parts = line.strip().split("|")
         if parts[0] == "DU" and len(parts) == 3:
@@ -411,7 +417,11 @@ def probe_space(ctx, t, owner, du, df, files):
             mounts[parts[1]] = (parts[2], int(parts[3]))
         elif parts[0] == "ST" and len(parts) == 2 and parts[1].isdigit():
             staged = int(parts[1]) // 1024
-    return sizes, mounts, staged
+        elif parts[0] == "DUERR" and len(parts) >= 3:
+            errors[parts[1]] = "|".join(parts[2:])[:200]
+    if "SPACECHK" not in text:      # the probe didn't run at all, e.g. sudo to the owner was refused
+        errors["_run"] = next((l.strip() for l in text.splitlines() if l.strip()), "no output")[:200]
+    return sizes, mounts, staged, errors
 
 
 OS_SIZE_PROBE = r'''
@@ -469,10 +479,26 @@ def space_check(c, ctx, out):
             continue
         src, bdir, work = space_paths(it)
         home, title = it["home"], TITLES[comp]
-        sizes, mounts, staged = probe_space(ctx, t, it["owner"], [src], [bdir, work, home], it["staged"])
+        dirs = [bdir, work, home]
+        sizes, mounts, staged, errors = probe_space(ctx, t, it["owner"], [src], dirs, it["staged"])
         size = sizes.get(src)
-        if not size or not all(d in mounts for d in (bdir, work, home)):
-            problems.append(f"{title}: couldn't read the size of {src} or the free space around it as {it['owner']}")
+        if errors.get("_run") and it["owner"] != user:
+            problems.append(f"{title}: Pegasus can't run commands as {it['owner']} on {t['host']} "
+                            f"({errors['_run']}). The patch is applied as {it['owner']}, so this would fail halfway. "
+                            f"Check that {it['owner']} exists there and that {user} may sudo to it (or that "
+                            f"{it['owner']} really owns {home}), then check patch levels again.")
+            continue
+        if (not size or not all(d in mounts for d in dirs)) and it["owner"] != user:
+            # sizes and free space don't need the owner: ask again as the SSH user
+            s2, m2, st2, e2 = probe_space(ctx, t, user, [src], dirs, it["staged"])
+            if s2.get(src) and all(d in m2 for d in dirs):
+                notes.append(f"{title}: measured {src} as {user}, because {it['owner']} couldn't "
+                             f"({errors.get(src) or 'no size came back'})")
+                sizes, mounts, staged, errors, size = s2, m2, st2, e2, s2.get(src)
+        if not size or not all(d in mounts for d in dirs):
+            why = errors.get("_run") or errors.get(src) or "no size came back"
+            problems.append(f"{title}: couldn't measure {src} or the free space around it as {it['owner']} "
+                            f"or {user}: {why}")
             continue
         if comp == "jdk":
             need(mounts[bdir], size * 115 // 100, f"new JDK unpacked next to {home} (the current one is kept)")

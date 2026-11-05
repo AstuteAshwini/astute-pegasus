@@ -38,10 +38,10 @@ fi
 if [ -n "$TUXDIR" ] && [ -x "$TUXDIR/bin/tmadmin" ]; then
   echo "PL|tuxedo|$("$TUXDIR/bin/tmadmin" -v 2>&1 | grep -i -m1 'version' | tr '|' ' ')|$TUXDIR"
 fi
-for d in "$JH" "$TUXDIR"; do [ -n "$d" ] && [ -d "$d" ] && echo "PL|owner|$d|$(stat -c %U "$d" 2>/dev/null)"; done
+for d in "$JH" "$TUXDIR"; do [ -n "$d" ] && [ -d "$d" ] && echo "PL|owner|$d|$(stat -L -c %U "$d" 2>/dev/null)"; done
 for C in "$(dirname "$PS_HOME" 2>/dev/null)"/oracle-client/*/ /u01/app/oracle/product/pt/oracle-client/*/; do
   C="${C%/}"; [ -x "$C/OPatch/opatch" ] || continue
-  echo "PL|owner|$C|$(stat -c %U "$C" 2>/dev/null)"
+  echo "PL|owner|$C|$(stat -L -c %U "$C" 2>/dev/null)"
   o=$(cd "$C" && ORACLE_HOME="$C" "$C/OPatch/opatch" lspatches -oh "$C" 2>&1)
   ru=$(printf '%s\n' "$o" | grep -o -m1 'Release Update : [0-9.]*' | grep -o '[0-9.]*$')
   echo "PL|dbclient|$(basename "$C")|$ru|$C"
@@ -53,7 +53,7 @@ for c in "__WLH__" "$BEA_HOME" "$ORACLE_HOME" "$(dirname "$PS_HOME" 2>/dev/null)
 done
 if [ -n "$W" ]; then
   echo "PL|wlver|$(grep -o 'name="WebLogic Server" version="[^"]*"' "$W/inventory/registry.xml" 2>/dev/null | head -1 | sed 's/.*version="//; s/"$//')|$W"
-  echo "PL|owner|$W|$(stat -c %U "$W" 2>/dev/null)"
+  echo "PL|owner|$W|$(stat -L -c %U "$W" 2>/dev/null)"
   export ORACLE_HOME="$W"
   unset _JAVA_OPTIONS JDK_JAVA_OPTIONS
   ok=""

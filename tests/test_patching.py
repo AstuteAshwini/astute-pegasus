@@ -648,3 +648,27 @@ def test_keep_backups_setting(env):
     assert env["admin"].put(base, json={"keep_backups": 99}).status_code == 400
     assert env["admin"].put(base, json={"keep_backups": 3}).json()["keep_backups"] == 3
     env["admin"].put(base, json={"keep_backups": 2})
+
+
+def test_space_check_says_why_it_cannot_measure(env):
+    """When Pegasus can't run as a home's owner, the check stops the window and names the reason, because the apply
+    runs as that owner and would fail halfway."""
+    item = {"component": "jdk", "owner": "psadm9", "home": "/app/jdk", "staged": ["/u01/stage/jdk/j.tar.gz"]}
+    code, data, text = space_report(env["fake"], [WL_ITEM, item], {})
+    assert code == 1 and "can't run commands as psadm9" in text and "sudo: unknown user psadm9" in text
+    assert "would fail halfway" in text
+
+
+def test_space_probe_measures_a_symlinked_home(tmp_path):
+    import subprocess
+    from pegasus_connector import patching as P
+    real = tmp_path / "jdk-21.0.5"
+    (real / "bin").mkdir(parents=True)
+    (real / "bin" / "java").write_bytes(b"x" * 2_000_000)
+    (tmp_path / "jdk").symlink_to(real)
+    script = (P.SPACE_PROBE.replace("__DU__", f"{tmp_path}/jdk {tmp_path}/gone").replace("__FILES__", "")
+              .replace("__DF__", str(tmp_path)))
+    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True).stdout
+    size = int(next(l for l in out.splitlines() if l.startswith(f"DU|{tmp_path}/jdk|")).rsplit("|", 1)[1])
+    assert size > 1900                                       # the JDK behind the link, not the link itself
+    assert f"DUERR|{tmp_path}/gone|{tmp_path}/gone doesn't exist" in out

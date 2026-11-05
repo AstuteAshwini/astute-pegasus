@@ -54,6 +54,8 @@ class FakeServers:
         elif "shutdown" in command or "-p stop" in command:
             self.state[target["domain"]] = False
             out = "stopped\n"
+        elif "SPACECHK" in stdin and "-iu psadm9" in command:        # an owner sudo refuses
+            out, code = "sudo: unknown user psadm9\nsudo: error initializing audit plugin sudoers_audit\n", 1
         elif "SPACECHK" in stdin:                                    # space.check
             m = re.search(r"for d in (.*?); do \[", stdin)
             out = "SPACECHK\n" + "".join(f"DU|{d}|{self.home_kb}\n" for d in re.findall(r"'?([^' ]+)'?", m.group(1))
