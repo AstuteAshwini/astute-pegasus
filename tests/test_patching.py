@@ -672,3 +672,60 @@ def test_space_probe_measures_a_symlinked_home(tmp_path):
     size = int(next(l for l in out.splitlines() if l.startswith(f"DU|{tmp_path}/jdk|")).rsplit("|", 1)[1])
     assert size > 1900                                       # the JDK behind the link, not the link itself
     assert f"DUERR|{tmp_path}/gone|{tmp_path}/gone doesn't exist" in out
+
+
+def test_never_reboots_the_connectors_own_server(env, monkeypatch):
+    """A server that runs the connector isn't rebooted mid-job (that would end the job before PeopleSoft is started
+    again): the reboot is left for a person, and the domains are started as usual."""
+    from pegasus_connector import patching as connector_patching
+    fake = env["fake"]
+    fake.os_updates, fake.os_kernel = True, True
+    fake.applied = {x for x in fake.applied if x[1] != "os"}
+    fake.reboot_needed.clear()
+    own = fake.boot["hrdevapp01"] = "33333333-3333-3333-3333-" + "3" * 12
+    fake.boot["hrdevweb01"] = "44444444-4444-4444-4444-" + "4" * 12
+    monkeypatch.setattr(connector_patching, "local_boot_id", lambda: own)        # the connector runs on hrdevapp01
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/check"), json={"environment": "HRDEV"})
+    drain(env)
+    wait_job(env, r.json()["job"])
+    fake.rebooted = []
+    r = env["admin"].post(url(env, "/api/clients/{cid}/patching/apply"),
+                          json={"environment": "HRDEV", "scope": "os~os|yum|3"})
+    assert r.ok, r.text
+    drain(env)
+    j = wait_job(env, r.json()["job"])
+    assert j["status"] == "succeeded", j["text"][-600:]
+    assert fake.rebooted == ["hrdevweb01"]                              # the other server still reboots
+    assert "runs the Pegasus connector" in j["text"]
+    assert item(patching(env), "hrdevapp01", "os")["reboot_pending"]
+    fake.os_updates = False
+    fake.reboot_needed.clear()
+
+
+def test_a_job_cut_off_by_a_connector_restart_is_closed_and_peoplesoft_brought_back(env):
+    """If the connector restarts in the middle of a job (its server rebooted, say), the job is closed and its
+    'always' steps (start the domains, check status) run at once as a recovery job."""
+    import json
+    cid = env["cid"]
+    r = env["admin"].post(url(env, "/api/clients/{cid}/run"), json={"environment": "HRDEV", "action": "clearcache"})
+    assert r.ok, r.text
+    jid = r.json()["job"]
+    c = cp.connect()
+    con = c.execute("SELECT * FROM connectors WHERE client_id=? AND revoked=0", (cid,)).fetchone()
+    c.execute("UPDATE jobs SET status='running', connector_id=?, claimed_at=? WHERE id=?",
+              (con["id"], time.time() - 600, jid))
+    steps = json.loads(c.execute("SELECT params FROM jobs WHERE id=?", (jid,)).fetchone()["params"])["steps"]
+    assert any(s.get("always") for s in steps)
+    with cp.app.app_context():
+        cp.recover_interrupted(con, time.time() - 60)                   # this connector process started a minute ago
+        cp.recover_interrupted(con, time.time() - 60)                   # heartbeats repeat: only one recovery
+    j = c.execute("SELECT status, note FROM jobs WHERE id=?", (jid,)).fetchone()
+    assert j["status"] == "failed" and "restarted during this job" in j["note"]
+    rec = c.execute("SELECT * FROM jobs WHERE client_id=? AND title LIKE 'bring HRDEV back up%'", (cid,)).fetchall()
+    assert len(rec) == 1 and rec[0]["created_by"] == "pegasus (recovery)"
+    ops = [s["op"] for s in json.loads(rec[0]["params"])["steps"]]
+    assert "domain.start" in ops and "domain.stop" not in ops
+    drain(env)
+    assert wait_job(env, rec[0]["id"])["status"] == "succeeded"
+    ev = c.execute("SELECT event FROM audit WHERE event='job_interrupted' ORDER BY id DESC").fetchone()
+    assert ev is not None

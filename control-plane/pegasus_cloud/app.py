@@ -3633,8 +3633,36 @@ def connector_heartbeat():
               version=con["version"])
     elif con["update_to"] and con["version"] and not is_newer(con["update_to"], con["version"]):
         db().execute("UPDATE connectors SET update_to=NULL WHERE id=?", (con["id"],))
+    started = body.get("started_at")
+    if isinstance(started, (int, float)) and 0 < started <= now + 60:
+        recover_interrupted(con, float(started))
     con = db().execute("SELECT * FROM connectors WHERE id=?", (con["id"],)).fetchone()
     return jsonify(ok=True, update=update_offer(con))
+
+
+def recover_interrupted(con, started):
+    """A job this connector had claimed before its current process started can't finish: the connector restarted
+    in the middle of it (for example its own server rebooted). Close it, and if the job had steps that must always
+    run (starting PeopleSoft again, checking status), queue those at once so the environment comes back up."""
+    rows = db().execute("SELECT * FROM jobs WHERE connector_id=? AND status='running' AND claimed_at<?",
+                        (con["id"], started - 5)).fetchall()
+    for j in rows:
+        db().execute("UPDATE jobs SET status='failed', finished_at=?, note=? WHERE id=? AND status='running'",
+                     (time.time(), "the connector restarted during this job (its server may have rebooted)", j["id"]))
+        params = jload(j["params"], {}) or {}
+        always = [dict(st) for st in params.get("steps") or [] if st.get("always")]
+        recovery = None
+        if always and j["environment"]:
+            try:
+                recovery = queue_job(j["client_id"], j["environment"], "recover",
+                                     f"bring {j['environment']} back up after an interrupted job", always,
+                                     meta={"recovers": j["id"]}, created_by="pegasus (recovery)")
+            except JobRefused as e:
+                app.logger.warning("couldn't queue recovery for %s: %s", j["id"], e)
+        audit("job_interrupted", j["client_id"], actor="pegasus", job=j["id"], title=j["title"],
+              connector=con["name"], recovery=recovery or "")
+    if rows:
+        finalize_pending()
 
 
 # ---------------------------------------------------------------- connector releases

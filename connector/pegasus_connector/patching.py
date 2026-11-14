@@ -970,6 +970,14 @@ def os_update(c, ctx, out):
 BOOT_ID = "cat /proc/sys/kernel/random/boot_id"
 
 
+def local_boot_id():
+    """This machine's boot id. A target with the same boot id is the machine the connector runs on."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        return ""
+
+
 def host_reboot(c, ctx, out, wait_minutes=20):
     """Reboot only if Linux says it's needed (or always, if asked), then wait until the server answers again with a
     new boot id."""
@@ -980,6 +988,14 @@ def host_reboot(c, ctx, out, wait_minutes=20):
     if c["if_needed"] and "NEED|yes" not in before:
         out(f"{t['host']}: no reboot needed.\n")
         return 0, {"rebooted": False}
+    if boot and boot == local_boot_id():
+        # This server runs the connector itself: rebooting it would end the job here, before PeopleSoft is started
+        # again. Leave the reboot to a person, after the job.
+        out(f"{t['host']}: a reboot is needed, but this server runs the Pegasus connector, so rebooting it now would "
+            "stop the job before PeopleSoft is started again. Not rebooting: PeopleSoft is started as usual. Reboot "
+            f"{t['host']} in a window after this job (its domains start again with the server's normal start-up, or "
+            "click Start in Pegasus).\n")
+        return 0, {"rebooted": False, "reboot_deferred": True}
     if not boot:
         out(f"{t['host']}: couldn't read the boot id, so the reboot can't be confirmed; not rebooting.\n")
         return 1, {"rebooted": False}

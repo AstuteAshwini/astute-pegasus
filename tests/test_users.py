@@ -91,7 +91,10 @@ def test_last_admin_cant_be_removed(env):
 
 
 def test_audit_records_sign_ins_and_jobs(env):
-    events = {e["event"] for e in env["admin"].get(env["url"] + "/api/audit").json()["events"]}
+    r = env["admin"].get(env["url"] + "/api/audit")
+    assert r.ok and r.json()["events"]                  # the page shows the latest 300
+    from pegasus_cloud import app as cp                 # the full record (the suite writes more than 300 events)
+    events = {e[0] for e in cp.connect().execute("SELECT DISTINCT event FROM audit")}
     assert {"first_admin_created", "signed_in", "mfa_enrolled", "user_created", "sign_in_failed"} <= events
 
 

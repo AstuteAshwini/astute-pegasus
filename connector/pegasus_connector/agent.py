@@ -214,6 +214,7 @@ class Agent:
         self.update_state = None                    # what we last did about it, reported in each heartbeat
         self.failed_updates = {}                    # (version, request) -> when it failed
         self.confirmed = False
+        self.started_at = time.time()               # tells the control plane when this process started
         self.log = print
 
     # ---- identity
@@ -425,7 +426,7 @@ class Agent:
         """Report version, certificate and update state; take any update the control plane offers."""
         body = {"version": __version__, "update": self.update_state,
                 "certificate_days_left": round(self.cert_days_left() or 0, 1),
-                "can_update": bool(updater.RELEASE_KEYS)}
+                "can_update": bool(updater.RELEASE_KEYS), "started_at": self.started_at}
         r = self.post("/heartbeat", body)
         if r.status_code != 200:
             return
