@@ -1344,7 +1344,7 @@ def plan_steps(servers, action):
 
 
 # what each action needs from the connector, for actions newer connectors added
-NEEDS_VERSION = {"clearcache": "0.4.0", "os": "0.5.0", "space": "0.6.0", "parallel": "0.7.0"}
+NEEDS_VERSION = {"clearcache": "0.4.0", "os": "0.5.0", "space": "0.6.0", "parallel": "0.7.0", "certs": "0.9.0"}
 DEFAULT_PARALLEL = 4
 DEFAULT_KEEP_BACKUPS = 2
 # steps that can run on several servers at once: each is put in a phase (consecutive steps of one phase run together)
@@ -1736,6 +1736,7 @@ def schedule_loop():
                 expire_access()
                 check_access_jira()
                 run_patch_watch()
+                run_cert_watch()
                 purge_removed()
         except Exception as e:                       # keep going even if one round fails
             app.logger.warning("scheduled start/stop failed: %s", e)
@@ -1985,6 +1986,8 @@ def finalize(j):
     meta = jload(j["meta"], {}) or {}
     pairs = step_results(j)
     record_states(j, pairs)
+    if kind == "certs":
+        store_certs(cid, j, pairs)
     if kind in ("levels", "apply"):
         for st, r in pairs:
             if st["op"] == "levels" and r:
@@ -2495,6 +2498,262 @@ def put_patch_watch(cid):
     put_setting(cid, "patch_watch", w)
     audit("patch_watch_changed", cid, **w)
     return jsonify(settings=w)
+
+
+# ---------------------------------------------------------------- SSL certificate expiry
+# Each client lists the addresses whose certificates matter (load balancer URL, Integration Broker endpoints...).
+# Once a day the connector reads them from inside the client's network. When any expire within the warning window
+# Pegasus keeps ONE ticket open per client listing them all, and comments on it as more come due or get renewed.
+CERT_CHECK_HOURS = float(os.environ.get("PEGASUS_CERT_CHECK_HOURS", "24"))
+CERT_WARN_DAYS = 30
+MAX_CERT_URLS = 50
+CLOSED_STATUSES = {"done", "closed", "resolved", "cancelled", "canceled", "complete", "completed", "declined",
+                   "rejected", "won't do"}
+
+
+def parse_cert_url(text):
+    """'https://host[:port]/path', 'host:port' or 'host' -> {url, host, port}. Raises ValueError."""
+    raw = str(text or "").strip()
+    s = re.sub(r"^[a-z][a-z0-9+.\-]*://", "", raw, flags=re.I).split("/", 1)[0].split("?", 1)[0]
+    s = s.rsplit("@", 1)[-1]
+    m = re.fullmatch(r"\[([0-9a-fA-F:.]+)\](?::(\d{1,5}))?", s) or re.fullmatch(r"([^:\s]+)(?::(\d{1,5}))?", s)
+    if not m:
+        raise ValueError(f"'{raw}' isn't an address")
+    host, port = m.group(1).lower(), int(m.group(2) or 443)
+    if not re.fullmatch(r"[a-z0-9.\-:]{1,253}", host) or not 0 < port < 65536 or host.startswith(("-", ".")):
+        raise ValueError(f"'{raw}' isn't an address")
+    return {"url": raw, "host": host, "port": port}
+
+
+def cert_settings(cid):
+    return {"urls": get_setting(cid, "cert_urls", []) or [],
+            "warn_days": int(get_setting(cid, "cert_warn_days", CERT_WARN_DAYS) or CERT_WARN_DAYS)}
+
+
+def queue_cert_check(cid, created_by):
+    urls = cert_settings(cid)["urls"]
+    if not urls:
+        raise JobRefused("Add at least one address to check first.", 400)
+    check_connectors_can(cid, "certs")
+    if db().execute("SELECT 1 FROM jobs WHERE client_id=? AND kind='certs' AND status IN ('queued','signed','running')",
+                    (cid,)).fetchone():
+        raise JobRefused("A certificate check is already running.")
+    step = {"op": "tls.check", "label": f"Check {len(urls)} certificate{'s' if len(urls) != 1 else ''}",
+            "endpoints": [{"host": u["host"], "port": u["port"]} for u in urls]}
+    jid = queue_job(cid, None, "certs", "check SSL certificates", [step], created_by=created_by)
+    st = get_setting(cid, "cert_state", {}) or {}
+    put_setting(cid, "cert_state", dict(st, last_queued=time.time()))
+    return jid
+
+
+def store_certs(cid, j, pairs):
+    """Keep the connector's answers, matched back to the addresses as the client typed them."""
+    found = {}
+    for st, r in pairs:
+        if st["op"] == "tls.check" and r and isinstance(r.get("data"), dict):
+            for c in r["data"].get("certs") or []:
+                if isinstance(c, dict):
+                    found[(str(c.get("host")), int(c.get("port") or 0))] = c
+        elif st["op"] == "tls.check":
+            tail = [l for l in str((r or {}).get("output") or "").splitlines() if l.strip()]
+            err = tail[-1][:300] if tail else "The connector didn't answer."
+            for e in st.get("endpoints") or []:
+                found[(e["host"], e["port"])] = {"error": err}
+    rows = []
+    for u in cert_settings(cid)["urls"]:
+        c = dict(found.get((u["host"], u["port"])) or {"error": "not checked"})
+        c.update(url=u["url"], host=u["host"], port=u["port"])
+        rows.append(c)
+    put_setting(cid, "cert_results", {"checked": time.time(), "certs": rows})
+    st = get_setting(cid, "cert_state", {}) or {}
+    put_setting(cid, "cert_state", dict(st, last=time.time(), ticket_due=True))
+    due = [c for c in rows if c.get("days_left") is not None and c["days_left"] <= cert_settings(cid)["warn_days"]]
+    audit("certs_checked", cid, actor=j["created_by"], job=j["id"], checked=len(rows), expiring=len(due),
+          unreachable=sum(1 for c in rows if c.get("error")))
+
+
+def cert_line(c):
+    when_ = str(c.get("not_after") or "")[:10]
+    left = c["days_left"]
+    state = f"expired {-left} day{'s' if -left != 1 else ''} ago" if left < 0 else \
+        f"{left} day{'s' if left != 1 else ''} left"
+    return f"* {c['url']} ({c['host']}:{c['port']}): {c.get('subject') or '?'}, issued by {c.get('issuer') or '?'}, " \
+           f"expires {when_} ({state})"
+
+
+def cert_ticket_text(cid, due, warn_days):
+    client = db().execute("SELECT name FROM clients WHERE id=?", (cid,)).fetchone()
+    name = client["name"] if client else cid
+    summary = f"[Pegasus] SSL certificates expiring within {warn_days} days for {name}"
+    lines = [f"Pegasus checks these addresses every day from the {name} connector. "
+             f"{len(due)} certificate{'s' if len(due) != 1 else ''} expire{'s' if len(due) == 1 else ''} within "
+             f"{warn_days} days:", ""] + [cert_line(c) for c in sorted(due, key=lambda c: c["days_left"])] + \
+            ["", "Pegasus comments here when more certificates come due or these get renewed, and closes this ticket "
+                 "once none are left. Raised automatically on " + now_text() + "."]
+    return summary, "\n".join(lines)
+
+
+def cert_ticket_closed(jc, key):
+    try:
+        _, status, _ = jc.approval_state(key)
+    except (jiramod.JiraError, snmod.ServiceNowError, KeyError):
+        return False
+    return str(status or "").strip().lower() in CLOSED_STATUSES
+
+
+def sync_cert_ticket(cid):
+    """One ticket per client for certificates inside the warning window: raise it, add to it, or close it."""
+    cfg = ticket_cfg(cid)
+    st = get_setting(cid, "cert_state", {}) or {}
+    put_setting(cid, "cert_state", dict(st, ticket_due=False))
+    if not cfg["enabled"]:
+        return
+    warn = cert_settings(cid)["warn_days"]
+    rows = (get_setting(cid, "cert_results", {}) or {}).get("certs") or []
+    due = {f"{c['host']}:{c['port']}": c for c in rows if c.get("days_left") is not None and c["days_left"] <= warn}
+    t = get_setting(cid, "cert_ticket", {}) or {}
+    try:
+        extra = dict(cfg.get("extra_fields") or {})
+        if isinstance(extra.get("labels"), list):
+            extra["labels"] = [x for x in extra["labels"] if x not in ("cpu-patching", "ssh-access")] + ["ssl-expiry"]
+        cfg["extra_fields"] = extra
+        jc = ticket_client(cid, cfg)
+        if t.get("key") and cert_ticket_closed(jc, t["key"]):
+            audit("cert_ticket_closed", cid, actor="pegasus", ticket=t["key"])
+            t = {}
+        listed = t.get("listed") or {}
+        if not t.get("key"):
+            if not due:
+                put_setting(cid, "cert_ticket", {})
+                return
+            summary, text = cert_ticket_text(cid, list(due.values()), warn)
+            key = jc.create(summary, text)
+            t = {"key": key, "url": jc.browse(key), "raised": time.time(),
+                 "listed": {k: c.get("not_after") for k, c in due.items()}}
+            put_setting(cid, "cert_ticket", t)
+            audit("cert_ticket_raised", cid, actor="pegasus", ticket=key, expiring=len(due))
+            return
+        new = [c for k, c in due.items() if k not in listed]
+        renewed = [k for k in listed if k not in due]
+        if not new and not renewed:
+            return
+        if not due:
+            jc.comment(t["key"], "All the certificates on this ticket have been renewed or removed from Pegasus "
+                                 f"(checked {now_text()}). Closing.")
+            try:
+                jc.transition(t["key"], cfg.get("done_transition"))
+            except (jiramod.JiraError, snmod.ServiceNowError):
+                pass
+            put_setting(cid, "cert_ticket", {})
+            audit("cert_ticket_resolved", cid, actor="pegasus", ticket=t["key"])
+            return
+        parts = []
+        if new:
+            parts += [f"{len(new)} more certificate{'s' if len(new) != 1 else ''} now expire within {warn} days:"] + \
+                [cert_line(c) for c in sorted(new, key=lambda c: c["days_left"])]
+        if renewed:
+            parts += ([""] if parts else []) + ["No longer expiring soon (renewed or removed):"] + \
+                [f"* {k}" for k in sorted(renewed)]
+        parts += ["", f"Still to renew: {len(due)}."]
+        jc.comment(t["key"], "\n".join(parts))
+        t["listed"] = {k: c.get("not_after") for k, c in due.items()}
+        put_setting(cid, "cert_ticket", t)
+        audit("cert_ticket_updated", cid, actor="pegasus", ticket=t["key"], added=len(new), renewed=len(renewed))
+    except (jiramod.JiraError, snmod.ServiceNowError) as e:
+        audit("cert_ticket_failed", cid, actor="pegasus", error=str(e)[:300])
+        put_setting(cid, "cert_state", dict(get_setting(cid, "cert_state", {}) or {}, ticket_due=True,
+                                            ticket_error=str(e)[:300], ticket_error_at=time.time()))
+        return
+    st = get_setting(cid, "cert_state", {}) or {}
+    st.pop("ticket_error", None)
+    put_setting(cid, "cert_state", st)
+
+
+def run_cert_watch(now=None):
+    """Per client with addresses listed: check them every CERT_CHECK_HOURS, then keep the ticket in step."""
+    now = now or time.time()
+    for c in db().execute("SELECT id FROM clients").fetchall():
+        cid = c["id"]
+        st = get_setting(cid, "cert_state", {}) or {}
+        if st.get("ticket_due") and now - st.get("ticket_error_at", 0) > 3600:
+            sync_cert_ticket(cid)
+            st = get_setting(cid, "cert_state", {}) or {}
+        if not cert_settings(cid)["urls"] or not can_all(cid, "certs") or not connector_online(cid):
+            continue
+        if now - max(st.get("last", 0), st.get("last_queued", 0)) >= CERT_CHECK_HOURS * 3600:
+            try:
+                queue_cert_check(cid, "pegasus (certificate check)")
+            except JobRefused:
+                pass
+
+
+@app.get("/api/clients/<cid>/certs")
+@need("viewer")
+def get_certs(cid):
+    get_client(cid)
+    s = cert_settings(cid)
+    res = get_setting(cid, "cert_results", {}) or {}
+    st = get_setting(cid, "cert_state", {}) or {}
+    t = get_setting(cid, "cert_ticket", {}) or {}
+    by = {(c.get("host"), c.get("port")): c for c in res.get("certs") or []}
+    rows = [dict(by.get((u["host"], u["port"])) or {"pending": True}, url=u["url"], host=u["host"], port=u["port"])
+            for u in s["urls"]]
+    running = bool(db().execute("SELECT 1 FROM jobs WHERE client_id=? AND kind='certs' AND status IN "
+                                "('queued','signed','running')", (cid,)).fetchone())
+    return jsonify(urls=[u["url"] for u in s["urls"]], warn_days=s["warn_days"], certs=rows,
+                   checked=iso(res.get("checked")), running=running, every_hours=CERT_CHECK_HOURS,
+                   capable=can_all(cid, "certs"), need_version=NEEDS_VERSION["certs"],
+                   ticketing=ticket_cfg(cid)["enabled"], ticket_system=ticket_name(cid),
+                   ticket={"key": t["key"], "url": t.get("url", "")} if t.get("key") else None,
+                   ticket_error=st.get("ticket_error", ""))
+
+
+@app.put("/api/clients/<cid>/certs")
+@need("admin")
+def put_certs(cid):
+    get_client(cid)
+    body = request.get_json(silent=True) or {}
+    if "urls" in body:
+        lines = body["urls"] if isinstance(body["urls"], list) else str(body["urls"] or "").splitlines()
+        urls, seen = [], set()
+        for line in lines:
+            if not str(line).strip():
+                continue
+            try:
+                u = parse_cert_url(line)
+            except ValueError as e:
+                return jsonify(error=str(e)), 400
+            if (u["host"], u["port"]) not in seen:
+                seen.add((u["host"], u["port"]))
+                urls.append(u)
+        if len(urls) > MAX_CERT_URLS:
+            return jsonify(error=f"Up to {MAX_CERT_URLS} addresses per client."), 400
+        put_setting(cid, "cert_urls", urls)
+        st = get_setting(cid, "cert_state", {}) or {}
+        put_setting(cid, "cert_state", dict(st, last=0, last_queued=0))     # check the new list on the next round
+    if "warn_days" in body:
+        try:
+            n = int(body["warn_days"])
+        except (TypeError, ValueError):
+            n = 0
+        if not 1 <= n <= 365:
+            return jsonify(error="Warn between 1 and 365 days ahead."), 400
+        put_setting(cid, "cert_warn_days", n)
+    s = cert_settings(cid)
+    audit("cert_settings_changed", cid, addresses=len(s["urls"]), warn_days=s["warn_days"])
+    return jsonify(urls=[u["url"] for u in s["urls"]], warn_days=s["warn_days"])
+
+
+@app.post("/api/clients/<cid>/certs/check")
+@need("operator")
+def check_certs_now(cid):
+    get_client(cid)
+    try:
+        jid = queue_cert_check(cid, who())
+    except JobRefused as e:
+        return jsonify(error=str(e)), e.status
+    audit("job_queued", cid, job=jid, title="check SSL certificates")
+    return jsonify(job=jid)
 
 
 # ---------------------------------------------------------------- OCI Console link

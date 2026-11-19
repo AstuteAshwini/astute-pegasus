@@ -16,6 +16,7 @@ Operations
   os.download    download them ahead of the maintenance window (yum update --downloadonly)
   os.update      yum update (all available updates), detached on the server, and report whether a reboot is needed
   host.reboot    reboot only if Linux says it's needed, then wait until the server is back
+  tls.check      the certificates listed addresses serve, and when they expire (read-only; certs.py)
 """
 import base64
 import hashlib
@@ -28,7 +29,7 @@ from pathlib import Path
 
 import paramiko
 
-from . import discovery, oracle
+from . import certs, discovery, oracle
 from .operations import SAFE_ABS_PATH, SAFE_NAME, OperationError, check_target
 
 SAFE_FILE = re.compile(r"^[A-Za-z0-9_.+\-]{1,200}$")
@@ -41,7 +42,7 @@ PROTECTED_DIRS = {"/", "/u01", "/u01/app", "/u01/app/oracle", "/u01/app/oracle/p
                   "/usr", "/var", "/opt", "/tmp", "/bin", "/sbin", "/lib", "/lib64", "/boot", "/dev", "/proc", "/sys"}
 HANDLED = ("catalog", "patch.download", "patch.stage", "patch.apply", "host.idle", "space.check",
            "access.check", "access.add", "access.remove", "discover", "hostkey.trust",
-           "os.check", "os.download", "os.update", "host.reboot")
+           "os.check", "os.download", "os.update", "host.reboot", "tls.check")
 
 
 def q(v):
@@ -97,6 +98,8 @@ def validate(op, step, ssh_user):
         return {"majors": majors, "versions": versions, "refresh": bool(step.get("refresh"))}
     if op in ("discover", "hostkey.trust"):
         return discovery.validate(op, step)
+    if op == "tls.check":
+        return certs.validate(step)
     if op == "patch.download":
         keys = [patch_key(k) for k in step.get("keys") or []]
         if not keys or len(keys) > 20:
@@ -197,6 +200,8 @@ def run(op, c, ctx, out):
         return 0, data
     if op in ("discover", "hostkey.trust"):
         return discovery.run(op, c, ctx, out)
+    if op == "tls.check":
+        return certs.run(c, out)
     if op == "patch.download":
         return download(c, ctx, out)
     if op == "patch.stage":

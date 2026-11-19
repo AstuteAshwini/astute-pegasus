@@ -416,7 +416,7 @@ function renderOverview(){var d=S.detail,h='';
       e.servers.map(function(s){return '<tr><td class="mono">'+esc(s.host)+' <span class="det">'+esc(s.ip)+'</span></td><td>'+esc(s.role)+'</td><td class="mono">'+esc(s.domain)+'</td><td class="mono">'+esc(s.os_user)+'</td><td data-skey="'+esc(e.name+"|"+(s.ip||s.host)+"|"+s.role+"|"+s.domain)+'" data-senv="'+esc(e.name)+'"><span class="st queued">Not checked</span></td>'+
         (can("operator")?'<td style="white-space:nowrap">'+["start","stop","restart","clearcache"].map(function(a){var dd=' data-env="'+esc(e.name)+'" data-host="'+esc(s.ip||s.host)+'" data-role="'+esc(s.role)+'" data-dom="'+esc(s.domain)+'"';
           return '<button type="button" class="link sm'+(a==="stop"?' danger':'')+'" data-one="'+a+'"'+dd+'>'+(a==="clearcache"?"Clear cache":a.charAt(0).toUpperCase()+a.slice(1))+'</button>'}).join(" ")+'</td>':'')+'</tr>'}).join("")+'</tbody></table></div></div>'});
-  h+='</div><div class="panel"><h2>Recent jobs</h2>';
+  h+='</div><div class="panel" id="certPanel"></div><div class="panel"><h2>Recent jobs</h2>';
   if(!d.jobs.length) h+='<div class="empty">No jobs yet.</div>';
   else h+='<div class="scroll"><table><thead><tr><th>When</th><th>What</th><th>By</th><th>Result</th></tr></thead><tbody>'+d.jobs.map(function(j){
     return '<tr><td class="det">'+esc(when(j.created_at))+'</td><td><button class="link" data-job="'+esc(j.id)+'">'+esc(j.title)+'</button>'+(j.note?'<br><span class="det">'+esc(j.note)+'</span>':'')+'</td><td>'+esc(j.created_by)+'</td><td><span class="st '+esc(j.status)+'">'+esc(j.status)+'</span></td></tr>'}).join("")+'</tbody></table></div>';
@@ -430,7 +430,7 @@ function renderOverview(){var d=S.detail,h='';
   h+='<div id="removedEnvs"></div>';
   $("tabBody").innerHTML=h+(can("admin")?'</div>':'');
   if($("dOut")) renderDisc();
-  if(S.states) paintStates(); loadStates();loadRemoved()}
+  if(S.states) paintStates(); loadStates();loadRemoved();loadCerts()}
 function loadRemoved(){api("/api/clients/"+S.cid+"/removed-environments").then(function(j){var el=$("removedEnvs");if(!el)return;
   if(!j.removed.length){el.innerHTML="";return}
   el.innerHTML='<div class="panel"><h2>Recently removed</h2><p class="help">Removed environments are kept for 30 days. Restoring brings back their servers and domains; their schedules come back paused.</p><div class="scroll"><table><tbody>'+
@@ -956,7 +956,7 @@ var EVT={signed_in:"Signed in",sign_in_failed:"Sign-in failed",mfa_failed:"Wrong
   signed_in_with_google:"Signed in with Google",google_sign_in_refused:"Google sign-in refused",ssh_access_requested:"Asked for an SSH access change",
   ssh_access_approved:"Approved an SSH access change",ssh_access_rejected:"Rejected an SSH access change",ssh_access_withdrawn:"Withdrew an SSH access request",
   ssh_access_expired:"SSH access ended (removed automatically)",ssh_approval_changed:"Changed SSH approval",
-  patch_watch_ran:"Automatic patch check",job_interrupted:"A job was cut off by a connector restart",environment_restored:"Restored an environment",weekly_plan_saved:"Saved a weekly plan",patch_cadence_changed:"Changed the patch plan",parallel_changed:"Changed servers at once",keep_backups_changed:"Changed backups to keep",time_zone_changed:"Changed the time zone",patch_watch_changed:"Changed automatic patch checks",inventory_added:"Added domains"};
+  patch_watch_ran:"Automatic patch check",certs_checked:"Checked SSL certificates",cert_settings_changed:"Changed the SSL certificate list",cert_ticket_raised:"Raised a ticket for expiring certificates",cert_ticket_updated:"Updated the expiring-certificates ticket",cert_ticket_resolved:"Closed the expiring-certificates ticket",cert_ticket_closed:"Expiring-certificates ticket was closed",cert_ticket_failed:"Couldn't raise or update the certificates ticket",job_interrupted:"A job was cut off by a connector restart",environment_restored:"Restored an environment",weekly_plan_saved:"Saved a weekly plan",patch_cadence_changed:"Changed the patch plan",parallel_changed:"Changed servers at once",keep_backups_changed:"Changed backups to keep",time_zone_changed:"Changed the time zone",patch_watch_changed:"Changed automatic patch checks",inventory_added:"Added domains"};
 function auditTable(events){if(!events.length)return '<div class="empty">Nothing yet.</div>';
   return '<div class="scroll"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Details</th></tr></thead><tbody>'+events.map(function(e){
     var d=e.detail||{},parts=Object.keys(d).filter(function(k){return d[k]!==null&&d[k]!==""&&typeof d[k]!=="object"}).map(function(k){return k.replace(/_/g," ")+": "+d[k]});
@@ -1046,6 +1046,32 @@ document.addEventListener("click",function(e){var t=e.target;if(t.id==="aiOpen")
 $("aiClose").addEventListener("click",aiClose);
 $("aiForm").addEventListener("submit",function(e){e.preventDefault();aiAsk()});
 $("aiQ").addEventListener("keydown",function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();aiAsk()}});
+
+function certBadge(c,warn){if(c.pending)return '<span class="st queued">Not checked yet</span>';if(c.error)return '<span class="st unreachable" title="'+esc(c.error)+'">Couldn\'t check</span>';
+  var d=c.days_left;return d<0?'<span class="st err">Expired</span>':d<=Math.min(7,warn)?'<span class="st err">'+d+' day'+(d===1?'':'s')+' left</span>':d<=warn?'<span class="st pending">'+d+' days left</span>':'<span class="st ok">'+d+' days left</span>'}
+function loadCerts(){var el=$("certPanel");if(!el)return;api("/api/clients/"+S.cid+"/certs").then(function(w){el=$("certPanel");if(!el||S.tab!=="overview")return;
+  var due=w.certs.filter(function(c){return c.days_left!=null&&c.days_left<=w.warn_days}).length;
+  var h='<div class="toolbar" style="margin-bottom:6px"><h2 style="margin:0">SSL certificates</h2><span class="det">'+(w.running?"Checking now…":w.checked?"Checked "+esc(ago(w.checked)):w.urls.length?"Not checked yet":"")+'</span>'+
+    (can("operator")&&w.urls.length&&w.capable?'<button type="button" class="sm" id="certNow" style="margin-left:auto"'+(w.running?" disabled":"")+'>Check now</button>':'')+'</div>';
+  if(!w.capable&&w.urls.length)h+='<div class="msg">Certificate checks need connector '+esc(w.need_version)+' or newer. Update the connectors (Connectors tab, Update).</div>';
+  if(w.ticket)h+='<p class="help">'+esc(w.ticket_system)+' ticket for certificates expiring within '+w.warn_days+' days: <a href="'+esc(w.ticket.url)+'" target="_blank" rel="noopener">'+esc(w.ticket.key)+'</a></p>';
+  else if(due&&!w.ticketing)h+='<p class="help">'+due+' certificate'+(due===1?' expires':'s expire')+' within '+w.warn_days+' days. Switch on Jira or ServiceNow in Settings to have Pegasus raise a ticket automatically.</p>';
+  if(w.ticket_error)h+='<div class="msg">Couldn\'t update the ticket: '+esc(w.ticket_error)+' Pegasus tries again within the hour.</div>';
+  if(!w.urls.length)h+='<div class="empty">No addresses yet.'+(can("admin")?' Add the URLs whose certificates matter (load balancer, Integration Broker, other HTTPS endpoints). The connector checks them every day from inside the network.':'')+'</div>';
+  else h+='<div class="scroll"><table><thead><tr><th>Address</th><th>Certificate</th><th>Issued by</th><th>Expires</th><th>Status</th></tr></thead><tbody>'+
+    w.certs.slice().sort(function(a,b){var x=a.days_left==null?1e9:a.days_left,y=b.days_left==null?1e9:b.days_left;return x-y}).map(function(c){
+      return '<tr><td class="mono">'+esc(c.url)+(c.url.toLowerCase().indexOf(c.host)<0||(c.port!==443&&c.url.indexOf(":"+c.port)<0)?'<br><span class="det">'+esc(c.host+":"+c.port)+'</span>':'')+'</td><td>'+esc(c.subject||"")+
+        (c.sans&&c.sans.length>1?'<br><span class="det">'+esc(c.sans.slice(0,4).join(", ")+(c.sans.length>4?", …":""))+'</span>':'')+
+        (c.trusted===false?'<br><span class="det" title="'+esc(c.trust_problem||"")+'">Not trusted: '+esc((c.trust_problem||"").slice(0,80))+'</span>':'')+'</td><td>'+esc(c.issuer||"")+'</td><td class="det">'+esc(c.not_after?new Date(c.not_after).toLocaleDateString():c.error?c.error.slice(0,120):"")+'</td><td>'+certBadge(c,w.warn_days)+'</td></tr>'}).join("")+'</tbody></table></div>';
+  if(can("admin"))h+='<details style="margin-top:12px"'+(w.urls.length?'':' open')+'><summary class="det">Addresses to check and warning window</summary><p class="help">One per line: a URL (https://hr.example.edu/psp/ps), host:port, or just a host (port 443). Up to 50.</p>'+
+    '<textarea id="certUrls" class="mono" spellcheck="false" placeholder="https://hr.example.edu&#10;ib.example.edu:8443">'+esc(w.urls.join("\n"))+'</textarea>'+
+    '<label class="inline">Raise a ticket when a certificate expires within <input id="certWarn" type="number" min="1" max="365" style="width:70px" value="'+w.warn_days+'"> days</label>'+
+    '<div class="toolbar" style="margin-top:10px"><button type="button" class="primary" id="certSave">Save</button><span id="certMsg"></span></div></details>';
+  el.innerHTML=h}).catch(function(){})}
+$("main").addEventListener("click",function(e){var t=e.target;
+  if(t.id==="certSave"){t.disabled=true;api("/api/clients/"+S.cid+"/certs",{method:"PUT",body:{urls:$("certUrls").value,warn_days:$("certWarn").value}}).then(function(){
+      return can("operator")?api("/api/clients/"+S.cid+"/certs/check",{method:"POST",body:{}}).catch(function(){}):null}).then(loadCerts).catch(function(j){t.disabled=false;$("certMsg").innerHTML='<span class="st err">'+esc(j.error||"Couldn't save")+'</span>'})}
+  if(t.id==="certNow"){t.disabled=true;api("/api/clients/"+S.cid+"/certs/check",{method:"POST",body:{}}).then(function(){loadCerts();setTimeout(loadCerts,15000);setTimeout(loadCerts,45000)}).catch(function(j){alert(j.error);loadCerts()})}});
 
 boot();
 })();

@@ -132,10 +132,11 @@ OPERATIONS = {
     "os.download": "Download a server's Linux package updates without installing them (yum update --downloadonly)",
     "os.update": "Run yum update on a server (all available updates, with sudo)",
     "host.reboot": "Reboot a server, only if Linux reports a reboot is needed, and wait for it to come back",
+    "tls.check": "Read the SSL certificates listed addresses serve and when they expire (read-only)",
 }
 # allowed when local policy is read_only: nothing here changes a server
 READ_ONLY_OPERATIONS = {"ping", "domain.status", "levels", "catalog", "host.idle", "access.check", "discover",
-                        "os.check", "space.check"}
+                        "os.check", "space.check", "tls.check"}
 
 
 class OperationError(Exception):
