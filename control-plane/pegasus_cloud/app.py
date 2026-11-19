@@ -976,6 +976,11 @@ def client_detail(cid):
         e = envs.setdefault(s["environment"], {"name": s["environment"], "tier": s["tier"] or "", "servers": []})
         e["tier"] = e["tier"] or s["tier"] or ""
         e["servers"].append(s)
+    for e in envs.values():
+        o = start_order(cid, e["name"])
+        e["manual_steps"] = o["manual"]
+        for s in e["servers"]:
+            s["stage"] = o["stages"].get(domain_key(s))
     rel = latest_release()
     oci = oci_console(cid)
     return jsonify(id=c["id"], name=c["name"], connectors=cons, environments=list(envs.values()), oci_console=oci,
@@ -1280,8 +1285,25 @@ def discovery_results(jid):
 
 
 def env_servers(cid, env):
-    return [row(s) for s in db().execute("SELECT * FROM servers WHERE client_id=? AND environment=? ORDER BY id",
-                                         (cid, env))]
+    """The environment's domains, each with its custom start stage (or None) when the client set a start order."""
+    stages = start_order(cid, env)["stages"]
+    out = []
+    for s in db().execute("SELECT * FROM servers WHERE client_id=? AND environment=? ORDER BY id", (cid, env)):
+        s = row(s)
+        s["stage"] = stages.get(domain_key(s))
+        out.append(s)
+    return out
+
+
+def domain_key(s):
+    return f"{s['ip'] or s['host']}|{s['role']}|{s['domain']}"
+
+
+def start_order(cid, env):
+    """{stages: {domain key: n}, manual: [text]}. Stage 1 starts first; domains sharing a number start together;
+    domains without a number start after the numbered ones, in the usual order. Stopping runs it backwards."""
+    o = (get_setting(cid, "start_order", {}) or {}).get(env) or {}
+    return {"stages": {k: int(v) for k, v in (o.get("stages") or {}).items()}, "manual": list(o.get("manual") or [])}
 
 
 def env_tier(servers):
@@ -1312,6 +1334,13 @@ def target_of(s):
 
 def domain_steps(servers, action, **flags):
     def ordered(order, op, verb):
+        if any(s.get("stage") for s in servers):        # the client's own start order for this environment
+            seq = sorted(servers, key=lambda s: (s.get("stage") or 10_000, START_ORDER.index(s["role"])
+                                                 if s["role"] in START_ORDER else 9))
+            if order is STOP_ORDER:
+                seq = seq[::-1]
+            return [dict({"op": op, "target": target_of(s), "label": f"{verb} {s['role']} {s['domain']}",
+                          "order": s.get("stage") or f"rest-{s['role']}"}, **flags) for s in seq]
         return [dict({"op": op, "target": target_of(s), "label": f"{verb} {s['role']} {s['domain']}"}, **flags)
                 for role in order for s in servers if s["role"] == role]
     if action == "start":
@@ -1364,7 +1393,7 @@ def add_lanes(steps):
             out.append(st)
             continue
         if st["op"].startswith("domain."):
-            phase = f"{phase}:{t.get('role')}"
+            phase = f"{phase}:{st['order']}" if st.get("order") else f"{phase}:{t.get('role')}"
         out.append(dict(st, phase=phase, lane=t.get("ip") or t.get("host")))
     return out
 
@@ -2498,6 +2527,42 @@ def put_patch_watch(cid):
     put_setting(cid, "patch_watch", w)
     audit("patch_watch_changed", cid, **w)
     return jsonify(settings=w)
+
+
+# ---------------------------------------------------------------- custom start order
+@app.put("/api/clients/<cid>/environments/<env>/start-order")
+@need("admin")
+def put_start_order(cid, env):
+    """Body: {stages: {domain key: stage number or null}, manual: [text...]}. Empty stages = the usual order."""
+    get_client(cid)
+    servers = env_servers(cid, env)
+    if not servers:
+        return jsonify(error="That environment has no servers."), 404
+    body = request.get_json(silent=True) or {}
+    known = {domain_key(s) for s in servers}
+    stages = {}
+    for k, v in (body.get("stages") or {}).items():
+        if v in (None, ""):
+            continue
+        if k not in known:
+            return jsonify(error=f"{k} isn't a domain of {env}."), 400
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            n = 0
+        if not 1 <= n <= 99:
+            return jsonify(error="Use start numbers from 1 to 99."), 400
+        stages[k] = n
+    manual = [str(m).strip()[:200] for m in body.get("manual") or [] if str(m).strip()][:20]
+    allo = get_setting(cid, "start_order", {}) or {}
+    if stages or manual:
+        allo[env] = {"stages": stages, "manual": manual}
+    else:
+        allo.pop(env, None)
+    put_setting(cid, "start_order", allo)
+    audit("start_order_changed", cid, environment=env, stages=len(set(stages.values())), domains=len(stages),
+          manual=len(manual))
+    return jsonify(start_order(cid, env))
 
 
 # ---------------------------------------------------------------- SSL certificate expiry
